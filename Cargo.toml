@@ -12,6 +12,9 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/NightlyShelf/captee"
 
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
-

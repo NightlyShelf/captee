@@ -15,7 +15,7 @@
 
 ## 3. Workspace management
 
-- [ ] 3.1 Define versioned project configuration, entry-document, recent-project, and settings models with validation and stable serialization.
+- [x] 3.1 Define versioned project configuration, entry-document, recent-project, and settings models with validation and stable serialization.
 - [ ] 3.2 Implement project-root and relative-path validation, including traversal, symlink escape, unexpected file type, and invalid configuration checks.
 - [ ] 3.3 Implement atomic file replacement and revisioned autosave/recovery primitives with cleanup of failed temporary files.
 - [ ] 3.4 Implement create/open project flows, `img/` initialization, bounded deduplicated recents, and platform trash confirmation interfaces.

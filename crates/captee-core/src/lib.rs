@@ -7,3 +7,9 @@
 /// Identifies the role of this crate for architecture checks and diagnostics.
 pub const CRATE_ROLE: &str = "domain-core";
 
+mod project;
+
+pub use project::{
+    CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
+    ProjectSettings, RecentProjects, CONFIG_VERSION,
+};
