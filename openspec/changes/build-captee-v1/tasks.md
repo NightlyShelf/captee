@@ -23,7 +23,7 @@
 
 ## 4. Typst authoring
 
-- [ ] 4.1 Implement source-document state with dirty tracking, revision IDs, snapshots, undoable edits, and atomic save integration.
+- [x] 4.1 Implement source-document state with dirty tracking, revision IDs, snapshots, undoable edits, and atomic save integration.
 - [ ] 4.2 Implement bundled Typst diagnostic parsing into severity, message, and source-span values while preserving editable source on errors.
 - [ ] 4.3 Implement debounced asynchronous compile/format scheduling and current-revision-only result application.
 - [ ] 4.4 Implement formatter, completion, and literal find/replace services behind core traits with cancellation-safe outcomes.

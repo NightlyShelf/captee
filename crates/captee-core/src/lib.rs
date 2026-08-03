@@ -8,8 +8,10 @@
 pub const CRATE_ROLE: &str = "domain-core";
 
 mod project;
+mod editor;
 
 pub use project::{
     CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
     ProjectSettings, RecentProjects, CONFIG_VERSION,
 };
+pub use editor::{DocumentPersistence, EditError, SourceDocument};
