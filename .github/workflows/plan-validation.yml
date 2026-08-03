@@ -1,0 +1,32 @@
+name: Plan validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  plan-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate planning artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f README.md
+          test -f openspec/config.yaml
+          test -f openspec/changes/build-captee-v1/proposal.md
+          test -f openspec/changes/build-captee-v1/design.md
+          test -f openspec/changes/build-captee-v1/tasks.md
+          test "$(find openspec/changes/build-captee-v1/specs -name spec.md | wc -l)" -eq 5
+          if rg -n '^(<<<<<<<|=======|>>>>>>>)' . --glob '!*.lock'; then
+            echo 'Merge-conflict markers found.' >&2
+            exit 1
+          fi

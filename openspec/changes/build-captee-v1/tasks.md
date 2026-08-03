@@ -3,8 +3,8 @@
 - [x] 1.1 Initialize the local Git repository, add a safe `.gitignore`, and document branch and commit conventions.
 - [x] 1.2 Authenticate with GitHub and verify the target repository under the user's account or organization.
 - [x] 1.3 Add and verify the GitHub `origin` remote, commit the initial project state, and push the default branch without overwriting an existing remote.
-- [ ] 1.4 Enable repository safeguards: protected default branch, required CI checks, dependency/security alerts, and least-privilege Actions permissions.
-- [ ] 1.5 Document clone, authentication, contribution, release, and remote-recovery procedures in the project documentation.
+- [x] 1.4 Enable repository safeguards: protected default branch, required CI checks, dependency/security alerts, and least-privilege Actions permissions.
+- [x] 1.5 Document clone, authentication, contribution, release, and remote-recovery procedures in the project documentation.
 
 ## 2. Project foundation
 

@@ -24,3 +24,18 @@ openspec validate build-captee-v1 --strict
 ```
 
 Do not commit credentials, local environment files, build output, or tool-specific workspace state.
+
+## Repository access and recovery
+
+Clone the repository with:
+
+```sh
+git clone https://github.com/NightlyShelf/captee.git
+cd captee
+```
+
+For authenticated GitHub operations, use `gh auth login` and verify the active account with `gh auth status`. The canonical remote is `origin`, and the default branch is `main`.
+
+Before opening a change, run `git fetch origin` and rebase or merge from `origin/main` as appropriate. Never force-push `main`. If local metadata is damaged, preserve uncommitted files, clone a fresh copy, and copy only reviewed working files into it; do not delete the remote repository to recover a local checkout.
+
+Releases will be produced from reviewed tags after CI passes. Release credentials belong in GitHub Actions secrets or the platform credential store, never in the repository.
