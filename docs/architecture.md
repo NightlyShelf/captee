@@ -47,3 +47,9 @@ The revision scheduler keeps only the newest pending source snapshot, waits for
 the debounce interval, and accepts worker results only when their revision still
 matches the current document. This bounds queued work and prevents stale UI
 updates, while each submission still temporarily owns a source-string snapshot.
+
+Authoring services are trait boundaries so formatting and completion can run in
+platform workers rather than the UI thread. Literal find/replace creates a new
+result string on confirmation and intentionally performs no allocation when a
+replacement is cancelled; large replacements may still create temporary peak
+memory proportional to the document and replacement size.

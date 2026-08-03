@@ -28,7 +28,7 @@ Implementation gate: after each task, review only that task's changed code for t
 - [x] 4.1 Implement source-document state with dirty tracking, revision IDs, snapshots, undoable edits, and atomic save integration.
 - [x] 4.2 Implement bundled Typst diagnostic parsing into severity, message, and source-span values while preserving editable source on errors.
 - [x] 4.3 Implement debounced asynchronous compile/format scheduling and current-revision-only result application.
-- [ ] 4.4 Implement formatter, completion, and literal find/replace services behind core traits with cancellation-safe outcomes.
+- [x] 4.4 Implement formatter, completion, and literal find/replace services behind core traits with cancellation-safe outcomes.
 - [ ] 4.5 Add tests for diagnostics, formatting failure preservation, stale-result rejection, completion cancellation, and confirmed replacement scope.
 
 ## 5. Preview and PDF export

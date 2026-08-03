@@ -28,3 +28,11 @@ the change is archived.
 - **Impact:** Typing in large documents can create short-lived allocation pressure; the scheduler itself does not allow an unbounded pending queue.
 - **Mitigation:** Coalesce pending work to one latest snapshot, debounce execution, and reject stale worker results by revision.
 - **Follow-up:** Share or structurally edit document snapshots when large-document performance work replaces the current editor history model.
+
+## Task 4.4 — authoring services
+
+- **Scope reviewed:** `crates/captee-core/src/authoring.rs`
+- **Finding:** Literal replacement allocates a complete result string and the completion trait returns an unbounded vector supplied by its provider.
+- **Impact:** Replacing large documents can temporarily require source plus result memory; an overly broad completion provider could increase UI rendering and allocation work.
+- **Mitigation:** Replacement is performed only after explicit confirmation, cancellation returns without changing or allocating source text, and formatter/completion work is exposed as a trait for off-thread adapters.
+- **Follow-up:** Add scoped/streaming replacement and a maximum completion count when the UI provider contract is implemented.
