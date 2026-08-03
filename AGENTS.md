@@ -22,6 +22,8 @@ Keep UI code independent from project, Typst, capture, and filesystem logic. Mak
 
 After each implementation task, review only the code changed by that task for likely performance bottlenecks, including time, memory, I/O, concurrency, and process-lifetime risks. Record the finding, impact, mitigation, and any follow-up in the active OpenSpec change's performance review log, and mirror relevant architectural consequences in `docs/architecture.md`. This review and documentation must be complete before marking the task done or archiving the change.
 
+After completing each implementation task, stop and ask the user whether to continue. Do not commit, push, or begin the next task until the user confirms continuation. After confirmation, commit the completed task, push the commit to the repository, and then move to the next task.
+
 ## Testing Guidelines
 
 Add automated tests with every behavior change once a test framework is selected. Place test files under `tests/` or beside the module using the framework's conventional suffix, such as `*.test.ts`. Cover normal behavior, validation, and regressions; run the complete suite before opening a pull request.
