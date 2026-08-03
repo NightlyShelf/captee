@@ -5,7 +5,9 @@
 //! the core crate remains headless and independently testable.
 
 mod typst;
+mod paths;
 
+pub use paths::{PathError, ProjectPaths};
 pub use typst::TypstRunner;
 
 /// Identifies the role of this crate for architecture checks and diagnostics.
