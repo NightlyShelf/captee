@@ -5,6 +5,9 @@ target
 # Rust formatter backups
 **/*.rs.bk
 
+# MSVC build artifacts
+*.pdb
+
 # Cargo mutation testing
 **/mutants.out*/
 
