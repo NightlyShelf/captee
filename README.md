@@ -6,6 +6,7 @@ Write Typst with a live preview, capture part of your screen with a shortcut, ad
 
 The implementation is a Rust workspace. See [docs/architecture.md](docs/architecture.md) for crate boundaries and dependency direction.
 The pinned toolchain is Rust 1.97.1 with rustfmt and clippy; dependency policy is documented in [docs/dependencies.md](docs/dependencies.md).
+The first Linux distribution bundles Typst through the verified procedure in [docs/third-party-typst.md](docs/third-party-typst.md).
 
 ## Planned features
 
