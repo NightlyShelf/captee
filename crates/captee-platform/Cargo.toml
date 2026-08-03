@@ -1,0 +1,13 @@
+[package]
+name = "captee-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Captee filesystem, compiler, capture, and Linux adapters"
+
+[dependencies]
+captee-core = { path = "../captee-core" }
+
+[lints]
+workspace = true
+

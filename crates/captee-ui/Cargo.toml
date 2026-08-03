@@ -1,0 +1,14 @@
+[package]
+name = "captee-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Captee GTK desktop application shell"
+
+[dependencies]
+captee-core = { path = "../captee-core" }
+captee-platform = { path = "../captee-platform" }
+
+[lints]
+workspace = true
+
