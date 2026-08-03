@@ -5,12 +5,14 @@
 //! the core crate remains headless and independently testable.
 
 mod atomic;
+mod capture;
 mod export;
 mod paths;
 mod typst;
 mod workspace;
 
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
+pub use capture::{CaptureSelector, GrimSlurpCapture};
 pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
 pub use typst::{

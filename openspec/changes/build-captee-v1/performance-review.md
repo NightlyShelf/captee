@@ -134,6 +134,23 @@ the change is archived.
 - **Follow-up:** Task 6.2 should add bounded backend execution; task 6.3 should
   preserve these cancellation/no-mutation semantics while implementing drawing.
 
+## Task 6.2 — portal-first and bounded fallback capture
+
+- **Scope reviewed:** `crates/captee-platform/src/capture.rs` and its public
+  adapter exports.
+- **Finding:** Each capture attempt starts at most one `slurp` process followed
+  by one `grim` process, polls at a five-millisecond cadence, and owns their
+  captured stdout/stderr until completion. The selector does not queue or spawn
+  fallback work after portal success or cancellation.
+- **Impact:** A large raw PNG is held in memory once by the process output and
+  once by `CapturedImage`; a hung subprocess retains one worker-side child until
+  the configured timeout. Polling adds small CPU wakeups during selection.
+- **Mitigation:** The timeout kills and waits for a child, portal cancellation
+  avoids fallback mutation, and the selector has no unbounded queue. PNG size
+  and image validity remain explicit follow-ups for task 6.4.
+- **Follow-up:** Add process-group cancellation where available and validate
+  bounded PNG dimensions before persisting capture output.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

@@ -77,6 +77,12 @@ completion, cancellation, failure, and no-focused-editor outcomes; portal,
 fallback subprocess, image rendering, and editor-widget behavior remain in the
 platform and UI crates.
 
+The platform capture selector tries the portal adapter first, treats portal
+cancellation as a no-op, and uses the configured `grim`/`slurp` fallback only
+after a portal failure. Fallback subprocesses are polled with a timeout and
+terminated on expiry; their output is still unvalidated raw image data until
+the PNG-validation task.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a
