@@ -6,7 +6,9 @@
 
 mod typst;
 mod paths;
+mod atomic;
 
+pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
 pub use paths::{PathError, ProjectPaths};
 pub use typst::TypstRunner;
 
