@@ -14,3 +14,15 @@ the bundled Typst executable. Long-running compiler, renderer, and capture work
 will be scheduled outside the GTK main loop and applied through revision-checked
 results.
 
+## Performance considerations
+
+The initial source editor stores complete text snapshots for undo and redo. This
+keeps the implementation simple and reliable for ordinary notes, but memory use
+can grow approximately with document size multiplied by the number of edits.
+Large documents or long editing sessions may therefore become a bottleneck.
+
+Before optimizing for large documents, history should move to bounded edit
+records containing ranges and inserted/removed text, coalesce continuous typing,
+and enforce a byte budget. Periodic full snapshots can remain as recovery and
+fast-replay checkpoints. Any replacement must preserve the same undo, redo, and
+revision semantics covered by the core tests.
