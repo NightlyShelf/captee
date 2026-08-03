@@ -117,6 +117,23 @@ the change is archived.
 - **Follow-up:** Add pinned real-compiler golden fixtures when the bundled
   Typst executable is included in CI and task 8.3 runs release validation.
 
+## Task 6.1 — capture and insertion interfaces
+
+- **Scope reviewed:** `crates/captee-core/src/capture.rs` and its public exports.
+- **Finding:** The interfaces only pass owned image bytes, small annotation
+  values, and insertion strings. They perform no image decoding, filesystem or
+  process I/O, and do not allocate beyond the explicit owned byte boundaries.
+- **Impact:** A caller can retain both captured and annotated byte buffers while
+  an annotation is awaiting confirmation, so peak memory is proportional to the
+  capture plus the proposed result. Adapter implementations control any larger
+  rendering cost behind the trait boundary.
+- **Mitigation:** Core keeps the original capture immutable by taking shared
+  references, makes cancellation and failures explicit in each outcome, and
+  exposes no platform resources or worker lifetimes. Later adapters can bound
+  image dimensions and subprocess work without changing these contracts.
+- **Follow-up:** Task 6.2 should add bounded backend execution; task 6.3 should
+  preserve these cancellation/no-mutation semantics while implementing drawing.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

@@ -71,6 +71,12 @@ Headless fixture tests exercise the preview worker and export boundary with a
 compiler test double, covering successful output, failed-render retention,
 stale-result rejection, and refusal to export after a source revision changes.
 
+Capture flow contracts are also defined in core without image, compositor, or
+editor dependencies. Capture, annotation, and insertion adapters return typed
+completion, cancellation, failure, and no-focused-editor outcomes; portal,
+fallback subprocess, image rendering, and editor-widget behavior remain in the
+platform and UI crates.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a

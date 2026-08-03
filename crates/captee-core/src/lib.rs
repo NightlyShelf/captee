@@ -8,6 +8,7 @@
 pub const CRATE_ROLE: &str = "domain-core";
 
 mod authoring;
+mod capture;
 mod diagnostics;
 mod editor;
 mod project;
@@ -17,6 +18,11 @@ mod revision;
 pub use authoring::{
     find_literal, replace_literal, request_completions, AuthoringError, CancellationToken,
     CompletionItem, CompletionProvider, Formatter, Operation, ReplaceError, ReplaceResult,
+};
+pub use capture::{
+    AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
+    CaptureBackend, CaptureError, CaptureResult, CapturedImage, EditorInserter, InsertionError,
+    InsertionResult,
 };
 pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
 pub use editor::{DocumentPersistence, EditError, SourceDocument};
