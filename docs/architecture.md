@@ -53,3 +53,8 @@ platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a
 replacement is cancelled; large replacements may still create temporary peak
 memory proportional to the document and replacement size.
+
+Completion cancellation is checked before and after a provider call, so a late
+result cannot be applied after cancellation even when the provider itself cannot
+be interrupted. Regression tests cover this stale-result boundary and formatter
+failure preservation.

@@ -36,3 +36,11 @@ the change is archived.
 - **Impact:** Replacing large documents can temporarily require source plus result memory; an overly broad completion provider could increase UI rendering and allocation work.
 - **Mitigation:** Replacement is performed only after explicit confirmation, cancellation returns without changing or allocating source text, and formatter/completion work is exposed as a trait for off-thread adapters.
 - **Follow-up:** Add scoped/streaming replacement and a maximum completion count when the UI provider contract is implemented.
+
+## Task 4.5 — authoring regressions
+
+- **Scope reviewed:** `crates/captee-core/tests/authoring_regressions.rs` and the completion cancellation guard in `src/authoring.rs`.
+- **Finding:** Regression tests are small and deterministic; completion providers remain responsible for their own runtime and candidate volume because the trait call is synchronous.
+- **Impact:** A slow provider can still delay the caller before the post-call cancellation check, although its result will not be applied after cancellation.
+- **Mitigation:** Cancellation is checked before and after provider execution, stale scheduler results are rejected, and tests lock in failure-preservation and confirmed-replacement behavior.
+- **Follow-up:** Move provider execution to a bounded worker with a maximum completion count when the UI integration is implemented.

@@ -2,6 +2,8 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub trait Formatter {
     type Error;
@@ -13,6 +15,35 @@ pub trait CompletionProvider {
     type Error;
 
     fn complete(&self, source: &str, cursor: usize) -> Result<Vec<CompletionItem>, Self::Error>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+pub fn request_completions<P: CompletionProvider>(
+    provider: &P,
+    source: &str,
+    cursor: usize,
+    cancellation: &CancellationToken,
+) -> Result<Operation<Vec<CompletionItem>>, P::Error> {
+    if cancellation.is_cancelled() {
+        return Ok(Operation::Cancelled);
+    }
+    let completions = provider.complete(source, cursor)?;
+    if cancellation.is_cancelled() {
+        return Ok(Operation::Cancelled);
+    }
+    Ok(Operation::Completed(completions))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,5 +156,14 @@ mod tests {
     fn cancelled_replace_does_not_mutate_source() {
         assert_eq!(replace_literal("a", "a", "b", false).expect("cancel"), Operation::Cancelled);
     }
-}
 
+    #[test]
+    fn cancelled_completion_is_not_applied() {
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        assert_eq!(
+            request_completions(&StaticCompleter, "#", 1, &cancellation).expect("cancel"),
+            Operation::Cancelled
+        );
+    }
+}
