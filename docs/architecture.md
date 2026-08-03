@@ -36,3 +36,9 @@ resource-lifetime risks plus mitigations in the active OpenSpec change's
 `performance-review.md`. Mirror any architectural consequence here, and keep
 unresolved risks visible until they are mitigated or explicitly accepted before
 the change is archived.
+
+Compiler diagnostic parsing currently materializes one owned message and path
+per accepted line. This is linear in compiler output and appropriate for normal
+error counts, but very large or repetitive output can increase allocation and
+rendering cost; future integrations should cap displayed diagnostics and parse
+streams incrementally when that becomes observable.

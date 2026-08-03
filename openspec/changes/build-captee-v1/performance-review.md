@@ -12,3 +12,11 @@ the change is archived.
 - **Impact:** Large documents or long editing sessions may increase allocation and copying costs during edits, undo, and redo.
 - **Mitigation:** Accepted for the initial MVP because it is simple and deterministic; the limitation is documented in `docs/architecture.md`.
 - **Follow-up:** Replace snapshots with bounded edit records, coalesce continuous typing, and add a byte budget before optimizing for large documents.
+
+## Task 4.2 — diagnostic parsing
+
+- **Scope reviewed:** `crates/captee-core/src/diagnostics.rs`
+- **Finding:** `parse_diagnostics` collects all accepted diagnostics and allocates owned path/message strings. Each line is scanned for a location in linear time.
+- **Impact:** Normal compiler output is inexpensive, but pathological or repetitive output can increase memory use and downstream UI rendering work.
+- **Mitigation:** The parser is linear and skips unrecognized lines; the architecture records a future cap and incremental parsing direction. The current task keeps the complete diagnostic list so callers can present deterministic results.
+- **Follow-up:** Add a maximum displayed-diagnostic count and streaming adapter when compiler output limits and UI requirements are finalized.

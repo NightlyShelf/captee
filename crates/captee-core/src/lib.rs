@@ -9,9 +9,11 @@ pub const CRATE_ROLE: &str = "domain-core";
 
 mod project;
 mod editor;
+mod diagnostics;
 
 pub use project::{
     CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
     ProjectSettings, RecentProjects, CONFIG_VERSION,
 };
 pub use editor::{DocumentPersistence, EditError, SourceDocument};
+pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
