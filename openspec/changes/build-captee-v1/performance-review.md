@@ -44,3 +44,11 @@ the change is archived.
 - **Impact:** A slow provider can still delay the caller before the post-call cancellation check, although its result will not be applied after cancellation.
 - **Mitigation:** Cancellation is checked before and after provider execution, stale scheduler results are rejected, and tests lock in failure-preservation and confirmed-replacement behavior.
 - **Follow-up:** Move provider execution to a bounded worker with a maximum completion count when the UI integration is implemented.
+
+## Task 2.4 — core CI checks (partial)
+
+- **Scope reviewed:** `.github/workflows/rust-checks.yml`
+- **Finding:** Formatting, clippy, and core tests run as parallel jobs, each with a separate toolchain/cache setup. This improves feedback latency but can duplicate dependency compilation and consume more concurrent runner minutes.
+- **Impact:** Initial CI runs may be slower and use more cache storage than a single combined job; clippy over all targets is intentionally stricter than the current headless test job.
+- **Mitigation:** Pin the toolchain, use a shared cache key through `Swatinem/rust-cache`, keep permissions read-only, and scope tests to `captee-core` until platform/UI dependencies are available.
+- **Follow-up:** Add an AppImage packaging job and evaluate a combined or dependency-prebuild job after GTK packaging exists. Task 2.4 remains open until that job is implemented.

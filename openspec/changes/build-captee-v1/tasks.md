@@ -13,7 +13,7 @@ Implementation gate: after each task, review only that task's changed code for t
 - [x] 2.1 Create a Cargo workspace with `captee-core`, `captee-platform`, and `captee-ui` crates and document the crate boundaries.
 - [x] 2.2 Add pinned Rust toolchain, formatting/lint configuration, dependency licenses, and feature gates so core tests build without GTK or a desktop session.
 - [x] 2.3 Add the bundled Typst 0.14.2 binaries for supported targets with checksums, license notices, and a small wrapper exposing version and compile/format commands.
-- [ ] 2.4 Add CI jobs for formatting, clippy, headless core tests, and an Ubuntu 22.04 x86_64 AppImage build using GTK 4.22.4.
+- [ ] 2.4 Add CI jobs for formatting, clippy, headless core tests, and an Ubuntu 22.04 x86_64 AppImage build using GTK 4.22.4. (Formatting, clippy, and headless core tests are implemented; AppImage packaging remains.)
 
 ## 3. Workspace management
 

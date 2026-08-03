@@ -58,3 +58,9 @@ Completion cancellation is checked before and after a provider call, so a late
 result cannot be applied after cancellation even when the provider itself cannot
 be interrupted. Regression tests cover this stale-result boundary and formatter
 failure preservation.
+
+CI runs formatting, clippy, and headless core tests as separate jobs with a
+shared Rust cache and read-only repository permissions. Parallel jobs shorten
+feedback time but may duplicate dependency compilation; the AppImage job will
+reuse the same cache and add GTK/packaging work only after the desktop crate is
+ready.
