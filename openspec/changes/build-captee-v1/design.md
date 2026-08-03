@@ -51,6 +51,10 @@ The first desktop target is GTK 4.22.4, the current stable GTK 4 release, using 
 
 Typst is bundled rather than discovered on `PATH`. The initial compiler bundle is pinned to Typst 0.14.2, recorded with platform-specific checksums and license notices. Compiler upgrades are explicit dependency changes and must update golden diagnostic/preview fixtures.
 
+### Per-task performance review gate
+
+Every implementation task has a focused bottleneck review before its checkbox is marked complete. The review is limited to the task's changed code and considers CPU time, memory growth, filesystem and process I/O, concurrency/staleness, and resource lifetime. Findings, impact, mitigation, and follow-up are recorded in `performance-review.md` in this change. Architectural consequences are mirrored in `docs/architecture.md`; unresolved risks remain visible until they are mitigated or explicitly accepted before archive.
+
 ## Risks / Trade-offs
 
 - [GTK and Typst platform dependencies may be unavailable in CI] → Keep the core crate dependency-light; gate platform/UI crates and run core tests by default.

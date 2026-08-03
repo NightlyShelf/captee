@@ -1,5 +1,7 @@
 ## 1. Git repository and GitHub publishing
 
+Implementation gate: after each task, review only that task's changed code for time, memory, I/O, concurrency, and resource-lifetime bottlenecks. Record findings and mitigations in `performance-review.md` and mirror architectural consequences in `docs/architecture.md` before marking the task complete or archiving.
+
 - [x] 1.1 Initialize the local Git repository, add a safe `.gitignore`, and document branch and commit conventions.
 - [x] 1.2 Authenticate with GitHub and verify the target repository under the user's account or organization.
 - [x] 1.3 Add and verify the GitHub `origin` remote, commit the initial project state, and push the default branch without overwriting an existing remote.

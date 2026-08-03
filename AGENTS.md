@@ -20,6 +20,8 @@ Write UI code that is clean, readable, and easy to maintain. Keep presentation, 
 
 Keep UI code independent from project, Typst, capture, and filesystem logic. Make core behavior testable without GTK, the desktop environment, or real filesystem side effects; wrap platform capture, trash, and external-tool interactions behind narrow interfaces with test doubles. Run Typst compilation asynchronously with debouncing and discard stale results before updating the UI. Protect user work with atomic autosaves, confirmation before moving project items to trash, and no mutation when a capture is cancelled. Add focused core-logic tests for every behavior change and run formatting, linting, and the complete test suite before handoff.
 
+After each implementation task, review only the code changed by that task for likely performance bottlenecks, including time, memory, I/O, concurrency, and process-lifetime risks. Record the finding, impact, mitigation, and any follow-up in the active OpenSpec change's performance review log, and mirror relevant architectural consequences in `docs/architecture.md`. This review and documentation must be complete before marking the task done or archiving the change.
+
 ## Testing Guidelines
 
 Add automated tests with every behavior change once a test framework is selected. Place test files under `tests/` or beside the module using the framework's conventional suffix, such as `*.test.ts`. Cover normal behavior, validation, and regressions; run the complete suite before opening a pull request.

@@ -26,3 +26,13 @@ records containing ranges and inserted/removed text, coalesce continuous typing,
 and enforce a byte budget. Periodic full snapshots can remain as recovery and
 fast-replay checkpoints. Any replacement must preserve the same undo, redo, and
 revision semantics covered by the core tests.
+
+## Implementation review gate
+
+Performance reviews are scoped to the code changed by each implementation task,
+not an undifferentiated scan of the entire repository. Before a task is marked
+complete, record its CPU, memory, filesystem/process I/O, concurrency, and
+resource-lifetime risks plus mitigations in the active OpenSpec change's
+`performance-review.md`. Mirror any architectural consequence here, and keep
+unresolved risks visible until they are mitigated or explicitly accepted before
+the change is archived.
