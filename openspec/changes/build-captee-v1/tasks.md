@@ -19,7 +19,7 @@
 - [x] 3.2 Implement project-root and relative-path validation, including traversal, symlink escape, unexpected file type, and invalid configuration checks.
 - [x] 3.3 Implement atomic file replacement and revisioned autosave/recovery primitives with cleanup of failed temporary files.
 - [x] 3.4 Implement create/open project flows, `img/` initialization, bounded deduplicated recents, and platform trash confirmation interfaces.
-- [ ] 3.5 Add unit tests for project creation/open rejection, path confinement, autosave recovery, recent-list behavior, and cancelled trash operations.
+- [x] 3.5 Add unit tests for project creation/open rejection, path confinement, autosave recovery, recent-list behavior, and cancelled trash operations.
 
 ## 4. Typst authoring
 
