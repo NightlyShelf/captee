@@ -5,6 +5,7 @@ Captee is a local-first desktop workspace for Typst notes and annotated screensh
 Write Typst with a live preview, capture part of your screen with a shortcut, add an explanation, and insert the image into the focused document.
 
 The implementation is a Rust workspace. See [docs/architecture.md](docs/architecture.md) for crate boundaries and dependency direction.
+The pinned toolchain is Rust 1.97.1 with rustfmt and clippy; dependency policy is documented in [docs/dependencies.md](docs/dependencies.md).
 
 ## Planned features
 
