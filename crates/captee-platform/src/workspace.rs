@@ -36,8 +36,11 @@ pub fn create_project(
     let entry_path = root.join(&config.entry_document);
     let image_path = root.join(IMAGE_DIRECTORY);
     fs::create_dir_all(&image_path).map_err(WorkspaceError::Io)?;
-    atomic_write(root.join(CONFIG_FILE), config.to_json().map_err(WorkspaceError::Config)?.as_bytes())
-        .map_err(WorkspaceError::Atomic)?;
+    atomic_write(
+        root.join(CONFIG_FILE),
+        config.to_json().map_err(WorkspaceError::Config)?.as_bytes(),
+    )
+    .map_err(WorkspaceError::Atomic)?;
     atomic_write(&entry_path, b"# Captee\n\n").map_err(WorkspaceError::Atomic)?;
     open_project(root)
 }
@@ -50,11 +53,7 @@ pub fn open_project(root: impl AsRef<Path>) -> Result<ProjectWorkspace, Workspac
     let config = ProjectConfig::from_json(&config_text).map_err(WorkspaceError::Config)?;
     paths.require_file(&config.entry_document).map_err(WorkspaceError::Path)?;
     paths.require_directory(IMAGE_DIRECTORY).map_err(WorkspaceError::Path)?;
-    Ok(ProjectWorkspace {
-        root: root.to_path_buf(),
-        config,
-        paths,
-    })
+    Ok(ProjectWorkspace { root: root.to_path_buf(), config, paths })
 }
 
 pub trait TrashBackend {
@@ -96,8 +95,12 @@ impl fmt::Display for WorkspaceError {
             Self::Atomic(error) => write!(formatter, "workspace atomic write failed: {error}"),
             Self::Config(error) => write!(formatter, "invalid project configuration: {error}"),
             Self::Path(error) => write!(formatter, "invalid project path: {error}"),
-            Self::RootNotDirectory(path) => write!(formatter, "project root is not a directory: {}", path.display()),
-            Self::DirectoryNotEmpty(path) => write!(formatter, "project directory is not empty: {}", path.display()),
+            Self::RootNotDirectory(path) => {
+                write!(formatter, "project root is not a directory: {}", path.display())
+            }
+            Self::DirectoryNotEmpty(path) => {
+                write!(formatter, "project directory is not empty: {}", path.display())
+            }
         }
     }
 }
@@ -128,10 +131,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root(name: &str) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
         let root = std::env::temp_dir().join(format!("captee-{name}-{suffix}"));
         fs::create_dir_all(&root).expect("temporary root");
         root
@@ -175,8 +175,10 @@ mod tests {
     fn cancelled_trash_does_not_call_backend() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let backend = FakeTrash { calls: calls.clone() };
-        assert_eq!(confirm_and_trash(&backend, Path::new("project"), false).expect("cancel"), TrashOutcome::Cancelled);
+        assert_eq!(
+            confirm_and_trash(&backend, Path::new("project"), false).expect("cancel"),
+            TrashOutcome::Cancelled
+        );
         assert!(calls.lock().expect("lock").is_empty());
     }
 }
-

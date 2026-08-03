@@ -76,4 +76,3 @@ impl<T> ExpectCompleted<T> for Operation<T> {
         }
     }
 }
-

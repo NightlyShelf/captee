@@ -13,9 +13,7 @@ pub struct TypstRunner {
 impl TypstRunner {
     /// Creates a runner for an already-installed bundled executable.
     pub fn new(executable: impl Into<PathBuf>) -> Self {
-        Self {
-            executable: executable.into(),
-        }
+        Self { executable: executable.into() }
     }
 
     /// Returns the compiler's version output.
@@ -41,4 +39,3 @@ impl TypstRunner {
 fn path_arg(path: &Path) -> String {
     path.as_os_str().to_string_lossy().into_owned()
 }
-

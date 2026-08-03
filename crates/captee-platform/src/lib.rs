@@ -4,9 +4,9 @@
 //! belong here. The initial scaffold keeps those integrations unimplemented so
 //! the core crate remains headless and independently testable.
 
-mod typst;
-mod paths;
 mod atomic;
+mod paths;
+mod typst;
 mod workspace;
 
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};

@@ -15,7 +15,10 @@ pub struct ProjectConfig {
 }
 
 impl ProjectConfig {
-    pub fn new(name: impl Into<String>, entry_document: impl Into<String>) -> Result<Self, ConfigError> {
+    pub fn new(
+        name: impl Into<String>,
+        entry_document: impl Into<String>,
+    ) -> Result<Self, ConfigError> {
         let config = Self {
             version: CONFIG_VERSION,
             name: name.into(),
@@ -56,26 +59,14 @@ fn is_safe_relative_typst_path(path: &str) -> bool {
     !path.as_os_str().is_empty()
         && !path.is_absolute()
         && path.extension().is_some_and(|extension| extension == "typ")
-        && path.components().all(|component| {
-            !matches!(component, std::path::Component::ParentDir)
-        })
+        && path.components().all(|component| !matches!(component, std::path::Component::ParentDir))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub formatting: FormattingSettings,
     pub capture: CaptureSettings,
     pub preview: PreviewSettings,
-}
-
-impl Default for ProjectSettings {
-    fn default() -> Self {
-        Self {
-            formatting: FormattingSettings::default(),
-            capture: CaptureSettings::default(),
-            preview: PreviewSettings::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,10 +77,7 @@ pub struct FormattingSettings {
 
 impl Default for FormattingSettings {
     fn default() -> Self {
-        Self {
-            line_width: 100,
-            format_on_save: false,
-        }
+        Self { line_width: 100, format_on_save: false }
     }
 }
 
@@ -101,10 +89,7 @@ pub struct CaptureSettings {
 
 impl Default for CaptureSettings {
     fn default() -> Self {
-        Self {
-            portal_enabled: true,
-            fallback_enabled: true,
-        }
+        Self { portal_enabled: true, fallback_enabled: true }
     }
 }
 
@@ -116,10 +101,7 @@ pub struct PreviewSettings {
 
 impl Default for PreviewSettings {
     fn default() -> Self {
-        Self {
-            auto_render: true,
-            zoom_percent: 100,
-        }
+        Self { auto_render: true, zoom_percent: 100 }
     }
 }
 
@@ -131,10 +113,7 @@ pub struct RecentProjects {
 
 impl Default for RecentProjects {
     fn default() -> Self {
-        Self {
-            max_entries: 10,
-            paths: Vec::new(),
-        }
+        Self { max_entries: 10, paths: Vec::new() }
     }
 }
 
@@ -160,8 +139,12 @@ impl fmt::Display for ConfigError {
         match self {
             Self::EmptyName => formatter.write_str("project name cannot be empty"),
             Self::InvalidEntryDocument(path) => write!(formatter, "invalid entry document: {path}"),
-            Self::UnsupportedVersion(version) => write!(formatter, "unsupported config version: {version}"),
-            Self::Serialization(error) => write!(formatter, "configuration serialization failed: {error}"),
+            Self::UnsupportedVersion(version) => {
+                write!(formatter, "unsupported config version: {version}")
+            }
+            Self::Serialization(error) => {
+                write!(formatter, "configuration serialization failed: {error}")
+            }
         }
     }
 }
@@ -189,10 +172,7 @@ mod tests {
 
     #[test]
     fn recent_projects_are_deduplicated_and_bounded() {
-        let mut recent = RecentProjects {
-            max_entries: 2,
-            paths: Vec::new(),
-        };
+        let mut recent = RecentProjects { max_entries: 2, paths: Vec::new() };
         recent.record("a");
         recent.record("b");
         recent.record("a");

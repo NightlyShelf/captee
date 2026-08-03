@@ -74,10 +74,7 @@ impl AutosaveStore {
         if parts.next().is_some() {
             return Err(AtomicWriteError::MalformedAutosave);
         }
-        Ok(Some(AutosaveSnapshot {
-            revision,
-            contents: bytes[newline + 1..].to_vec(),
-        }))
+        Ok(Some(AutosaveSnapshot { revision, contents: bytes[newline + 1..].to_vec() }))
     }
 }
 
@@ -144,7 +141,10 @@ mod tests {
         atomic_write(&destination, b"first").expect("first write");
         atomic_write(&destination, b"second").expect("second write");
         assert_eq!(fs::read(&destination).expect("read destination"), b"second");
-        assert_eq!(fs::read_dir(destination.parent().expect("parent")).expect("read dir").count(), 1);
+        assert_eq!(
+            fs::read_dir(destination.parent().expect("parent")).expect("read dir").count(),
+            1
+        );
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -153,11 +153,10 @@ mod tests {
         let root = test_root();
         let store = AutosaveStore::new(root.join("note.autosave"));
         store.write(7, b"draft").expect("autosave");
-        assert_eq!(store.recover().expect("recover"), Some(AutosaveSnapshot {
-            revision: 7,
-            contents: b"draft".to_vec(),
-        }));
+        assert_eq!(
+            store.recover().expect("recover"),
+            Some(AutosaveSnapshot { revision: 7, contents: b"draft".to_vec() })
+        );
         fs::remove_dir_all(root).expect("cleanup");
     }
 }
-

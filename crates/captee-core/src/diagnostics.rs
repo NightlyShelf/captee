@@ -40,11 +40,7 @@ fn parse_line(line: &str) -> Option<Diagnostic> {
     if message.is_empty() {
         return None;
     }
-    Some(Diagnostic {
-        severity,
-        message: message.to_owned(),
-        span,
-    })
+    Some(Diagnostic { severity, message: message.to_owned(), span })
 }
 
 fn parse_location(value: &str) -> (Option<SourceSpan>, &str) {
@@ -74,11 +70,7 @@ fn parse_location(value: &str) -> (Option<SourceSpan>, &str) {
             continue;
         }
         return (
-            Some(SourceSpan {
-                path: path.to_owned(),
-                line: line_number,
-                column: column_number,
-            }),
+            Some(SourceSpan { path: path.to_owned(), line: line_number, column: column_number }),
             message,
         );
     }
@@ -92,20 +84,20 @@ mod tests {
     #[test]
     fn parses_location_and_severity() {
         let diagnostics = parse_diagnostics("error: main.typ:3:5: unknown name");
-        assert_eq!(diagnostics, vec![Diagnostic {
-            severity: DiagnosticSeverity::Error,
-            message: "unknown name".to_owned(),
-            span: Some(SourceSpan {
-                path: "main.typ".to_owned(),
-                line: 3,
-                column: 5,
-            }),
-        }]);
+        assert_eq!(
+            diagnostics,
+            vec![Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                message: "unknown name".to_owned(),
+                span: Some(SourceSpan { path: "main.typ".to_owned(), line: 3, column: 5 }),
+            }]
+        );
     }
 
     #[test]
     fn retains_diagnostics_without_locations() {
-        let diagnostics = parse_diagnostics("warning: deprecated syntax\nnote: consider using a function");
+        let diagnostics =
+            parse_diagnostics("warning: deprecated syntax\nnote: consider using a function");
         assert_eq!(diagnostics.len(), 2);
         assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Warning);
         assert_eq!(diagnostics[0].span, None);
@@ -114,9 +106,9 @@ mod tests {
 
     #[test]
     fn skips_unrecognized_and_empty_lines() {
-        let diagnostics = parse_diagnostics("\ncompiler output\nerror: \nerror: main.typ:1:1: broken");
+        let diagnostics =
+            parse_diagnostics("\ncompiler output\nerror: \nerror: main.typ:1:1: broken");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "broken");
     }
 }
-

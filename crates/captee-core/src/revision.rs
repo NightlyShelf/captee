@@ -24,11 +24,7 @@ pub struct DebouncedScheduler {
 
 impl DebouncedScheduler {
     pub fn new(debounce: Duration) -> Self {
-        Self {
-            debounce,
-            current_revision: 0,
-            pending: None,
-        }
+        Self { debounce, current_revision: 0, pending: None }
     }
 
     pub fn current_revision(&self) -> u64 {
@@ -40,20 +36,14 @@ impl DebouncedScheduler {
         self.current_revision = self.current_revision.saturating_add(1);
         self.pending = Some((
             now + self.debounce,
-            PendingWork {
-                revision: self.current_revision,
-                kind,
-                source: source.into(),
-            },
+            PendingWork { revision: self.current_revision, kind, source: source.into() },
         ));
         self.current_revision
     }
 
     /// Returns the newest work once the debounce interval has elapsed.
     pub fn take_ready(&mut self, now: Instant) -> Option<PendingWork> {
-        let Some((due, work)) = self.pending.as_ref() else {
-            return None;
-        };
+        let (due, _) = self.pending.as_ref()?;
         if now < *due {
             return None;
         }
@@ -77,7 +67,10 @@ mod tests {
         scheduler.submit(WorkKind::Compile, "old", start);
         scheduler.submit(WorkKind::Compile, "new", start + Duration::from_millis(10));
         assert!(scheduler.take_ready(start + Duration::from_millis(59)).is_none());
-        assert_eq!(scheduler.take_ready(start + Duration::from_millis(60)).expect("ready").source, "new");
+        assert_eq!(
+            scheduler.take_ready(start + Duration::from_millis(60)).expect("ready").source,
+            "new"
+        );
     }
 
     #[test]
@@ -90,4 +83,3 @@ mod tests {
         assert!(scheduler.accepts_result(scheduler.current_revision()));
     }
 }
-

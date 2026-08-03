@@ -7,20 +7,20 @@
 /// Identifies the role of this crate for architecture checks and diagnostics.
 pub const CRATE_ROLE: &str = "domain-core";
 
-mod project;
-mod editor;
-mod diagnostics;
-mod revision;
 mod authoring;
+mod diagnostics;
+mod editor;
+mod project;
+mod revision;
 
-pub use project::{
-    CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
-    ProjectSettings, RecentProjects, CONFIG_VERSION,
-};
-pub use editor::{DocumentPersistence, EditError, SourceDocument};
-pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
-pub use revision::{DebouncedScheduler, PendingWork, WorkKind};
 pub use authoring::{
     find_literal, replace_literal, request_completions, AuthoringError, CancellationToken,
     CompletionItem, CompletionProvider, Formatter, Operation, ReplaceError, ReplaceResult,
 };
+pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
+pub use editor::{DocumentPersistence, EditError, SourceDocument};
+pub use project::{
+    CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
+    ProjectSettings, RecentProjects, CONFIG_VERSION,
+};
+pub use revision::{DebouncedScheduler, PendingWork, WorkKind};

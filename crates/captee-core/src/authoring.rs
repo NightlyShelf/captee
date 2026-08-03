@@ -73,10 +73,7 @@ pub fn find_literal(source: &str, query: &str) -> Result<Vec<Range<usize>>, Repl
     if query.is_empty() {
         return Err(ReplaceError::EmptyQuery);
     }
-    Ok(source
-        .match_indices(query)
-        .map(|(start, _)| start..start + query.len())
-        .collect())
+    Ok(source.match_indices(query).map(|(start, _)| start..start + query.len()).collect())
 }
 
 pub fn replace_literal(
@@ -128,11 +125,12 @@ mod tests {
     impl CompletionProvider for StaticCompleter {
         type Error = AuthoringError;
 
-        fn complete(&self, _source: &str, _cursor: usize) -> Result<Vec<CompletionItem>, Self::Error> {
-            Ok(vec![CompletionItem {
-                label: "heading".to_owned(),
-                insert_text: "= ".to_owned(),
-            }])
+        fn complete(
+            &self,
+            _source: &str,
+            _cursor: usize,
+        ) -> Result<Vec<CompletionItem>, Self::Error> {
+            Ok(vec![CompletionItem { label: "heading".to_owned(), insert_text: "= ".to_owned() }])
         }
     }
 
@@ -146,10 +144,10 @@ mod tests {
     fn find_and_confirmed_replace_are_literal() {
         assert_eq!(find_literal("a a", "a").expect("find"), vec![0..1, 2..3]);
         let result = replace_literal("a a", "a", "b", true).expect("replace");
-        assert_eq!(result, Operation::Completed(ReplaceResult {
-            text: "b b".to_owned(),
-            replacements: 2,
-        }));
+        assert_eq!(
+            result,
+            Operation::Completed(ReplaceResult { text: "b b".to_owned(), replacements: 2 })
+        );
     }
 
     #[test]

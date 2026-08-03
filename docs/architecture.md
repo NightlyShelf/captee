@@ -64,3 +64,7 @@ shared Rust cache and read-only repository permissions. Parallel jobs shorten
 feedback time but may duplicate dependency compilation; the AppImage job will
 reuse the same cache and add GTK/packaging work only after the desktop crate is
 ready.
+
+The CI quality gates intentionally fail on formatting drift and clippy warnings,
+so the pinned toolchain and committed lockfile are part of the reproducible build
+boundary rather than optional local conventions.

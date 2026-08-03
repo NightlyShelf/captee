@@ -52,3 +52,11 @@ the change is archived.
 - **Impact:** Initial CI runs may be slower and use more cache storage than a single combined job; clippy over all targets is intentionally stricter than the current headless test job.
 - **Mitigation:** Pin the toolchain, use a shared cache key through `Swatinem/rust-cache`, keep permissions read-only, and scope tests to `captee-core` until platform/UI dependencies are available.
 - **Follow-up:** Add an AppImage packaging job and evaluate a combined or dependency-prebuild job after GTK packaging exists. Task 2.4 remains open until that job is implemented.
+
+### CI failure review and repair
+
+- **Scope reviewed:** the clippy/fmt failures in the task 2.4 implementation and the affected Rust sources.
+- **Finding:** Strict clippy exposed an unused binding, a manually implemented derivable default, and a rewritable `let-else`; rustfmt exposed formatting drift across the scaffold.
+- **Impact:** The CI gate correctly prevented a non-reproducible quality baseline from landing, but formatting every workspace source creates a broad mechanical diff during the first cleanup.
+- **Mitigation:** Applied the clippy suggestions, formatted the workspace with the pinned Rust 1.97.1 toolchain, and committed `Cargo.lock`; local clippy, rustfmt, and all 20 core tests now pass.
+- **Follow-up:** Keep the strict gates and review future formatting-only diffs separately from behavioral changes.

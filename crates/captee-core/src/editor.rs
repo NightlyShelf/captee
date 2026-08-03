@@ -20,13 +20,7 @@ pub struct SourceDocument {
 impl SourceDocument {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
-        Self {
-            saved_text: text.clone(),
-            text,
-            revision: 0,
-            undo: Vec::new(),
-            redo: Vec::new(),
-        }
+        Self { saved_text: text.clone(), text, revision: 0, undo: Vec::new(), redo: Vec::new() }
     }
 
     pub fn text(&self) -> &str {
@@ -133,4 +127,3 @@ mod tests {
         assert_eq!(persistence.0.into_inner(), "ab");
     }
 }
-
