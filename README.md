@@ -14,3 +14,13 @@ Write Typst with a live preview, capture part of your screen with a shortcut, ad
 ## Status
 
 Under design.
+
+## Development workflow
+
+The default branch is `master`. Use short, imperative Conventional Commit subjects and keep changes focused. Run the OpenSpec validation command before handoff:
+
+```sh
+openspec validate build-captee-v1 --strict
+```
+
+Do not commit credentials, local environment files, build output, or tool-specific workspace state.
