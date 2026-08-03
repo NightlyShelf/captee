@@ -10,6 +10,7 @@ pub const CRATE_ROLE: &str = "domain-core";
 mod project;
 mod editor;
 mod diagnostics;
+mod revision;
 
 pub use project::{
     CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
@@ -17,3 +18,4 @@ pub use project::{
 };
 pub use editor::{DocumentPersistence, EditError, SourceDocument};
 pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
+pub use revision::{DebouncedScheduler, PendingWork, WorkKind};

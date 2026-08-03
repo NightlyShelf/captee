@@ -20,3 +20,11 @@ the change is archived.
 - **Impact:** Normal compiler output is inexpensive, but pathological or repetitive output can increase memory use and downstream UI rendering work.
 - **Mitigation:** The parser is linear and skips unrecognized lines; the architecture records a future cap and incremental parsing direction. The current task keeps the complete diagnostic list so callers can present deterministic results.
 - **Follow-up:** Add a maximum displayed-diagnostic count and streaming adapter when compiler output limits and UI requirements are finalized.
+
+## Task 4.3 — debounced revision scheduling
+
+- **Scope reviewed:** `crates/captee-core/src/revision.rs`
+- **Finding:** Each submission owns a complete source `String` until it is replaced or consumed. Rapid edits can therefore allocate and copy large snapshots, even though only the newest pending work is retained.
+- **Impact:** Typing in large documents can create short-lived allocation pressure; the scheduler itself does not allow an unbounded pending queue.
+- **Mitigation:** Coalesce pending work to one latest snapshot, debounce execution, and reject stale worker results by revision.
+- **Follow-up:** Share or structurally edit document snapshots when large-document performance work replaces the current editor history model.

@@ -42,3 +42,8 @@ per accepted line. This is linear in compiler output and appropriate for normal
 error counts, but very large or repetitive output can increase allocation and
 rendering cost; future integrations should cap displayed diagnostics and parse
 streams incrementally when that becomes observable.
+
+The revision scheduler keeps only the newest pending source snapshot, waits for
+the debounce interval, and accepts worker results only when their revision still
+matches the current document. This bounds queued work and prevents stale UI
+updates, while each submission still temporarily owns a source-string snapshot.
