@@ -33,10 +33,10 @@ Implementation gate: after each task, review only that task's changed code for t
 
 ## 5. Preview and PDF export
 
-- [ ] 5.1 Implement render state for current source revision, last successful preview, diagnostics, and render timestamps.
-- [ ] 5.2 Implement asynchronous preview compilation using the bundled Typst adapter with stale-render rejection.
-- [ ] 5.3 Implement atomic PDF export that refuses stale or missing successful renders and preserves an existing destination on failure.
-- [ ] 5.4 Add fixture-based tests for successful preview, failed render retaining the last success, stale render rejection, and export refusal.
+- [x] 5.1 Implement render state for current source revision, last successful preview, diagnostics, and render timestamps.
+- [x] 5.2 Implement asynchronous preview compilation using the bundled Typst adapter with stale-render rejection.
+- [x] 5.3 Implement atomic PDF export that refuses stale or missing successful renders and preserves an existing destination on failure.
+- [x] 5.4 Add fixture-based tests for successful preview, failed render retaining the last success, stale render rejection, and export refusal.
 
 ## 6. Screenshot capture and annotation
 

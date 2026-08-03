@@ -48,6 +48,29 @@ the debounce interval, and accepts worker results only when their revision still
 matches the current document. This bounds queued work and prevents stale UI
 updates, while each submission still temporarily owns a source-string snapshot.
 
+Render state follows the same revision boundary: it retains the last successful
+PDF preview after a failed render, exposes diagnostics for the current attempt,
+and accepts timestamps and results only for the active source revision. The core
+state does not perform compiler, filesystem, or thread work; those remain
+platform-side responsibilities for the preview scheduler.
+
+The platform preview adapter stages each in-memory source snapshot in a unique
+project-local temporary file so relative Typst assets resolve as they do for the
+entry document. It invokes the bundled Typst runner on a worker thread, reads
+the generated PDF into a revision-tagged outcome, and removes both temporary
+files on every completion path. Applying the outcome through core render state
+is the authoritative stale-result check.
+
+PDF export reads only the preview whose revision matches the active source and
+rejects missing or stale previews before touching the destination. It validates
+the destination boundary and delegates the final write to the same flushed,
+temporary-file-plus-rename primitive used by project persistence, so a failed
+write leaves an existing PDF intact.
+
+Headless fixture tests exercise the preview worker and export boundary with a
+compiler test double, covering successful output, failed-render retention,
+stale-result rejection, and refusal to export after a source revision changes.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a

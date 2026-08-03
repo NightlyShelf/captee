@@ -45,6 +45,78 @@ the change is archived.
 - **Mitigation:** Cancellation is checked before and after provider execution, stale scheduler results are rejected, and tests lock in failure-preservation and confirmed-replacement behavior.
 - **Follow-up:** Move provider execution to a bounded worker with a maximum completion count when the UI integration is implemented.
 
+## Task 5.1 — revision-aware render state
+
+- **Scope reviewed:** `crates/captee-core/src/render.rs`
+- **Finding:** A successful preview owns its rendered PDF bytes, while the current
+  diagnostics list owns compiler messages and source paths. Applying a result is
+  constant-time apart from replacing those bounded-by-input buffers; changing a
+  source revision does not copy the retained preview.
+- **Impact:** Keeping the last successful render makes preview recovery reliable,
+  but a large PDF and a large diagnostic output remain resident until the next
+  successful render or source revision. Stale results could also overwrite valid
+  state if they were accepted without a revision check.
+- **Mitigation:** The state accepts only the exact current revision, clears old
+  diagnostics and the current-attempt timestamp when a newer source revision is
+  announced, retains the prior preview on failure, and stores timestamps supplied
+  by the caller without spawning threads or performing I/O.
+- **Follow-up:** Task 5.2 should keep compiler work off the UI thread and pass
+  bounded render outputs into this state; task 5.4 should add fixture coverage
+  for the adapter boundary and stale render application.
+
+## Task 5.2 — asynchronous preview compilation
+
+- **Scope reviewed:** `crates/captee-platform/src/typst.rs` and the supporting
+  test-isolation change in `crates/captee-platform/src/atomic.rs`.
+- **Finding:** Each submitted preview owns one source snapshot and one worker
+  thread until the bundled compiler exits. The adapter also materializes one
+  temporary source file and one PDF before reading the PDF into the outcome.
+- **Impact:** Rapid submissions can temporarily consume compiler processes,
+  worker stacks, source/PDF memory, and project-directory I/O. A compiler that
+  hangs would keep its worker and child process alive because the standard
+  command adapter has no cancellation boundary yet.
+- **Mitigation:** The existing debounced scheduler is the intended submission
+  boundary, each temporary path is unique, stale outcomes are rejected by core
+  render state, and every completion path removes both temporary files. The
+  worker exposes a narrow trait for test doubles and keeps process details out
+  of the UI.
+- **Follow-up:** Add bounded process timeouts/cancellation and a latest-only
+  worker queue when preview controls and task 7 UI cancellation are introduced.
+
+## Task 5.3 — atomic PDF export
+
+- **Scope reviewed:** `crates/captee-platform/src/export.rs` and the relative
+  destination handling in `crates/captee-platform/src/atomic.rs`.
+- **Finding:** Export copies the retained PDF bytes into one temporary file,
+  flushes it, and atomically renames it. The destination is checked for a valid
+  parent and file type before that allocation and write begin.
+- **Impact:** Peak memory is approximately the retained preview plus the
+  temporary PDF contents, and the export performs one full write plus directory
+  synchronization. A stale or missing preview could otherwise cause an
+  unintended export of an older document.
+- **Mitigation:** Revision and preview-availability checks happen before any
+  destination mutation, and atomic-write cleanup preserves the previous file
+  when staging or replacement fails. Tests cover successful export, refusal of
+  missing/stale renders, and invalid destinations.
+- **Follow-up:** Add an injectable filesystem failure double or platform-level
+  fault-injection test when the export fixture suite is expanded in task 5.4.
+
+## Task 5.4 — preview and export fixture regressions
+
+- **Scope reviewed:** `crates/captee-platform/tests/preview_export.rs` and the
+  two small Typst source fixtures.
+- **Finding:** The tests use bounded in-memory fixture strings and PDF bytes,
+  with one temporary directory for export assertions. They do not start a
+  compiler or leave worker threads running after each received outcome.
+- **Impact:** Fixture coverage adds negligible runtime and memory cost; unique
+  temporary roots avoid interference between parallel tests. The test double
+  intentionally does not validate the real Typst binary's evolving diagnostics.
+- **Mitigation:** The production adapter remains covered by its trait boundary,
+  while these tests lock the revision and destination-preservation contracts
+  independently of a desktop session or installed compiler.
+- **Follow-up:** Add pinned real-compiler golden fixtures when the bundled
+  Typst executable is included in CI and task 8.3 runs release validation.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

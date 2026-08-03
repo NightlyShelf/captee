@@ -10,4 +10,3 @@ captee-core = { path = "../captee-core" }
 
 [lints]
 workspace = true
-

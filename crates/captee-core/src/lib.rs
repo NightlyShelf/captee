@@ -11,6 +11,7 @@ mod authoring;
 mod diagnostics;
 mod editor;
 mod project;
+mod render;
 mod revision;
 
 pub use authoring::{
@@ -23,4 +24,5 @@ pub use project::{
     CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
     ProjectSettings, RecentProjects, CONFIG_VERSION,
 };
+pub use render::{RenderState, RenderedPreview};
 pub use revision::{DebouncedScheduler, PendingWork, WorkKind};

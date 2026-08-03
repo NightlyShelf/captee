@@ -1,0 +1,3 @@
+= Broken fixture
+
+#let broken =

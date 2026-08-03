@@ -5,13 +5,18 @@
 //! the core crate remains headless and independently testable.
 
 mod atomic;
+mod export;
 mod paths;
 mod typst;
 mod workspace;
 
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
+pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
-pub use typst::TypstRunner;
+pub use typst::{
+    AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewError, PreviewHandle,
+    PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,
+};
 pub use workspace::{
     confirm_and_trash, create_project, open_project, ProjectWorkspace, TrashBackend, TrashError,
     TrashOutcome, WorkspaceError, CONFIG_FILE, IMAGE_DIRECTORY,

@@ -9,7 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Replaces a file only after the complete contents are flushed successfully.
 pub fn atomic_write(path: impl AsRef<Path>, contents: &[u8]) -> Result<(), AtomicWriteError> {
     let path = path.as_ref();
-    let parent = path.parent().ok_or_else(|| AtomicWriteError::NoParent(path.to_path_buf()))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(AtomicWriteError::Io)?;
     let temporary = temporary_path(path);
 
@@ -129,7 +132,9 @@ mod tests {
     use super::*;
 
     fn test_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("captee-atomic-{}", std::process::id()));
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("captee-atomic-{}-{suffix}", std::process::id()));
         fs::create_dir_all(&root).expect("temporary root");
         root
     }
