@@ -264,6 +264,23 @@ the change is archived.
   intentionally compiled against the stable GTK API subset because the Ubuntu
   CI image provides GTK 4.14.5; the release image remains pinned to GTK 4.22.4.
 
+## Task 8.1 — runtime and release documentation
+
+- **Scope reviewed:** `README.md`, `docs/release.md`, and
+  `packaging/appimage/README.md`.
+- **Finding:** Documentation is static and adds no runtime allocation, I/O, or
+  process lifetime. The packaging instructions intentionally delegate tool
+  downloads and checksum decisions to the release operator.
+- **Impact:** None during application execution. Release operators must keep
+  the documented GTK, Typst, linuxdeploy, and AppImage runtime versions aligned
+  or the artifact may differ across builders.
+- **Mitigation:** Runtime requirements, recovery boundaries, capture permission
+  behavior, and troubleshooting are centralized in the release guide; the
+  packaging script validates required tools and delegates Typst verification to
+  the existing pinned fetch helper.
+- **Follow-up:** Task 8.2 must record exact packaging-tool and runtime digests
+  after a clean Ubuntu 22.04 artifact is produced.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

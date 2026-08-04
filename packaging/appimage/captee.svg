@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Captee">
+  <rect width="256" height="256" rx="48" fill="#263238"/>
+  <path d="M64 72h128v112H64z" fill="#80cbc4"/>
+  <path d="M88 104h80M88 128h56M88 152h72" stroke="#263238" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="184" cy="184" r="28" fill="#ffca28"/>
+  <path d="m172 184 8 8 16-18" fill="none" stroke="#263238" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

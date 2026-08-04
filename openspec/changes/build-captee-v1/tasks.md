@@ -57,6 +57,6 @@ Implementation gate: after each task, review only that task's changed code for t
 
 ## 8. Documentation and release review
 
-- [ ] 8.1 Document project layout, recovery behavior, capture permissions, bundled Typst licensing, supported Linux session requirements, and troubleshooting in `README.md` and `docs/`.
+- [x] 8.1 Document project layout, recovery behavior, capture permissions, bundled Typst licensing, supported Linux session requirements, and troubleshooting in `README.md` and `docs/`.
 - [ ] 8.2 Produce the x86_64 AppImage with bundled GTK runtime and Typst compiler, verify it on Ubuntu 22.04, and record reproducible build inputs.
 - [ ] 8.3 Run the complete formatter, lint, unit, fixture, UI-state, and packaging checks; review each requirement scenario and record known limitations before release.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Captee
+Comment=Local-first Typst notes and annotated screenshots
+Exec=captee-ui
+Terminal=false
+Categories=Office;
+Icon=captee

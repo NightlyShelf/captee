@@ -7,22 +7,51 @@ Write Typst with a live preview, capture part of your screen with a shortcut, ad
 The implementation is a Rust workspace. See [docs/architecture.md](docs/architecture.md) for crate boundaries and dependency direction.
 The pinned toolchain is Rust 1.97.1 with rustfmt and clippy; dependency policy is documented in [docs/dependencies.md](docs/dependencies.md).
 The first Linux distribution bundles Typst through the verified procedure in [docs/third-party-typst.md](docs/third-party-typst.md).
-GitHub Actions runs pinned rustfmt, clippy, and headless `captee-core` tests on pushes and pull requests to `main`; the AppImage packaging job is planned separately.
+GitHub Actions runs pinned rustfmt, clippy, full workspace tests, and UI-state tests on pushes and pull requests to `main`.
 
-## Planned features
+## Implemented vertical slices
 
-- Typst source editor with live diagnostics and preview
+- Typst source editor with revision-aware diagnostics and preview adapters
 - Project folders with portable Typst files and PNG assets
 - Fast screen-region capture with inline annotations
 - PDF export
 
-## Status
+## Project layout
 
-Under design.
+- `crates/captee-core`: headless project, editor, render, capture, and application-state logic
+- `crates/captee-platform`: filesystem, Typst, capture, export, and trash adapters
+- `crates/captee-ui`: GTK 4 desktop shell and GtkSourceView editor integration
+- `docs/`: architecture, dependency, recovery, runtime, and release notes
+- `tools/`: pinned third-party download and verification helpers
+
+## Development commands
+
+Install Rust 1.97.1 and the GTK development libraries before building the UI:
+
+```sh
+sudo apt-get install libgtk-4-dev libgtksourceview-5-dev
+```
+
+Run the complete local gates:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+```
+
+Run the desktop shell with a Wayland or X11 session:
+
+```sh
+cargo run -p captee-ui
+```
+
+Release packaging inputs and the AppImage procedure are documented in
+[docs/release.md](docs/release.md) and [packaging/appimage/README.md](packaging/appimage/README.md).
 
 ## Development workflow
 
-The default branch is `master`. Use short, imperative Conventional Commit subjects and keep changes focused. Run the OpenSpec validation command before handoff:
+The default branch is `main`. Use short, imperative Conventional Commit subjects and keep changes focused. Run the OpenSpec validation command before handoff:
 
 ```sh
 openspec validate build-captee-v1 --strict
