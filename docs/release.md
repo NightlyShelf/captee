@@ -12,6 +12,11 @@ finished AppImage. The AppImage bundles the application-side GTK libraries;
 the host still supplies the display server, compositor, fonts, portals, and
 graphics drivers.
 
+The AppImage packaging path has been exercised through AppDir creation. A
+final artifact still requires the Type-2 `runtime-x86_64` file supplied to
+`APPIMAGE_RUNTIME_FILE`; if appimagetool cannot download it, the build stops
+before emitting an artifact rather than producing an incomplete image.
+
 ## Project layout and recovery
 
 A project contains a versioned `captee.json`, the configured `.typ` entry
