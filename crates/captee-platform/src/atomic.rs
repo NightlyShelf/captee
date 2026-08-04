@@ -116,6 +116,14 @@ impl AutosaveStore {
         }
         Ok(Some(AutosaveSnapshot { revision, contents: bytes[newline + 1..].to_vec() }))
     }
+
+    pub fn clear(&self) -> Result<(), AtomicWriteError> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AtomicWriteError::Io(error)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +207,8 @@ mod tests {
             store.recover().expect("recover"),
             Some(AutosaveSnapshot { revision: 7, contents: b"draft".to_vec() })
         );
+        store.clear().expect("clear autosave");
+        assert_eq!(store.recover().expect("missing after clear"), None);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

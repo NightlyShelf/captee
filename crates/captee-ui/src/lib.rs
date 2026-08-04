@@ -4,7 +4,10 @@ use captee_core::{
 };
 use std::fmt;
 
+pub mod annotation_bridge;
+pub mod editor_bridge;
 pub mod native;
+pub mod operation;
 
 /// The three logical regions that a GTK workspace adapter renders.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,6 +35,7 @@ pub enum ShortcutAction {
     Save,
     Format,
     FindReplace,
+    Completion,
     Capture,
     Preview,
     Export,
@@ -48,6 +52,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { accelerator: "<Primary>s", action: ShortcutAction::Save },
     Shortcut { accelerator: "<Primary><Shift>f", action: ShortcutAction::Format },
     Shortcut { accelerator: "<Primary>f", action: ShortcutAction::FindReplace },
+    Shortcut { accelerator: "<Primary>space", action: ShortcutAction::Completion },
     Shortcut { accelerator: "<Primary><Shift>c", action: ShortcutAction::Capture },
     Shortcut { accelerator: "<Primary>r", action: ShortcutAction::Preview },
     Shortcut { accelerator: "<Primary><Shift>e", action: ShortcutAction::Export },
@@ -77,18 +82,42 @@ pub struct UiSnapshot {
     pub settings_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InteractionState {
+    pub busy: bool,
+    pub cancellable: bool,
+    pub project_actions_enabled: bool,
+    pub workspace_actions_enabled: bool,
+    pub editor_enabled: bool,
+}
+
+pub fn interaction_state(snapshot: &UiSnapshot) -> InteractionState {
+    let busy = snapshot.progress.is_some();
+    InteractionState {
+        busy,
+        cancellable: snapshot.progress.as_ref().is_some_and(|progress| progress.cancellable),
+        project_actions_enabled: !busy,
+        workspace_actions_enabled: snapshot.app.project.is_some() && !busy,
+        editor_enabled: snapshot.app.project.is_some() && !busy,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCommand {
     OpenProject { session: ProjectSession, settings: ProjectSettings },
     CloseProject,
+    SetDirty(bool),
     Navigate(AppView),
     Focus(FocusTarget),
     Save,
     Format,
     FindReplace,
+    Completion,
     Capture,
+    StoreCapture,
     Preview,
     Export,
+    SaveSettings,
     Complete { message: String },
     Fail { message: String },
     Warn { message: String },
@@ -101,6 +130,9 @@ pub enum UiCommand {
 pub enum SettingsValidationError {
     InvalidLineWidth(u16),
     InvalidZoom(u16),
+    NoCaptureBackend,
+    EmptyKeybinding(&'static str),
+    DuplicateKeybinding(String),
 }
 
 impl fmt::Display for SettingsValidationError {
@@ -111,6 +143,15 @@ impl fmt::Display for SettingsValidationError {
             }
             Self::InvalidZoom(value) => {
                 write!(formatter, "preview zoom must be between 25 and 500 (got {value})")
+            }
+            Self::NoCaptureBackend => {
+                formatter.write_str("enable the screenshot portal or the slurp/grim fallback")
+            }
+            Self::EmptyKeybinding(action) => {
+                write!(formatter, "{action} keybinding cannot be empty")
+            }
+            Self::DuplicateKeybinding(binding) => {
+                write!(formatter, "keybinding {binding} is assigned more than once")
             }
         }
     }
@@ -185,6 +226,9 @@ impl UiShell {
                 self.progress = None;
                 self.announce("Project closed", false);
             }
+            UiCommand::SetDirty(dirty) => {
+                self.store.dispatch(AppCommand::SetDirty(dirty))?;
+            }
             UiCommand::Navigate(view) => {
                 self.store.dispatch(AppCommand::Navigate(view))?;
                 self.active_pane = pane_for_view(view);
@@ -199,9 +243,18 @@ impl UiShell {
             UiCommand::FindReplace => {
                 self.start(OperationKind::FindReplace, true, "Finding and replacing")?
             }
+            UiCommand::Completion => {
+                self.start(OperationKind::Completion, true, "Finding completions")?
+            }
             UiCommand::Capture => self.start(OperationKind::Capture, true, "Capturing")?,
+            UiCommand::StoreCapture => {
+                self.start(OperationKind::Capture, false, "Saving capture")?
+            }
             UiCommand::Preview => self.start(OperationKind::Preview, true, "Rendering preview")?,
             UiCommand::Export => self.start(OperationKind::Export, false, "Exporting PDF")?,
+            UiCommand::SaveSettings => {
+                self.start(OperationKind::Settings, false, "Saving settings")?
+            }
             UiCommand::Complete { message } => {
                 self.store.dispatch(AppCommand::CompleteOperation { message: message.clone() })?;
                 self.progress = None;
@@ -259,6 +312,19 @@ fn validate_settings(settings: &ProjectSettings) -> Result<(), SettingsValidatio
     }
     if !(25..=500).contains(&settings.preview.zoom_percent) {
         return Err(SettingsValidationError::InvalidZoom(settings.preview.zoom_percent));
+    }
+    if !settings.capture.portal_enabled && !settings.capture.fallback_enabled {
+        return Err(SettingsValidationError::NoCaptureBackend);
+    }
+    let mut bindings = std::collections::BTreeSet::new();
+    for (action, binding) in settings.keybindings.named_bindings() {
+        let binding = binding.trim();
+        if binding.is_empty() {
+            return Err(SettingsValidationError::EmptyKeybinding(action));
+        }
+        if !bindings.insert(binding) {
+            return Err(SettingsValidationError::DuplicateKeybinding(binding.to_owned()));
+        }
     }
     Ok(())
 }
@@ -338,6 +404,7 @@ mod tests {
             formatting: FormattingSettings { line_width: 0, format_on_save: true },
             capture: CaptureSettings::default(),
             preview: PreviewSettings::default(),
+            keybindings: captee_core::KeybindingSettings::default(),
         };
         assert!(matches!(
             shell.dispatch(UiCommand::ApplySettings(invalid.clone())),
@@ -348,6 +415,31 @@ mod tests {
         invalid.preview.zoom_percent = 125;
         shell.dispatch(UiCommand::ApplySettings(invalid.clone())).expect("settings save");
         assert_eq!(shell.snapshot().app.settings, invalid);
+    }
+
+    #[test]
+    fn duplicate_shortcuts_and_disabled_capture_are_rejected() {
+        let mut shell = UiShell::new();
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        let mut invalid = ProjectSettings::default();
+        invalid.keybindings.capture = invalid.keybindings.save.clone();
+        assert!(matches!(
+            shell.dispatch(UiCommand::ApplySettings(invalid)),
+            Err(UiError::InvalidSettings(SettingsValidationError::DuplicateKeybinding(_)))
+        ));
+        let mut invalid = ProjectSettings::default();
+        invalid.capture.portal_enabled = false;
+        invalid.capture.fallback_enabled = false;
+        assert!(matches!(
+            shell.dispatch(UiCommand::ApplySettings(invalid)),
+            Err(UiError::InvalidSettings(SettingsValidationError::NoCaptureBackend))
+        ));
+        assert_eq!(shell.snapshot().app.settings, ProjectSettings::default());
     }
 
     #[test]
@@ -385,6 +477,57 @@ mod tests {
         shell.dispatch(UiCommand::Cancel).expect("capture cancels");
         assert_eq!(shell.snapshot().app.view, AppView::Workspace);
         assert_eq!(shell.snapshot().focused, FocusTarget::SourceEditor);
+    }
+
+    #[test]
+    fn confirmed_capture_storage_is_not_cancellable_mid_write() {
+        let mut shell = UiShell::new();
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        shell.dispatch(UiCommand::StoreCapture).expect("capture storage starts");
+        let progress = shell.snapshot().progress.expect("storage progress");
+        assert_eq!(progress.operation, OperationKind::Capture);
+        assert_eq!(progress.label, "Saving capture");
+        assert!(!progress.cancellable);
+        assert!(shell.dispatch(UiCommand::Cancel).is_err());
+    }
+
+    #[test]
+    fn interaction_state_disables_conflicts_and_exposes_only_valid_cancellation() {
+        let mut shell = UiShell::new();
+        assert_eq!(
+            interaction_state(&shell.snapshot()),
+            InteractionState {
+                busy: false,
+                cancellable: false,
+                project_actions_enabled: true,
+                workspace_actions_enabled: false,
+                editor_enabled: false,
+            }
+        );
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        shell.dispatch(UiCommand::Capture).expect("capture starts");
+        assert_eq!(
+            interaction_state(&shell.snapshot()),
+            InteractionState {
+                busy: true,
+                cancellable: true,
+                project_actions_enabled: false,
+                workspace_actions_enabled: false,
+                editor_enabled: false,
+            }
+        );
+        shell.dispatch(UiCommand::Cancel).expect("capture cancels");
+        assert!(interaction_state(&shell.snapshot()).workspace_actions_enabled);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Project creation/opening and platform trash boundaries.
 
 use crate::{atomic_write, PathError, ProjectPaths};
-use captee_core::ProjectConfig;
+use captee_core::{ProjectConfig, ProjectSettings};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub fn create_project(
         config.to_json().map_err(WorkspaceError::Config)?.as_bytes(),
     )
     .map_err(WorkspaceError::Atomic)?;
-    atomic_write(&entry_path, b"# Captee\n\n").map_err(WorkspaceError::Atomic)?;
+    atomic_write(&entry_path, b"= Captee\n\n").map_err(WorkspaceError::Atomic)?;
     open_project(root)
 }
 
@@ -54,6 +54,20 @@ pub fn open_project(root: impl AsRef<Path>) -> Result<ProjectWorkspace, Workspac
     paths.require_file(&config.entry_document).map_err(WorkspaceError::Path)?;
     paths.require_directory(IMAGE_DIRECTORY).map_err(WorkspaceError::Path)?;
     Ok(ProjectWorkspace { root: root.to_path_buf(), config, paths })
+}
+
+/// Replaces only the validated settings section of an existing project config.
+pub fn save_project_settings(
+    root: impl AsRef<Path>,
+    settings: ProjectSettings,
+) -> Result<ProjectConfig, WorkspaceError> {
+    let mut workspace = open_project(root)?;
+    workspace.config.settings = settings;
+    workspace.config.validate().map_err(WorkspaceError::Config)?;
+    let config_path = workspace.paths.require_file(CONFIG_FILE).map_err(WorkspaceError::Path)?;
+    let json = workspace.config.to_json().map_err(WorkspaceError::Config)?;
+    atomic_write(config_path, json.as_bytes()).map_err(WorkspaceError::Atomic)?;
+    Ok(workspace.config)
 }
 
 pub trait TrashBackend {
@@ -146,6 +160,10 @@ mod tests {
         assert!(root.join(CONFIG_FILE).is_file());
         assert!(root.join("main.typ").is_file());
         assert!(root.join(IMAGE_DIRECTORY).is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join("main.typ")).expect("entry source"),
+            "= Captee\n\n"
+        );
         assert_eq!(open_project(&root).expect("open").config, config);
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -157,6 +175,23 @@ mod tests {
         let config = ProjectConfig::new("Notes", "main.typ").expect("config");
         assert!(matches!(create_project(&root, config), Err(WorkspaceError::DirectoryNotEmpty(_))));
         assert!(root.join("existing.txt").is_file());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn settings_are_atomically_persisted_without_changing_project_identity() {
+        let root = test_root("settings");
+        let config = ProjectConfig::new("Notes", "main.typ").expect("config");
+        create_project(&root, config).expect("create");
+        let mut settings = ProjectSettings::default();
+        settings.capture.fallback_enabled = false;
+        settings.preview.zoom_percent = 150;
+        settings.keybindings.capture = "<Primary><Alt>c".to_owned();
+
+        let saved = save_project_settings(&root, settings.clone()).expect("save settings");
+        assert_eq!(saved.name, "Notes");
+        assert_eq!(saved.entry_document, "main.typ");
+        assert_eq!(open_project(&root).expect("reopen").config.settings, settings);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

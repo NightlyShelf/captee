@@ -24,6 +24,31 @@ impl TypstRunner {
         Self { executable: executable.into() }
     }
 
+    /// Locates the packaged compiler, a development bundle, or a PATH fallback.
+    pub fn discover() -> Self {
+        if let Some(executable) = std::env::var_os("CAPTEE_TYPST_BINARY") {
+            return Self::new(executable);
+        }
+        if let Ok(current_executable) = std::env::current_exe() {
+            if let Some(directory) = current_executable.parent() {
+                for candidate in [
+                    directory.join("typst"),
+                    directory.join("../share/captee/typst/typst"),
+                    directory.join("../lib/captee/typst"),
+                ] {
+                    if candidate.is_file() {
+                        return Self::new(candidate);
+                    }
+                }
+            }
+        }
+        let development = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dist/typst/typst");
+        if development.is_file() {
+            return Self::new(development);
+        }
+        Self::new("typst")
+    }
+
     /// Returns the compiler's version output.
     pub fn version(&self) -> io::Result<Output> {
         self.run(["--version".to_owned()])
@@ -32,6 +57,16 @@ impl TypstRunner {
     /// Compiles a Typst source file to a PDF destination.
     pub fn compile(&self, source: &Path, output: &Path) -> io::Result<Output> {
         self.run(["compile".to_owned(), path_arg(source), path_arg(output)])
+    }
+
+    pub fn compile_first_page_png(&self, source: &Path, output: &Path) -> io::Result<Output> {
+        self.run([
+            "compile".to_owned(),
+            "--pages".to_owned(),
+            "1".to_owned(),
+            path_arg(source),
+            path_arg(output),
+        ])
     }
 
     /// Formats a Typst source file in place.
@@ -48,6 +83,7 @@ impl TypstRunner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewArtifact {
     pub pdf: Vec<u8>,
+    pub first_page_png: Vec<u8>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -86,6 +122,7 @@ impl PreviewCompiler for TypstPreviewCompiler {
         let prefix = format!(".captee-preview-{}-{stamp}-{id}", std::process::id());
         let source_path = self.project_root.join(format!("{prefix}.typ"));
         let output_path = self.project_root.join(format!("{prefix}.pdf"));
+        let png_path = self.project_root.join(format!("{prefix}.png"));
 
         let result = (|| {
             atomic_write(&source_path, source.as_bytes()).map_err(|error| PreviewError {
@@ -108,11 +145,32 @@ impl PreviewCompiler for TypstPreviewCompiler {
                 message: format!("could not read rendered preview: {error}"),
                 diagnostics: diagnostics.clone(),
             })?;
-            Ok(PreviewArtifact { pdf, diagnostics })
+            let png_output =
+                self.runner.compile_first_page_png(&source_path, &png_path).map_err(|error| {
+                    PreviewError {
+                        message: format!("could not run Typst preview image compiler: {error}"),
+                        diagnostics: diagnostics.clone(),
+                    }
+                })?;
+            let mut image_diagnostics = diagnostics_from_output(&png_output);
+            if !png_output.status.success() {
+                return Err(PreviewError {
+                    message: compiler_failure_message(&png_output),
+                    diagnostics: image_diagnostics,
+                });
+            }
+            let first_page_png = std::fs::read(&png_path).map_err(|error| PreviewError {
+                message: format!("could not read rendered preview image: {error}"),
+                diagnostics: image_diagnostics.clone(),
+            })?;
+            let mut diagnostics = diagnostics;
+            diagnostics.append(&mut image_diagnostics);
+            Ok(PreviewArtifact { pdf, first_page_png, diagnostics })
         })();
 
         let _ = std::fs::remove_file(&source_path);
         let _ = std::fs::remove_file(&output_path);
+        let _ = std::fs::remove_file(&png_path);
         result
     }
 }
@@ -246,7 +304,11 @@ mod tests {
     impl PreviewCompiler for FakeCompiler {
         fn compile_preview(&self, source: &str) -> Result<PreviewArtifact, PreviewError> {
             self.sources.lock().expect("sources lock").push(source.to_owned());
-            Ok(PreviewArtifact { pdf: source.as_bytes().to_vec(), diagnostics: Vec::new() })
+            Ok(PreviewArtifact {
+                pdf: source.as_bytes().to_vec(),
+                first_page_png: b"png".to_vec(),
+                diagnostics: Vec::new(),
+            })
         }
     }
 
@@ -257,7 +319,9 @@ mod tests {
         let outcome = worker.submit(7, "#let answer = 42").recv().expect("preview outcome");
 
         assert_eq!(outcome.revision, 7);
-        assert_eq!(outcome.result.expect("successful preview").pdf, b"#let answer = 42");
+        let artifact = outcome.result.expect("successful preview");
+        assert_eq!(artifact.pdf, b"#let answer = 42");
+        assert_eq!(artifact.first_page_png, b"png");
     }
 
     #[test]

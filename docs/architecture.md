@@ -36,6 +36,16 @@ large entry documents can briefly block the GTK loop; this should move to a
   GTK 4.6-compatible native dialog API so the release builder does not require
   a newer host development package.
 
+The UI operation coordinator is the lifetime boundary between GTK callbacks and
+worker-owned platform effects. It assigns a new generation whenever a project
+is activated, tags work with the active source revision and a unique operation
+identity, and returns terminal outcomes through a non-blocking result channel.
+Project changes, revision changes, explicit cancellation, and coordinator drop
+signal cooperative cancellation; late results are classified as stale before
+they can reach widgets or application state. The coordinator performs no I/O
+itself. Platform adapters remain responsible for observing cancellation around
+blocking calls and terminating subprocesses they own.
+
 Project creation is presented as a modal name-and-parent-location form, while
 opening uses the GTK 4.6-compatible native folder chooser. Both successful
 paths route through the same workspace transition, and closing routes through
@@ -47,6 +57,63 @@ operation and retain the existing follow-up for moving large project loads off
 the GTK main loop.
 
 ## Performance considerations
+
+Operation coordination keeps one active handle and uses constant-time identity
+checks. A worker can enqueue only one terminal result through its single-use
+task handle, which bounds channel growth by the number of retired workers rather
+than their internal progress. GTK integration must poll results from the main
+context without a busy loop and avoid synchronously joining long-running work.
+Headless integration tests use deterministic worker doubles against this public
+boundary, covering terminal outcomes and stale project/revision rejection
+without requiring GTK, threads, or platform processes.
+
+The GtkSourceView bridge owns one core `SourceDocument` for the active entry
+file. Buffer changes update that document, propagate its revision to the
+operation coordinator, and mirror dirty state into the application store.
+Programmatic open, undo, redo, and close updates suppress recursive buffer
+signals. Undo and redo are routed through the core document history so widget
+state cannot diverge from revision and dirty semantics.
+
+Project persistence is exposed by a platform adapter that resolves the active
+entry file inside `ProjectPaths` and implements core `DocumentPersistence` with
+atomic replacement. Manual save runs off the GTK thread and returns the saved
+core document through the revision-tagged operation channel; only that matching
+document can clear dirty state. A 750 ms sequence-based debounce writes a
+revisioned project-local autosave on a worker, and successful manual save removes
+it. Project open compares a complete autosave with disk source and requires an
+explicit modal decision before restoring it as unsaved editor content. Recent
+projects use a bounded, deduplicated JSON store under the GLib user-data path.
+Background persistence results carry project identity and cannot update a
+different project after navigation or window teardown.
+
+Authoring actions use the same revision boundary. Formatting stages the active
+source in a collision-resistant project-local temporary file and invokes the
+discovered packaged, development, or PATH Typst binary on a worker. Successful
+formatted text is one undoable core edit; failures retain source and render up
+to 20 structured diagnostics. Literal replacement is explicitly confirmed and
+applied as one core edit. Completion uses a testable provider, converts GTK
+character offsets to UTF-8 byte offsets, and rechecks project/source identity
+when the selection dialog confirms insertion.
+
+Preview requests are debounced for 600 ms and use `AsyncPreviewCompiler` with
+the discovered Typst binary outside the GTK thread. A successful attempt
+produces the complete PDF plus a first-page PNG, both tagged with the active
+source revision. `RenderState` remains authoritative for stale rejection and
+last-valid PDF retention; GTK decodes the PNG only after both coordinator and
+render-state checks accept it. Failed renders update diagnostics and status but
+leave the last valid preview picture visible.
+
+PDF export is available only when `RenderState` holds a successful preview for
+the current source revision. A GTK native save chooser gathers a local
+destination without mutation; the worker then revalidates the preview and
+destination and writes the PDF through atomic replacement. Export owns a cloned
+immutable render snapshot, so source edits cannot change bytes already being
+written and stale completion cannot update the new revision's UI state.
+
+Headless preview/export integration coverage crosses the UI operation channel,
+platform preview outcome, core render state, and atomic export boundary. It
+locks in success, failed-render retention, stale and cancelled result rejection,
+and no write after destination cancellation without requiring GTK or Typst.
 
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
@@ -112,8 +179,18 @@ platform and UI crates.
 The platform capture selector tries the portal adapter first, treats portal
 cancellation as a no-op, and uses the configured `grim`/`slurp` fallback only
 after a portal failure. Fallback subprocesses are polled with a timeout and
-terminated on expiry; their output is still unvalidated raw image data until
-the PNG-validation task.
+terminated and reaped on expiry. Their stdout and stderr are drained concurrently
+into bounded buffers while the child runs, avoiding a pipe-capacity deadlock on
+normal screenshot sizes; both reader threads are joined at the process boundary.
+Output is still unvalidated raw image data until the PNG-validation task.
+
+The concrete Linux portal adapter uses the XDG Screenshot D-Bus interface on a
+worker thread and accepts only local file URIs. Portal reads are capped at 64
+MiB and portal cancellation is terminal, while a genuine portal failure may
+enter the configured `slurp`/`grim` path used by Hyprland. Capture results carry
+the active project and source revision through the UI operation coordinator;
+late results after cancellation or project replacement are discarded, and only
+an accepted result becomes the single staged capture owned by the workspace.
 
 The platform annotation adapter decodes each captured PNG into a bounded RGBA
 surface, applies clipped pointer, rectangle, or fixed-glyph text marks, and
@@ -127,6 +204,67 @@ existing file. Missing or invalid asset directories fail before any write.
 After storage succeeds, the adapter formats the generated safe relative path
 as a Typst `#image("...")` expression and delegates insertion to the focused
 editor boundary; no-focused-editor outcomes leave the stored asset untouched.
+
+The GTK annotation dialog owns a reversible `AnnotationDraft` containing an
+immutable original and one staged encoded image. Pointer, rectangle, and text
+controls submit one mark at a time to a worker; controls are temporarily
+disabled and the accepted PNG is decoded on the GTK thread only for display.
+Reset restores the original, while closing the dialog drops both buffers. No
+filesystem or source mutation is reachable until the separate confirmation
+boundary accepts the staged image.
+
+Confirmation transfers the staged PNG to the platform asset store on a worker.
+That boundary validates the complete image before a create-only atomic write,
+then returns a safe project-relative path. Only an accepted result is handed to
+the focused-editor insertion adapter, which inserts the exact generated Typst
+expression at the cursor as one undoable edit. The write is non-cancellable
+after confirmation so UI cancellation cannot race a committed file; cancellation
+before confirmation remains a strict no-op.
+
+Capture integration tests compose the same public coordinator, selector,
+annotation draft/backend, asset store, and editor insertion boundaries used by
+GTK. They cover portal success, fallback after portal failure, cancellation,
+invalid image rejection, immutable staging, atomic storage, and exact undoable
+Typst insertion without requiring a compositor in headless CI.
+
+Capture backend order is desktop-aware at the platform boundary. Portal-first
+selection remains the default, while a Hyprland desktop token makes the bounded
+`slurp`/`grim` region path run first when that configured backend is enabled.
+Cancellation remains terminal and never starts the second backend. This avoids
+depending on a Hyprland screenshot portal request that may remain pending
+without presenting a usable region selector, while preserving portal behavior
+for other Wayland desktops.
+
+Project settings remain part of `.captee.json`. GTK edits a detached settings
+copy, validates ranges, enabled capture paths, and unique parseable accelerator
+strings, then asks the platform workspace boundary to atomically replace the
+validated config. Only a successful worker result updates core state and GTK
+accelerators. Capture selection and auto-preview read the current core snapshot,
+preview zoom changes the retained picture request, and format-on-save runs the
+formatter before the same atomic document save. Older configs receive default
+keybindings without migration, and closing a workspace restores application
+defaults.
+
+Operation feedback is derived from the same immutable UI snapshot as command
+dispatch. A small interaction-state projection controls the workspace action
+sensitivity and editor availability, while GTK presents a spinner, textual
+status, and a Cancel button only for cancellable operations. Cancellation
+removes coordinator ownership immediately and flips the worker token; late
+results cannot mutate the UI. Non-cancellable atomic writes keep project and
+editor actions disabled until their single terminal result, preventing close,
+project replacement, or source edits from racing committed state.
+
+GTK result polling releases the operation coordinator's dynamic borrow before
+calling any result handler. The same rule applies to shell dispatch results
+that trigger follow-up label, settings, or project-lifetime reads. Modal capture
+confirmation takes ownership of its staged image before hiding the dialog, so
+response handling cannot re-enter through window closure and clear data that is
+about to cross the storage boundary.
+
+Project creation writes a minimal valid Typst heading (`= Captee`) through the
+same atomic workspace boundary as the config. This guarantees a new workspace
+can produce its first preview immediately instead of entering an error state
+before the first user edit.
 
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new

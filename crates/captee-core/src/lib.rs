@@ -32,8 +32,8 @@ pub use capture::{
 pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
 pub use editor::{DocumentPersistence, EditError, SourceDocument};
 pub use project::{
-    CaptureSettings, ConfigError, FormattingSettings, PreviewSettings, ProjectConfig,
-    ProjectSettings, RecentProjects, CONFIG_VERSION,
+    CaptureSettings, ConfigError, FormattingSettings, KeybindingSettings, PreviewSettings,
+    ProjectConfig, ProjectSettings, RecentProjects, CONFIG_VERSION,
 };
 pub use render::{RenderState, RenderedPreview};
 pub use revision::{DebouncedScheduler, PendingWork, WorkKind};

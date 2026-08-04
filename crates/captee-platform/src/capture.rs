@@ -1,9 +1,10 @@
-//! Portal-first capture selection and bounded `grim`/`slurp` fallback.
+//! Desktop-aware capture selection and bounded `grim`/`slurp` fallback.
 
 use captee_core::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
     CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage,
 };
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -14,6 +15,8 @@ const TEXT_SCALE: u32 = 2;
 const GLYPH_WIDTH: u32 = 5;
 const GLYPH_HEIGHT: u32 = 7;
 const MAX_ANNOTATION_PIXELS: usize = 16 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CAPTURE_ERROR_BYTES: u64 = 1024 * 1024;
 
 /// Applies lightweight annotations to a PNG without changing the captured
 /// image. Every operation decodes into a new pixel buffer and returns a new
@@ -244,40 +247,158 @@ fn glyph(character: char) -> [u8; 7] {
     }
 }
 
-/// Selects the configured portal backend first and falls back only after a
-/// portal failure. Cancellation is returned immediately and never falls back.
+/// Linux screenshot portal adapter. The portal request is interactive, so the
+/// desktop can offer a screen, window, or region picker appropriate for the
+/// active compositor.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct XdgPortalCapture;
+
+impl XdgPortalCapture {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CaptureBackend for XdgPortalCapture {
+    fn capture(&self) -> CaptureResult<CapturedImage> {
+        let screenshot = async_io::block_on(async {
+            let request = ashpd::desktop::screenshot::Screenshot::request()
+                .interactive(true)
+                .modal(true)
+                .send()
+                .await?;
+            request.response().map(|response| response.uri().as_str().to_owned())
+        });
+
+        match screenshot {
+            Ok(uri) => load_portal_capture(&uri),
+            Err(error) if portal_cancelled(&error) => CaptureResult::Cancelled,
+            Err(error) => CaptureResult::Failed(CaptureError::new(format!(
+                "screenshot portal failed: {error}"
+            ))),
+        }
+    }
+}
+
+fn portal_cancelled(error: &ashpd::Error) -> bool {
+    matches!(
+        error,
+        ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)
+            | ashpd::Error::Portal(ashpd::PortalError::Cancelled(_))
+    )
+}
+
+fn load_portal_capture(uri: &str) -> CaptureResult<CapturedImage> {
+    let url = match url::Url::parse(uri) {
+        Ok(url) => url,
+        Err(error) => {
+            return CaptureResult::Failed(CaptureError::new(format!(
+                "screenshot portal returned an invalid URI: {error}"
+            )))
+        }
+    };
+    let path = match url.to_file_path() {
+        Ok(path) => path,
+        Err(()) => {
+            return CaptureResult::Failed(CaptureError::new(
+                "screenshot portal returned a non-local file URI",
+            ))
+        }
+    };
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) => {
+            return CaptureResult::Failed(CaptureError::new(format!(
+                "could not open portal screenshot {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    let mut bytes = Vec::new();
+    if let Err(error) = file.take(MAX_CAPTURE_BYTES + 1).read_to_end(&mut bytes) {
+        return CaptureResult::Failed(CaptureError::new(format!(
+            "could not read portal screenshot {}: {error}",
+            path.display()
+        )));
+    }
+    if bytes.len() as u64 > MAX_CAPTURE_BYTES {
+        return CaptureResult::Failed(CaptureError::new(format!(
+            "portal screenshot exceeds the {} MiB capture limit",
+            MAX_CAPTURE_BYTES / (1024 * 1024)
+        )));
+    }
+    if bytes.is_empty() {
+        return CaptureResult::Failed(CaptureError::new(
+            "screenshot portal returned an empty file",
+        ));
+    }
+    CaptureResult::Completed(CapturedImage::new(bytes))
+}
+
+/// Selects enabled capture backends in desktop-appropriate order. Cancellation
+/// is returned immediately and never starts the other backend.
 #[derive(Debug, Clone)]
 pub struct CaptureSelector<P, F> {
     portal: P,
     fallback: F,
     settings: CaptureSettings,
+    fallback_first: bool,
 }
 
 impl<P, F> CaptureSelector<P, F> {
     pub fn new(portal: P, fallback: F, settings: CaptureSettings) -> Self {
-        Self { portal, fallback, settings }
+        Self { portal, fallback, settings, fallback_first: false }
+    }
+
+    pub fn with_fallback_first(mut self, fallback_first: bool) -> Self {
+        self.fallback_first = fallback_first;
+        self
     }
 }
 
 impl<P: CaptureBackend, F: CaptureBackend> CaptureBackend for CaptureSelector<P, F> {
     fn capture(&self) -> CaptureResult<CapturedImage> {
-        if self.settings.portal_enabled {
-            match self.portal.capture() {
+        if self.fallback_first && self.settings.fallback_enabled {
+            match self.fallback.capture() {
                 CaptureResult::Completed(image) => return CaptureResult::Completed(image),
                 CaptureResult::Cancelled => return CaptureResult::Cancelled,
-                CaptureResult::Failed(error) if !self.settings.fallback_enabled => {
+                CaptureResult::Failed(error) if !self.settings.portal_enabled => {
                     return CaptureResult::Failed(error)
                 }
                 CaptureResult::Failed(_) => {}
             }
         }
 
-        if self.settings.fallback_enabled {
+        if self.settings.portal_enabled {
+            match self.portal.capture() {
+                CaptureResult::Completed(image) => return CaptureResult::Completed(image),
+                CaptureResult::Cancelled => return CaptureResult::Cancelled,
+                CaptureResult::Failed(error)
+                    if !self.settings.fallback_enabled || self.fallback_first =>
+                {
+                    return CaptureResult::Failed(error)
+                }
+                CaptureResult::Failed(_) => {}
+            }
+        }
+
+        if self.settings.fallback_enabled && !self.fallback_first {
             return self.fallback.capture();
         }
 
         CaptureResult::Failed(CaptureError::new("no capture backend is enabled"))
     }
+}
+
+/// Hyprland's interactive screenshot portal may not present a region picker,
+/// while `slurp`/`grim` is its native bounded selection path.
+pub fn current_desktop_prefers_fallback_capture() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|desktop| desktop_prefers_fallback_capture(&desktop))
+}
+
+fn desktop_prefers_fallback_capture(desktop: &str) -> bool {
+    desktop.split(':').any(|name| name.eq_ignore_ascii_case("hyprland"))
 }
 
 /// Bounded Linux fallback using `slurp` for region selection and `grim` for
@@ -339,17 +460,29 @@ fn run_bounded(program: &Path, args: &[String], timeout: Duration) -> Result<Out
     let mut child = command.spawn().map_err(|error| {
         CaptureError::new(format!("could not start {}: {error}", program.display()))
     })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CaptureError::new("capture command stdout was not available"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CaptureError::new("capture command stderr was not available"))?;
+    let stdout_reader = spawn_pipe_reader(stdout, MAX_CAPTURE_BYTES, "stdout")?;
+    let stderr_reader = spawn_pipe_reader(stderr, MAX_CAPTURE_ERROR_BYTES, "stderr")?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child.wait_with_output().map_err(|error| {
-                    CaptureError::new(format!("could not read capture output: {error}"))
-                })
+            Ok(Some(status)) => {
+                let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+                let stderr = join_pipe_reader(stderr_reader, "stderr")?;
+                return Ok(Output { status, stdout, stderr });
             }
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(CaptureError::new(format!(
                     "capture command timed out after {} ms",
                     timeout.as_millis()
@@ -359,12 +492,45 @@ fn run_bounded(program: &Path, args: &[String], timeout: Duration) -> Result<Out
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(CaptureError::new(format!(
                     "could not monitor capture command: {error}"
                 )));
             }
         }
     }
+}
+
+fn spawn_pipe_reader(
+    reader: impl Read + Send + 'static,
+    limit: u64,
+    stream: &'static str,
+) -> Result<thread::JoinHandle<std::io::Result<Vec<u8>>>, CaptureError> {
+    thread::Builder::new()
+        .name(format!("captee-capture-{stream}"))
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            reader.take(limit + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > limit {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("capture command {stream} exceeded {limit} bytes"),
+                ));
+            }
+            Ok(bytes)
+        })
+        .map_err(|error| CaptureError::new(format!("could not monitor capture {stream}: {error}")))
+}
+
+fn join_pipe_reader(
+    reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> Result<Vec<u8>, CaptureError> {
+    reader
+        .join()
+        .map_err(|_| CaptureError::new(format!("capture {stream} reader panicked")))?
+        .map_err(|error| CaptureError::new(format!("could not read capture {stream}: {error}")))
 }
 
 fn command_failure(command: &str, output: &Output) -> CaptureError {
@@ -438,6 +604,36 @@ mod tests {
     }
 
     #[test]
+    fn hyprland_order_prefers_fallback_and_preserves_cancellation() {
+        let (portal, portal_calls) =
+            backend(CaptureResult::Completed(CapturedImage::new(b"portal")));
+        let (fallback, fallback_calls) =
+            backend(CaptureResult::Completed(CapturedImage::new(b"fallback")));
+        let selector = CaptureSelector::new(portal, fallback, CaptureSettings::default())
+            .with_fallback_first(true);
+
+        assert_eq!(selector.capture(), CaptureResult::Completed(CapturedImage::new(b"fallback")));
+        assert_eq!(*portal_calls.lock().expect("portal calls"), 0);
+        assert_eq!(*fallback_calls.lock().expect("fallback calls"), 1);
+
+        let (portal, portal_calls) =
+            backend(CaptureResult::Completed(CapturedImage::new(b"portal")));
+        let (fallback, _) = backend(CaptureResult::Cancelled);
+        let selector = CaptureSelector::new(portal, fallback, CaptureSettings::default())
+            .with_fallback_first(true);
+        assert_eq!(selector.capture(), CaptureResult::Cancelled);
+        assert_eq!(*portal_calls.lock().expect("portal calls"), 0);
+    }
+
+    #[test]
+    fn desktop_detection_handles_hyprland_desktop_lists() {
+        assert!(desktop_prefers_fallback_capture("Hyprland"));
+        assert!(desktop_prefers_fallback_capture("wlroots:Hyprland"));
+        assert!(desktop_prefers_fallback_capture("hyprland"));
+        assert!(!desktop_prefers_fallback_capture("GNOME"));
+    }
+
+    #[test]
     fn disabled_backends_return_an_explicit_failure() {
         let (portal, portal_calls) =
             backend(CaptureResult::Completed(CapturedImage::new(b"portal")));
@@ -452,6 +648,47 @@ mod tests {
         assert!(matches!(selector.capture(), CaptureResult::Failed(_)));
         assert_eq!(*portal_calls.lock().expect("portal calls"), 0);
         assert_eq!(*fallback_calls.lock().expect("fallback calls"), 0);
+    }
+
+    #[test]
+    fn portal_file_uri_is_decoded_and_loaded() {
+        let root = test_root("portal uri");
+        let path = root.join("capture image.png");
+        fs::write(&path, b"PNG fixture").expect("portal fixture");
+        let uri = url::Url::from_file_path(&path).expect("file URI");
+
+        assert_eq!(
+            load_portal_capture(uri.as_str()),
+            CaptureResult::Completed(CapturedImage::new(b"PNG fixture"))
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn portal_loader_rejects_remote_empty_and_oversized_results() {
+        assert!(matches!(
+            load_portal_capture("https://example.invalid/capture.png"),
+            CaptureResult::Failed(_)
+        ));
+
+        let root = test_root("portal-invalid");
+        let empty = root.join("empty.png");
+        fs::write(&empty, []).expect("empty fixture");
+        let empty_uri = url::Url::from_file_path(&empty).expect("empty URI");
+        assert!(matches!(load_portal_capture(empty_uri.as_str()), CaptureResult::Failed(_)));
+
+        let oversized = root.join("oversized.png");
+        let file = fs::File::create(&oversized).expect("oversized fixture");
+        file.set_len(MAX_CAPTURE_BYTES + 1).expect("oversized length");
+        let oversized_uri = url::Url::from_file_path(&oversized).expect("oversized URI");
+        assert!(matches!(load_portal_capture(oversized_uri.as_str()), CaptureResult::Failed(_)));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn portal_response_cancellation_is_recognized() {
+        let error = ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled);
+        assert!(portal_cancelled(&error));
     }
 
     #[cfg(unix)]
@@ -472,6 +709,31 @@ mod tests {
 
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(1));
         assert_eq!(capture.capture(), CaptureResult::Completed(CapturedImage::new(b"PNG fixture")));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grim_output_larger_than_a_pipe_buffer_is_drained_while_running() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("large-output");
+        let slurp = root.join("slurp");
+        let grim = root.join("grim");
+        fs::write(&slurp, "#!/bin/sh\nprintf '0,0 10x10'\n").expect("slurp script");
+        fs::write(&grim, "#!/bin/sh\ndd if=/dev/zero bs=1024 count=256 2>/dev/null\n")
+            .expect("grim script");
+        for path in [&slurp, &grim] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("script permissions");
+        }
+
+        let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(2));
+        let CaptureResult::Completed(image) = capture.capture() else {
+            panic!("large piped capture should complete");
+        };
+        assert_eq!(image.bytes().len(), 256 * 1024);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
