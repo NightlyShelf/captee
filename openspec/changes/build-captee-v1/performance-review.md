@@ -266,8 +266,11 @@ the change is archived.
 - **Follow-up:** The AppImage job still needs a pinned packaging toolchain and
   bundled GTK runtime; native widget memory and redraw costs should be profiled
   when the preview and editor content pipelines are connected. The binding is
-  intentionally compiled against the stable GTK API subset because the Ubuntu
-  CI image provides GTK 4.14.5; the release image remains pinned to GTK 4.22.4.
+  intentionally compiled against the stable GTK 4.0 API subset because the
+  Ubuntu 22.04 runner provides GTK 4.6.9 while local development uses GTK
+  4.22.4. A first attempt to use `FileDialog` raised the host requirement to
+  GTK 4.10 and failed packaging; the native chooser was restored for the
+  release baseline.
   Move project loading to a bounded worker and apply only the latest selected
   path if large project startup becomes observable.
 
