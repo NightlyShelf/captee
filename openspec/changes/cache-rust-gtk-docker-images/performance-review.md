@@ -59,9 +59,9 @@
 ## Task 4.1 — Image publication workflow
 
 - **Finding:** Image publication is isolated in a manual-only workflow; secret scans and health checks run before the write-permission job.
-- **Impact:** A manual publish can take longer because images are built once for validation and again for registry output, but invalid images cannot be promoted by the workflow path.
+- **Impact:** A manual publish can take longer because images are built once for validation and again for registry output, but invalid images cannot be promoted by the workflow path. A validation attempt also failed before the build when Buildx could not pull `moby/buildkit` from Docker Hub within the registry timeout.
 - **Mitigation:** Use Buildx GHA layer caches, separate test/build scopes, and least-privilege `packages:write`/`id-token:write` permissions only on the publish job.
-- **Follow-up:** Measure validation/publish cache hit rates and registry push duration after the first run.
+- **Follow-up:** Measure validation/publish cache hit rates and registry push duration after the first run; treat Buildx bootstrap registry timeouts as a separate external failure with rerun/fallback handling.
 
 ## Tasks 4.2 and 4.3 — Consumer workflow integration
 
