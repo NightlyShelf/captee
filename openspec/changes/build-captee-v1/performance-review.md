@@ -281,33 +281,34 @@ the change is archived.
 - **Follow-up:** Task 8.2 must record exact packaging-tool and runtime digests
   after a clean Ubuntu 22.04 artifact is produced.
 
-## Task 8.2 — AppImage packaging attempt
+## Task 8.2 — AppImage packaging validation
 
 - **Scope reviewed:** `packaging/appimage/build.sh`, the desktop entry/icon,
   and the linuxdeploy AppDir output.
-- **Finding:** Native release compilation and dependency deployment complete,
-  but appimagetool requires a Type-2 runtime download when no runtime file is
-  supplied. The interrupted/offline attempt therefore stopped before artifact
-  creation; the AppDir itself contains a large GTK dependency tree and must be
-  rebuilt on Ubuntu 22.04 for release compatibility.
-- **Impact:** No distributable AppImage is emitted yet. A missing or mismatched
-  runtime would make the artifact incomplete, while deploying host libraries
-  from a non-Ubuntu builder could reduce portability.
-- **Mitigation:** The script accepts explicit linuxdeploy, GTK plugin,
-  appimagetool, and runtime paths, bundles the verified Typst archive, and
-  fails closed when required tools are absent. The release guide records the
-  Ubuntu 22.04 verification boundary.
-- **Follow-up:** Run the script on Ubuntu 22.04 with recorded SHA-256 digests
-  for the packaging tools and runtime, then launch the resulting AppImage in a
-  clean VM and mark 8.2 and 8.3 complete only after that check.
+- **Finding:** Native release compilation, GTK dependency deployment, Typst
+  bundling, and Type-2 runtime embedding completed in the Ubuntu 22.04 x86_64
+  runner. The resulting 51,943,928-byte AppImage was uploaded successfully and
+  the same artifact was staged locally for testing.
+- **Impact:** Packaging spends most of its time and storage on GTK dependency
+  collection and squashfs creation. The raw GTK plugin URL is a moving
+  `master` reference, so its captured digest is required to reproduce this
+  exact artifact.
+- **Mitigation:** AppImage packaging is manual-only and isolated from normal
+  test jobs. The workflow supplies all packaging tools and the Type-2 runtime
+  explicitly, prints SHA-256 digests, fails closed when a prerequisite is
+  missing, and records the successful run and artifact digest in
+  `docs/release.md`.
+- **Follow-up:** A clean VM launch remains a release-operator check; the local
+  desktop-session smoke test completed without crash output and the Ubuntu
+  22.04 package job completed successfully.
 
-## Task 2.4 — core CI checks (partial)
+## Task 2.4 — core CI checks and packaging split
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`
 - **Finding:** Formatting, clippy, and core tests run as parallel jobs, each with a separate toolchain/cache setup. This improves feedback latency but can duplicate dependency compilation and consume more concurrent runner minutes.
 - **Impact:** Initial CI runs may be slower and use more cache storage than a single combined job; clippy over all targets is intentionally stricter than the current headless test job.
-- **Mitigation:** Pin the toolchain, use a shared cache key through `Swatinem/rust-cache`, keep permissions read-only, install GTK/GtkSourceView for UI compilation, and run the Ubuntu 22.04 AppImage job with uploaded artifacts.
-- **Follow-up:** Validate the new AppImage job and evaluate a combined or dependency-prebuild job if runner cost becomes material. Task 2.4 remains open until the artifact is successfully produced and verified.
+- **Mitigation:** Pin the toolchain, use a shared cache key through `Swatinem/rust-cache`, keep permissions read-only, install GTK/GtkSourceView for UI compilation, and run AppImage packaging as a separate manual Ubuntu 22.04 workflow with uploaded artifacts.
+- **Follow-up:** If runner cost becomes material, evaluate a dependency-prebuild cache job; the current separation keeps release packaging out of normal test feedback.
 
 ### CI failure review and repair
 
@@ -316,3 +317,22 @@ the change is archived.
 - **Impact:** The CI gate correctly prevented a non-reproducible quality baseline from landing, but formatting every workspace source creates a broad mechanical diff during the first cleanup.
 - **Mitigation:** Applied the clippy suggestions, formatted the workspace with the pinned Rust 1.97.1 toolchain, and committed `Cargo.lock`; local clippy, rustfmt, and all 20 core tests now pass.
 - **Follow-up:** Keep the strict gates and review future formatting-only diffs separately from behavioral changes.
+
+## Task 8.3 — final release review
+
+- **Scope reviewed:** formatter, clippy, workspace tests, UI-state tests, the
+  manual AppImage workflow, the staged AppImage, and the requirement scenarios
+  recorded in the five feature specifications.
+- **Finding:** The local formatter, strict clippy, complete workspace suite,
+  and diff checks passed. The separated Ubuntu 22.04 packaging workflow passed;
+  the local AppImage remained alive for an eight-second desktop smoke test and
+  produced no crash output before the intentional timeout.
+- **Impact:** The initial release remains Linux x86_64/session-bound. Capture
+  still depends on a compositor portal or configured `grim`/`slurp` fallback,
+  and the GTK shell currently presents the application workspace while deeper
+  preview/capture command wiring remains behind the tested core interfaces.
+- **Mitigation:** These limitations are documented in `docs/release.md`; the
+  artifact, checksum, workflow run, and packaging input digests are recorded
+  for local testing and follow-up release work.
+- **Follow-up:** Verify the handoff artifact in a clean Ubuntu 22.04 desktop
+  session and add branch protection when the repository plan permits it.

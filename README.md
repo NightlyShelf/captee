@@ -7,7 +7,7 @@ Write Typst with a live preview, capture part of your screen with a shortcut, ad
 The implementation is a Rust workspace. See [docs/architecture.md](docs/architecture.md) for crate boundaries and dependency direction.
 The pinned toolchain is Rust 1.97.1 with rustfmt and clippy; dependency policy is documented in [docs/dependencies.md](docs/dependencies.md).
 The first Linux distribution bundles Typst through the verified procedure in [docs/third-party-typst.md](docs/third-party-typst.md).
-GitHub Actions runs pinned rustfmt, clippy, full workspace tests, and UI-state tests on pushes and pull requests to `main`.
+GitHub Actions runs pinned rustfmt, clippy, full workspace tests, and UI-state tests on pushes and pull requests to `main`. AppImage packaging is intentionally manual-only from the `AppImage package` workflow.
 
 ## Implemented vertical slices
 
@@ -48,6 +48,8 @@ cargo run -p captee-ui
 
 Release packaging inputs and the AppImage procedure are documented in
 [docs/release.md](docs/release.md) and [packaging/appimage/README.md](packaging/appimage/README.md).
+To create a package, open GitHub Actions, select `AppImage package`, and use
+`Run workflow`; ordinary pushes and pull requests never build an AppImage.
 
 ## Development workflow
 

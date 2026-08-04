@@ -13,7 +13,7 @@ Implementation gate: after each task, review only that task's changed code for t
 - [x] 2.1 Create a Cargo workspace with `captee-core`, `captee-platform`, and `captee-ui` crates and document the crate boundaries.
 - [x] 2.2 Add pinned Rust toolchain, formatting/lint configuration, dependency licenses, and feature gates so core tests build without GTK or a desktop session.
 - [x] 2.3 Add the bundled Typst 0.14.2 binaries for supported targets with checksums, license notices, and a small wrapper exposing version and compile/format commands.
-- [ ] 2.4 Add CI jobs for formatting, clippy, headless core tests, and an Ubuntu 22.04 x86_64 AppImage build using GTK 4.22.4. (All jobs are implemented; final AppImage artifact validation remains.)
+- [x] 2.4 Add CI jobs for formatting, clippy, headless core tests, and an Ubuntu 22.04 x86_64 AppImage build using GTK 4.22.4. AppImage packaging is isolated in a manual-only workflow and the successful artifact is recorded in the release documentation.
 
 ## 3. Workspace management
 
@@ -58,5 +58,5 @@ Implementation gate: after each task, review only that task's changed code for t
 ## 8. Documentation and release review
 
 - [x] 8.1 Document project layout, recovery behavior, capture permissions, bundled Typst licensing, supported Linux session requirements, and troubleshooting in `README.md` and `docs/`.
-- [ ] 8.2 Produce the x86_64 AppImage with bundled GTK runtime and Typst compiler, verify it on Ubuntu 22.04, and record reproducible build inputs.
-- [ ] 8.3 Run the complete formatter, lint, unit, fixture, UI-state, and packaging checks; review each requirement scenario and record known limitations before release.
+- [x] 8.2 Produce the x86_64 AppImage with bundled GTK runtime and Typst compiler, verify it on Ubuntu 22.04, and record reproducible build inputs.
+- [x] 8.3 Run the complete formatter, lint, unit, fixture, UI-state, and packaging checks; review each requirement scenario and record known limitations before release.

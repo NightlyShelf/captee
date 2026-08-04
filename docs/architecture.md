@@ -120,11 +120,14 @@ result cannot be applied after cancellation even when the provider itself cannot
 be interrupted. Regression tests cover this stale-result boundary and formatter
 failure preservation.
 
-CI runs formatting, clippy, and headless core tests as separate jobs with a
-shared Rust cache and read-only repository permissions. Parallel jobs shorten
-feedback time but may duplicate dependency compilation; the AppImage job will
-reuse the same cache and add GTK/packaging work only after the desktop crate is
-ready.
+CI runs formatting, clippy, and headless tests as separate jobs with a shared
+Rust cache and read-only repository permissions. Parallel jobs shorten
+feedback time but may duplicate dependency compilation. AppImage packaging is
+kept in a separate, manual-only Ubuntu 22.04 workflow so normal test feedback
+does not download packaging tools or spend time assembling a release image.
+The package workflow records tool digests and uploads the resulting artifact;
+the GTK dependency tree and squashfs assembly remain the dominant packaging
+I/O costs.
 
 The CI quality gates intentionally fail on formatting drift and clippy warnings,
 so the pinned toolchain and committed lockfile are part of the reproducible build
