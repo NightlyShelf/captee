@@ -1,9 +1,10 @@
-//! GTK application entry point.
+//! Desktop application entry point.
 //!
-//! GTK wiring is intentionally introduced after the headless state and command
-//! layers are implemented. Keeping this binary minimal prevents UI concerns
-//! from leaking into domain tests.
+//! The presentation model is kept in `captee_ui::UiShell` so the GTK adapter
+//! can be compiled and exercised independently from project side effects.
+
+use captee_ui::UiShell;
 
 fn main() {
-    println!("Captee UI scaffold");
+    let _shell = UiShell::new();
 }

@@ -7,6 +7,7 @@
 /// Identifies the role of this crate for architecture checks and diagnostics.
 pub const CRATE_ROLE: &str = "domain-core";
 
+mod app;
 mod authoring;
 mod capture;
 mod diagnostics;
@@ -15,6 +16,10 @@ mod project;
 mod render;
 mod revision;
 
+pub use app::{
+    Activity, AppCommand, AppState, AppStateStore, AppView, DispatchError, OperationKind,
+    ProjectSession,
+};
 pub use authoring::{
     find_literal, replace_literal, request_completions, AuthoringError, CancellationToken,
     CompletionItem, CompletionProvider, Formatter, Operation, ReplaceError, ReplaceResult,

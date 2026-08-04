@@ -225,6 +225,44 @@ the change is archived.
 - **Follow-up:** Keep process timeout and PNG size behavior covered by focused
   adapter tests when portal integration and packaging fixtures are expanded.
 
+## Task 7.1 — UI-agnostic application state store
+
+- **Scope reviewed:** `crates/captee-core/src/app.rs` and its public exports.
+- **Finding:** Dispatch is constant-time and retains only one current snapshot;
+  cloned snapshots copy project/settings and user-visible messages for the UI
+  boundary. No command starts a thread, process, or filesystem operation.
+- **Impact:** A large status message or settings snapshot can briefly allocate
+  when a UI subscriber requests `snapshot()`, but application state remains
+  bounded by the current project context and operation message.
+- **Mitigation:** Typed transition guards reject busy and project-less actions
+  before mutation, cancellation only clears activity, and a monotonic version
+  lets adapters identify changed snapshots. Platform work remains outside the
+  store and is represented by typed activity commands.
+- **Follow-up:** Task 7.2 should subscribe GTK widgets to snapshots without
+  retaining duplicate widget-owned project or process state; task 7.4 should
+  connect cancellation controls to the same dispatcher boundary.
+
+## Tasks 7.2–7.5 — headless desktop presentation adapter and UI-state coverage
+
+- **Scope reviewed:** `crates/captee-ui/src/lib.rs`, `src/main.rs`, and the
+  workspace/UI-state CI jobs.
+- **Finding:** The adapter performs constant-time intent routing and retains
+  only the current progress and accessibility announcement. Settings validation
+  is bounded to scalar checks; no command starts a process, worker, or blocking
+  filesystem operation.
+- **Impact:** Each snapshot clones core state plus at most one progress label and
+  one announcement. Repeated status updates can allocate short-lived strings,
+  while a real GTK binding would additionally retain widget trees and source
+  buffers.
+- **Mitigation:** Logical panes, focus, keyboard actions, progress, and status
+  announcements are represented as typed values; failures clear progress and
+  invalid settings do not mutate the prior project settings. CI now runs the
+  complete headless workspace and dedicated UI-state tests.
+- **Follow-up:** The GTK 4.22.4/GtkSourceView widget layer and AppImage build
+  require the missing GtkSourceView development package plus offline-available
+  Rust bindings. Resolve that packaging dependency before marking the desktop
+  release complete.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

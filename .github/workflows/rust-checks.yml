@@ -37,8 +37,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  core-tests:
-    name: headless core tests
+  workspace-tests:
+    name: headless workspace tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,4 +46,15 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p captee-core
+      - run: cargo test --workspace
+
+  ui-state:
+    name: headless UI state tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p captee-ui

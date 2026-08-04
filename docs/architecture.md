@@ -14,6 +14,18 @@ the bundled Typst executable. Long-running compiler, renderer, and capture work
 will be scheduled outside the GTK main loop and applied through revision-checked
 results.
 
+The application state store also lives in core. It exposes immutable snapshots
+and a typed dispatcher for navigation, project context, dirty state, settings,
+operation activity, and cancellation. GTK adapts those snapshots to widgets;
+the store performs no widget, filesystem, process, or thread work.
+
+The UI crate adds a presentation adapter over those snapshots. It owns logical
+pane selection, keyboard-action declarations, focus targets, progress, and
+accessible status announcements, while command execution remains routed through
+the core dispatcher. The checked-in headless adapter is usable without a
+desktop session; the final GTK/GtkSourceView binding is release-packaging work
+because the current environment lacks the GtkSourceView development package.
+
 ## Performance considerations
 
 The initial source editor stores complete text snapshots for undo and redo. This
