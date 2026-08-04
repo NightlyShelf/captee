@@ -242,26 +242,25 @@ the change is archived.
   retaining duplicate widget-owned project or process state; task 7.4 should
   connect cancellation controls to the same dispatcher boundary.
 
-## Tasks 7.2–7.5 — headless desktop presentation adapter and UI-state coverage
+## Tasks 7.2–7.5 — GTK desktop presentation adapter and UI-state coverage
 
 - **Scope reviewed:** `crates/captee-ui/src/lib.rs`, `src/main.rs`, and the
   workspace/UI-state CI jobs.
 - **Finding:** The adapter performs constant-time intent routing and retains
   only the current progress and accessibility announcement. Settings validation
-  is bounded to scalar checks; no command starts a process, worker, or blocking
-  filesystem operation.
-- **Impact:** Each snapshot clones core state plus at most one progress label and
-  one announcement. Repeated status updates can allocate short-lived strings,
-  while a real GTK binding would additionally retain widget trees and source
-  buffers.
+  is bounded to scalar checks; the GTK shell retains one widget tree and one
+  source buffer for the active window.
+- **Impact:** Each state snapshot clones core state plus at most one progress
+  label and one announcement. GTK retains source text in the editor buffer and
+  renders a PDF placeholder until the preview adapter is connected.
 - **Mitigation:** Logical panes, focus, keyboard actions, progress, and status
   announcements are represented as typed values; failures clear progress and
-  invalid settings do not mutate the prior project settings. CI now runs the
-  complete headless workspace and dedicated UI-state tests.
-- **Follow-up:** The GTK 4.22.4/GtkSourceView widget layer and AppImage build
-  require the missing GtkSourceView development package plus offline-available
-  Rust bindings. Resolve that packaging dependency before marking the desktop
-  release complete.
+  invalid settings do not mutate prior project settings. GTK actions dispatch
+  through the same UI shell boundary, and CI installs GTK/GtkSourceView before
+  workspace and UI checks.
+- **Follow-up:** The AppImage job still needs a pinned packaging toolchain and
+  bundled GTK runtime; native widget memory and redraw costs should be profiled
+  when the preview and editor content pipelines are connected.
 
 ## Task 2.4 — core CI checks (partial)
 

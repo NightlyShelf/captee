@@ -8,7 +8,8 @@ description = "Captee GTK desktop application shell"
 [dependencies]
 captee-core = { path = "../captee-core" }
 captee-platform = { path = "../captee-platform" }
+gtk4 = { version = "0.11.4", features = ["v4_22"] }
+sourceview5 = "0.11.2"
 
 [lints]
 workspace = true
-

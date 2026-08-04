@@ -22,9 +22,9 @@ the store performs no widget, filesystem, process, or thread work.
 The UI crate adds a presentation adapter over those snapshots. It owns logical
 pane selection, keyboard-action declarations, focus targets, progress, and
 accessible status announcements, while command execution remains routed through
-the core dispatcher. The checked-in headless adapter is usable without a
-desktop session; the final GTK/GtkSourceView binding is release-packaging work
-because the current environment lacks the GtkSourceView development package.
+the core dispatcher. The GTK adapter uses the GTK 4.22 API surface and
+GtkSourceView 5 for the source editor; headless state tests remain independent
+of a desktop session.
 
 ## Performance considerations
 

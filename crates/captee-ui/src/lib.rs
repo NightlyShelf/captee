@@ -4,6 +4,8 @@ use captee_core::{
 };
 use std::fmt;
 
+pub mod native;
+
 /// The three logical regions that a GTK workspace adapter renders.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Pane {

@@ -50,7 +50,7 @@ Implementation gate: after each task, review only that task's changed code for t
 ## 7. Desktop workspace UI
 
 - [x] 7.1 Implement a UI-agnostic application state store and command dispatcher for home, workspace, editor, preview, capture, and settings states.
-- [ ] 7.2 Build the GTK 4.22.4 application shell with project home and accessible three-pane workspace using GtkSourceView for Typst editing.
+- [x] 7.2 Build the GTK 4.22.4 application shell with project home and accessible three-pane workspace using GtkSourceView for Typst editing.
 - [x] 7.3 Wire menus, keyboard shortcuts, save/format/find/capture/preview/export commands, and settings validation/persistence to the dispatcher.
 - [x] 7.4 Add non-blocking progress, cancellation, focus management, and accessible labels/status announcements for long-running operations and failures.
 - [x] 7.5 Add UI smoke tests or headless state-transition tests covering empty home, opened workspace, invalid settings, and failed operations.
