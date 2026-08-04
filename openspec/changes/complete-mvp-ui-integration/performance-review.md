@@ -85,3 +85,11 @@
 - I/O and concurrency: PNG decode and filesystem synchronization stay off GTK. The confirmed write is deliberately non-cancellable once started, preventing a cancellation acknowledgment from racing a committed asset. The saved asset result remains project/revision tagged; insertion runs only for an accepted result and an active focused editor.
 - Mitigation: Invalid PNGs fail before file creation, unique names use create-only atomic linking, insertion is attempted only after storage success, and cancel before confirmation starts neither storage nor source edits. Missing focus preserves the successfully saved asset and reports a warning rather than inventing an insertion target.
 - Follow-up: A source edit during the short non-cancellable write can make the completion stale, leaving a valid but unreferenced image in `img/`. Task 5.2 will disable conflicting editor actions during confirmed storage; a future project-scoped result identity could also report the saved path independently of source revision.
+
+## Task 4.4: Capture pipeline integration coverage
+
+- Finding: Four new headless scenarios drive the UI operation coordinator through portal/fallback selection, reversible annotation, validated atomic storage, and cursor insertion using small in-memory PNG fixtures and isolated temporary project roots.
+- Impact: Production runtime is unchanged. Test CPU and memory are bounded by 24×16 pixel fixtures; filesystem work creates at most one asset in a scenario and each temporary root is removed synchronously.
+- Concurrency and lifetime: The tests use deterministic single-result coordinator delivery and backend call counters rather than compositor or D-Bus processes, eliminating timing races while retaining operation identity and cancellation semantics.
+- Mitigation: Coverage now proves the full successful portal path, portal-failure fallback, cancellation without fallback/storage/source mutation, malformed annotation/storage rejection, immutable originals, safe relative expressions, and undoable insertion.
+- Follow-up: Headless doubles intentionally cannot validate the compositor-owned portal dialog or GTK focus transitions. Those remain explicit items in the final Hyprland/Wayland smoke test.

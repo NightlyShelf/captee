@@ -11,5 +11,8 @@ captee-platform = { path = "../captee-platform" }
 gtk4 = { version = "0.11.4", features = ["v4_6"] }
 sourceview5 = "0.11.2"
 
+[dev-dependencies]
+png.workspace = true
+
 [lints]
 workspace = true

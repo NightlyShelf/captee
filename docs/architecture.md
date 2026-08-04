@@ -219,6 +219,12 @@ expression at the cursor as one undoable edit. The write is non-cancellable
 after confirmation so UI cancellation cannot race a committed file; cancellation
 before confirmation remains a strict no-op.
 
+Capture integration tests compose the same public coordinator, selector,
+annotation draft/backend, asset store, and editor insertion boundaries used by
+GTK. They cover portal success, fallback after portal failure, cancellation,
+invalid image rejection, immutable staging, atomic storage, and exact undoable
+Typst insertion without requiring a compositor in headless CI.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a

@@ -246,6 +246,7 @@ dependencies = [
  "captee-core",
  "captee-platform",
  "gtk4",
+ "png",
  "sourceview5",
 ]
 
