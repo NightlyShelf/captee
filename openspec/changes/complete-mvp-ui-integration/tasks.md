@@ -1,6 +1,6 @@
 ## 1. Integration foundation
 
-- [ ] 1.1 Define the UI operation coordinator, active project/source revision identity, result channel, and cancellation/lifetime handling without moving platform effects into core.
+- [x] 1.1 Define the UI operation coordinator, active project/source revision identity, result channel, and cancellation/lifetime handling without moving platform effects into core.
 - [ ] 1.2 Add test doubles and focused integration tests for successful, cancelled, failed, and stale operation results.
 
 ## 2. Editor and project persistence

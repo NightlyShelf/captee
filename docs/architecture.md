@@ -36,6 +36,16 @@ large entry documents can briefly block the GTK loop; this should move to a
   GTK 4.6-compatible native dialog API so the release builder does not require
   a newer host development package.
 
+The UI operation coordinator is the lifetime boundary between GTK callbacks and
+worker-owned platform effects. It assigns a new generation whenever a project
+is activated, tags work with the active source revision and a unique operation
+identity, and returns terminal outcomes through a non-blocking result channel.
+Project changes, revision changes, explicit cancellation, and coordinator drop
+signal cooperative cancellation; late results are classified as stale before
+they can reach widgets or application state. The coordinator performs no I/O
+itself. Platform adapters remain responsible for observing cancellation around
+blocking calls and terminating subprocesses they own.
+
 Project creation is presented as a modal name-and-parent-location form, while
 opening uses the GTK 4.6-compatible native folder chooser. Both successful
 paths route through the same workspace transition, and closing routes through
@@ -47,6 +57,12 @@ operation and retain the existing follow-up for moving large project loads off
 the GTK main loop.
 
 ## Performance considerations
+
+Operation coordination keeps one active handle and uses constant-time identity
+checks. A worker can enqueue only one terminal result through its single-use
+task handle, which bounds channel growth by the number of retired workers rather
+than their internal progress. GTK integration must poll results from the main
+context without a busy loop and avoid synchronously joining long-running work.
 
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
