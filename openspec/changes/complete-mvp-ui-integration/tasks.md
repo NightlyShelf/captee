@@ -18,7 +18,7 @@
 ## 4. Capture and annotation
 
 - [x] 4.1 Add concrete portal/fallback capture adapters for the supported Linux desktop path and wire Capture cancellation/error completion.
-- [ ] 4.2 Build the staged annotation UI for pointer, rectangle, and text marks without mutating the original capture.
+- [x] 4.2 Build the staged annotation UI for pointer, rectangle, and text marks without mutating the original capture.
 - [ ] 4.3 Connect confirmation to validated PNG asset storage and focused-editor Typst insertion, with no mutation on cancellation or failure.
 - [ ] 4.4 Add capture, annotation, storage, insertion, fallback, and cancellation integration tests.
 

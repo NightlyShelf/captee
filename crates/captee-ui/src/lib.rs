@@ -4,6 +4,7 @@ use captee_core::{
 };
 use std::fmt;
 
+pub mod annotation_bridge;
 pub mod editor_bridge;
 pub mod native;
 pub mod operation;

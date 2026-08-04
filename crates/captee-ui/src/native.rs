@@ -1,18 +1,20 @@
+use crate::annotation_bridge::AnnotationDraft;
 use crate::editor_bridge::{EditorBridge, EditorState};
 use crate::operation::{
     OperationCoordinator, OperationOutcome, ProjectIdentity, ResultDisposition, SourceIdentity,
 };
 use crate::{UiCommand, UiShell};
 use captee_core::{
-    replace_literal, request_completions, CaptureBackend, CaptureResult, CapturedImage,
-    CompletionItem, Diagnostic, DiagnosticSeverity, Operation, OperationKind, ProjectConfig,
-    ProjectSession, RenderState, SourceDocument,
+    replace_literal, request_completions, AnnotatedImage, Annotation, AnnotationBackend,
+    AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
+    DiagnosticSeverity, Operation, OperationKind, ProjectConfig, ProjectSession, RenderState,
+    SourceDocument,
 };
 use captee_platform::{
     create_project, export_pdf, open_project, AsyncPreviewCompiler, AutosaveSnapshot,
-    AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture, PreviewOutcome,
-    ProjectDocumentPersistence, RecentProjectStore, TypstCompletionProvider, TypstFormatter,
-    TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture, PngAnnotationBackend,
+    PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore, TypstCompletionProvider,
+    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
@@ -68,6 +70,7 @@ fn build_ui(application: &Application) {
     let preview_sequence = Rc::new(Cell::new(0));
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let pending_capture = Rc::new(RefCell::new(None));
+    let pending_annotation = Rc::new(RefCell::new(None));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -142,6 +145,7 @@ fn build_ui(application: &Application) {
         preview_sequence,
         render_state,
         pending_capture,
+        pending_annotation,
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -413,6 +417,7 @@ struct ProjectUi {
     preview_sequence: Rc<Cell<u64>>,
     render_state: Rc<RefCell<RenderState>>,
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
+    pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -769,6 +774,238 @@ fn start_capture(project_ui: &ProjectUi) {
     });
 }
 
+fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
+    let Some(window) = project_ui.window() else {
+        return Err("The workspace window is no longer available.".to_owned());
+    };
+    let picture = gtk::Picture::new();
+    picture.set_can_shrink(true);
+    picture.set_hexpand(true);
+    picture.set_vexpand(true);
+    let (image_width, image_height) = display_annotation_image(&picture, image.bytes())?;
+
+    let dialog = Dialog::builder()
+        .title("Annotate capture")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(960)
+        .default_height(720)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    let confirm_button = dialog.add_button("Use image", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+
+    let content = GtkBox::new(Orientation::Vertical, 10);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.append(
+        &ScrolledWindow::builder()
+            .child(&picture)
+            .hexpand(true)
+            .vexpand(true)
+            .min_content_height(420)
+            .build(),
+    );
+
+    let controls = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
+    let tool_label = Label::new(Some("Mark"));
+    tool_label.set_xalign(0.0);
+    let tool = gtk::DropDown::from_strings(&["Pointer", "Rectangle", "Text"]);
+    tool.set_tooltip_text(Some("Choose the kind of annotation to add"));
+    let x = gtk::SpinButton::with_range(0.0, f64::from(image_width.saturating_sub(1)), 1.0);
+    let y = gtk::SpinButton::with_range(0.0, f64::from(image_height.saturating_sub(1)), 1.0);
+    let width = gtk::SpinButton::with_range(1.0, f64::from(image_width.max(1)), 1.0);
+    let height = gtk::SpinButton::with_range(1.0, f64::from(image_height.max(1)), 1.0);
+    width.set_value(f64::from(image_width.clamp(1, 160)));
+    height.set_value(f64::from(image_height.clamp(1, 100)));
+    let text_entry = Entry::new();
+    text_entry.set_placeholder_text(Some("Annotation text"));
+    text_entry.set_hexpand(true);
+    for control in [&x, &y, &width, &height] {
+        control.set_numeric(true);
+    }
+    controls.attach(&tool_label, 0, 0, 1, 1);
+    controls.attach(&tool, 1, 0, 1, 1);
+    controls.attach(&Label::new(Some("X")), 2, 0, 1, 1);
+    controls.attach(&x, 3, 0, 1, 1);
+    controls.attach(&Label::new(Some("Y")), 4, 0, 1, 1);
+    controls.attach(&y, 5, 0, 1, 1);
+    let width_label = Label::new(Some("Width"));
+    let height_label = Label::new(Some("Height"));
+    let text_label = Label::new(Some("Text"));
+    controls.attach(&width_label, 0, 1, 1, 1);
+    controls.attach(&width, 1, 1, 1, 1);
+    controls.attach(&height_label, 2, 1, 1, 1);
+    controls.attach(&height, 3, 1, 1, 1);
+    controls.attach(&text_label, 0, 2, 1, 1);
+    controls.attach(&text_entry, 1, 2, 5, 1);
+    let update_control_visibility = {
+        let width_label = width_label.clone();
+        let width = width.clone();
+        let height_label = height_label.clone();
+        let height = height.clone();
+        let text_label = text_label.clone();
+        let text_entry = text_entry.clone();
+        move |selected: u32| {
+            let rectangle = selected == 1;
+            let text = selected == 2;
+            width_label.set_visible(rectangle);
+            width.set_visible(rectangle);
+            height_label.set_visible(rectangle);
+            height.set_visible(rectangle);
+            text_label.set_visible(text);
+            text_entry.set_visible(text);
+        }
+    };
+    update_control_visibility(tool.selected());
+    let width_label_for_selection = width_label.clone();
+    let width_for_selection = width.clone();
+    let height_label_for_selection = height_label.clone();
+    let height_for_selection = height.clone();
+    let text_label_for_selection = text_label.clone();
+    let text_for_selection = text_entry.clone();
+    tool.connect_selected_notify(move |tool| {
+        let rectangle = tool.selected() == 1;
+        let text = tool.selected() == 2;
+        width_label_for_selection.set_visible(rectangle);
+        width_for_selection.set_visible(rectangle);
+        height_label_for_selection.set_visible(rectangle);
+        height_for_selection.set_visible(rectangle);
+        text_label_for_selection.set_visible(text);
+        text_for_selection.set_visible(text);
+    });
+    content.append(&controls);
+
+    let error_label = Label::new(None);
+    error_label.add_css_class("error");
+    error_label.set_xalign(0.0);
+    error_label.set_wrap(true);
+    content.append(&error_label);
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    let add_button = Button::with_label("Add mark");
+    add_button.add_css_class("suggested-action");
+    let reset_button = Button::with_label("Reset annotations");
+    actions.append(&add_button);
+    actions.append(&reset_button);
+    content.append(&actions);
+    dialog.content_area().append(&content);
+
+    let draft = Rc::new(RefCell::new(AnnotationDraft::new(image)));
+    let draft_for_reset = Rc::clone(&draft);
+    let picture_for_reset = picture.clone();
+    let error_for_reset = error_label.clone();
+    reset_button.connect_clicked(move |_| {
+        draft_for_reset.borrow_mut().reset();
+        match display_annotation_image(
+            &picture_for_reset,
+            draft_for_reset.borrow().staged().bytes(),
+        ) {
+            Ok(_) => error_for_reset.set_text(""),
+            Err(error) => error_for_reset.set_text(&error),
+        }
+    });
+
+    let draft_for_apply = Rc::clone(&draft);
+    let dialog_for_apply = dialog.clone();
+    let picture_for_apply = picture.clone();
+    let error_for_apply = error_label.clone();
+    let reset_for_apply = reset_button.clone();
+    let confirm_for_apply = confirm_button.clone();
+    add_button.connect_clicked(move |add_button| {
+        let annotation = match tool.selected() {
+            0 => Annotation::Pointer { x: x.value_as_int() as u32, y: y.value_as_int() as u32 },
+            1 => Annotation::Rectangle {
+                x: x.value_as_int() as u32,
+                y: y.value_as_int() as u32,
+                width: width.value_as_int() as u32,
+                height: height.value_as_int() as u32,
+            },
+            _ if text_entry.text().trim().is_empty() => {
+                error_for_apply.set_text("Enter annotation text before adding the mark.");
+                return;
+            }
+            _ => Annotation::Text {
+                x: x.value_as_int() as u32,
+                y: y.value_as_int() as u32,
+                text: text_entry.text().to_string(),
+            },
+        };
+        error_for_apply.set_text("");
+        add_button.set_sensitive(false);
+        reset_for_apply.set_sensitive(false);
+        confirm_for_apply.set_sensitive(false);
+        let staged = draft_for_apply.borrow().staged().clone();
+        let (sender, receiver) = mpsc::channel();
+        let _ = thread::Builder::new().name("captee-annotation".to_owned()).spawn(move || {
+            let result = PngAnnotationBackend::new().annotate(&staged, &annotation);
+            let _ = sender.send(result);
+        });
+
+        let draft = Rc::clone(&draft_for_apply);
+        let dialog = dialog_for_apply.clone();
+        let picture = picture_for_apply.clone();
+        let error_label = error_for_apply.clone();
+        let add_button = add_button.clone();
+        let reset_button = reset_for_apply.clone();
+        let confirm_button = confirm_for_apply.clone();
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            if !dialog.is_visible() {
+                return glib::ControlFlow::Break;
+            }
+            match receiver.try_recv() {
+                Ok(AnnotationResult::Completed(image)) => {
+                    draft.borrow_mut().replace_staged(image);
+                    match display_annotation_image(&picture, draft.borrow().staged().bytes()) {
+                        Ok(_) => error_label.set_text(""),
+                        Err(error) => error_label.set_text(&error),
+                    }
+                }
+                Ok(AnnotationResult::Cancelled) => {
+                    error_label.set_text("Annotation cancelled.");
+                }
+                Ok(AnnotationResult::Failed(error)) => {
+                    error_label.set_text(&format!("Could not add annotation: {error}"));
+                }
+                Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(TryRecvError::Disconnected) => {
+                    error_label.set_text("Annotation worker stopped unexpectedly.");
+                }
+            }
+            add_button.set_sensitive(true);
+            reset_button.set_sensitive(true);
+            confirm_button.set_sensitive(true);
+            glib::ControlFlow::Break
+        });
+    });
+
+    let project_ui = project_ui.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Accept {
+            *project_ui.pending_annotation.borrow_mut() = Some(draft.borrow().confirmed());
+            *project_ui.pending_capture.borrow_mut() = None;
+            project_ui.status.set_text("Annotation confirmed; image is ready to save.");
+        } else {
+            *project_ui.pending_capture.borrow_mut() = None;
+            *project_ui.pending_annotation.borrow_mut() = None;
+            project_ui.status.set_text("Capture discarded; the project was not changed.");
+        }
+        dialog.close();
+    });
+    dialog.present();
+    Ok(())
+}
+
+fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32, i32), String> {
+    let bytes = glib::Bytes::from(bytes);
+    let texture = gtk::gdk::Texture::from_bytes(&bytes)
+        .map_err(|error| format!("Could not display captured PNG: {error}"))?;
+    let size = (texture.width(), texture.height());
+    picture.set_paintable(Some(&texture));
+    Ok(size)
+}
+
 #[allow(deprecated)]
 fn show_export_dialog(project_ui: &ProjectUi) {
     let state = project_ui.render_state.borrow();
@@ -1071,12 +1308,24 @@ fn apply_operation_result(
                     project_ui.status.set_text(&message);
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
-                    *project_ui.pending_capture.borrow_mut() = Some(image);
-                    let _ = project_ui
-                        .shell
-                        .borrow_mut()
-                        .dispatch(UiCommand::Complete { message: "Capture ready".to_owned() });
-                    project_ui.status.set_text("Capture ready for annotation.");
+                    *project_ui.pending_capture.borrow_mut() = Some(image.clone());
+                    *project_ui.pending_annotation.borrow_mut() = None;
+                    match show_annotation_dialog(project_ui, image) {
+                        Ok(()) => {
+                            let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
+                                message: "Capture ready".to_owned(),
+                            });
+                            project_ui.status.set_text("Capture ready for annotation.");
+                        }
+                        Err(message) => {
+                            *project_ui.pending_capture.borrow_mut() = None;
+                            let _ = project_ui
+                                .shell
+                                .borrow_mut()
+                                .dispatch(UiCommand::Fail { message: message.clone() });
+                            project_ui.status.set_text(&format!("Error: {message}"));
+                        }
+                    }
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                     message,
@@ -1494,6 +1743,7 @@ fn open_loaded_project(
             project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
+            *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_status.set_text("Preview has not been rendered yet.");
             refresh_project_label(project_ui);
@@ -1596,6 +1846,7 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
+            *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_status.set_text("Render a document to see its preview.");
             refresh_project_label(project_ui);

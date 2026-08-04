@@ -203,6 +203,14 @@ After storage succeeds, the adapter formats the generated safe relative path
 as a Typst `#image("...")` expression and delegates insertion to the focused
 editor boundary; no-focused-editor outcomes leave the stored asset untouched.
 
+The GTK annotation dialog owns a reversible `AnnotationDraft` containing an
+immutable original and one staged encoded image. Pointer, rectangle, and text
+controls submit one mark at a time to a worker; controls are temporarily
+disabled and the accepted PNG is decoded on the GTK thread only for display.
+Reset restores the original, while closing the dialog drops both buffers. No
+filesystem or source mutation is reachable until the separate confirmation
+boundary accepts the staged image.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a
