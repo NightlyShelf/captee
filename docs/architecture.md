@@ -110,6 +110,11 @@ destination and writes the PDF through atomic replacement. Export owns a cloned
 immutable render snapshot, so source edits cannot change bytes already being
 written and stale completion cannot update the new revision's UI state.
 
+Headless preview/export integration coverage crosses the UI operation channel,
+platform preview outcome, core render state, and atomic export boundary. It
+locks in success, failed-render retention, stale and cancelled result rejection,
+and no write after destination cancellation without requiring GTK or Typst.
+
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
 can grow approximately with document size multiplied by the number of edits.

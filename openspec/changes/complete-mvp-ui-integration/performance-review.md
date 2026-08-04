@@ -54,3 +54,10 @@
 - Concurrency and lifetime: The export operation is tagged with the current project/source revision. A source change before worker completion makes the result stale in the coordinator, while `export_pdf` independently rejects a stale preview before writing.
 - Mitigation: The destination parent and existing target type are validated before atomic write, cancellation of the chooser starts no operation, and missing/current-preview validation occurs before presenting the chooser.
 - Follow-up: Very large exports could avoid the PDF clone by storing the immutable preview bytes in an `Arc<[u8]>`; retain the current simpler ownership until profiling shows a material peak.
+
+## Task 3.3: Preview/export regression coverage
+
+- Finding: The new integration tests use in-memory preview artifacts and isolated temporary export directories; they start no GTK session, compiler process, or long-lived worker.
+- Impact: Production runtime is unchanged. Test CPU and memory are linear only in tiny fixture buffers, and temporary filesystem I/O is bounded to one export per relevant scenario.
+- Mitigation: Tests cross the public UI coordinator, platform preview outcome, core render state, and atomic export boundaries, making cancellation, staleness, last-valid retention, and cancelled destination regressions deterministic in headless CI.
+- Follow-up: The final Hyprland smoke test still needs to exercise the real native chooser and bundled Typst binary because headless tests intentionally do not emulate compositor dialogs.
