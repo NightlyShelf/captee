@@ -22,10 +22,18 @@ jobs:
           set -euo pipefail
           test -f README.md
           test -f openspec/config.yaml
-          test -f openspec/changes/build-captee-v1/proposal.md
-          test -f openspec/changes/build-captee-v1/design.md
-          test -f openspec/changes/build-captee-v1/tasks.md
-          test "$(find openspec/changes/build-captee-v1/specs -name spec.md | wc -l)" -eq 5
+          mapfile -t active_changes < <(
+            find openspec/changes \
+              -mindepth 1 -maxdepth 1 -type d ! -name archive \
+              -printf '%f\n' | sort
+          )
+          test "${#active_changes[@]}" -gt 0
+          for change in "${active_changes[@]}"; do
+            test -f "openspec/changes/${change}/proposal.md"
+            test -f "openspec/changes/${change}/design.md"
+            test -f "openspec/changes/${change}/tasks.md"
+            test "$(find "openspec/changes/${change}/specs" -name spec.md -type f | wc -l)" -gt 0
+          done
           if rg -n '^(<<<<<<<|=======|>>>>>>>)' . --glob '!*.lock'; then
             echo 'Merge-conflict markers found.' >&2
             exit 1
