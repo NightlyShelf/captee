@@ -6,23 +6,23 @@
 
 ## 2. Test environment image
 
-- [ ] 2.1 Create the x86_64 test image with pinned Rust, Cargo registry/git cache inputs, GTK 4/GtkSourceView development packages, pkg-config, and CI test utilities.
-- [ ] 2.2 Add test-image health checks for rustc/cargo/rustfmt/clippy, GTK/GtkSourceView pkg-config metadata, architecture, and noninteractive smoke commands.
-- [ ] 2.3 Add image publication and digest metadata output for the validated test image.
+- [x] 2.1 Create the x86_64 test image with pinned Rust, Cargo registry/git cache inputs, GTK 4/GtkSourceView development packages, pkg-config, and CI test utilities.
+- [x] 2.2 Add test-image health checks for rustc/cargo/rustfmt/clippy, GTK/GtkSourceView pkg-config metadata, architecture, and noninteractive smoke commands.
+- [x] 2.3 Add image publication and digest metadata output for the validated test image.
 
 ## 3. Build environment image
 
-- [ ] 3.1 Create the x86_64 build image with the Ubuntu 22.04-compatible GTK baseline, pinned Rust, Typst fetch prerequisites, AppImage/linuxdeploy/plugin/appimagetool/runtime prerequisites, squashfs, and patchelf.
-- [ ] 3.2 Add build-image health checks for toolchain, GTK/GtkSourceView, packaging commands, architecture, and a packaging preflight without emitting a release artifact.
-- [ ] 3.3 Add image publication and provenance metadata output for the validated build image.
+- [x] 3.1 Create the x86_64 build image with the Ubuntu 22.04-compatible GTK baseline, pinned Rust, Typst fetch prerequisites, AppImage/linuxdeploy/plugin/appimagetool/runtime prerequisites, squashfs, and patchelf.
+- [x] 3.2 Add build-image health checks for toolchain, GTK/GtkSourceView, packaging commands, architecture, and a packaging preflight without emitting a release artifact.
+- [x] 3.3 Add image publication and provenance metadata output for the validated build image.
 
 ## 4. Workflow integration
 
-- [ ] 4.1 Add a manual/release-controlled image publication workflow that builds both roles, uses registry layer caching, scans for secrets, validates digests, and publishes only after checks pass.
-- [ ] 4.2 Update `.github/workflows/rust-checks.yml` to run all test jobs in the pinned test image and remove repeated Rust/GTK setup where covered.
-- [ ] 4.3 Update `.github/workflows/appimage.yml` to run in the pinned build image while preserving manual-only triggering and artifact upload.
-- [ ] 4.4 Add one documented runner fallback/preflight path for image-pull failure and stale or unavailable digest failure.
-- [ ] 4.5 Preserve least-privilege GHCR permissions and ensure image consumers print and verify the resolved digest before running.
+- [x] 4.1 Add a manual/release-controlled image publication workflow that builds both roles, uses registry layer caching, scans for secrets, validates digests, and publishes only after checks pass.
+- [x] 4.2 Update `.github/workflows/rust-checks.yml` to run all test jobs in the pinned test image and remove repeated Rust/GTK setup where covered.
+- [x] 4.3 Update `.github/workflows/appimage.yml` to run in the pinned build image while preserving manual-only triggering and artifact upload.
+- [x] 4.4 Add one documented runner fallback/preflight path for image-pull failure and stale or unavailable digest failure.
+- [x] 4.5 Preserve least-privilege GHCR permissions and ensure image consumers print and verify the resolved digest before running.
 
 ## 5. Performance and release validation
 

@@ -36,3 +36,16 @@ GHCR policy:
 The local Docker daemon is not required to edit these inputs. Use the manual
 image workflow for registry-backed builds when the local user cannot access
 the Docker socket.
+
+Consumer repository variables:
+
+- `CAPTEE_TEST_IMAGE`: full test-image reference including its validated
+  version and digest.
+- `CAPTEE_BUILD_IMAGE`: full build-image reference including its validated
+  version and digest.
+
+The consumer workflows attempt the configured digest reference first. During
+migration, an unset or unavailable reference uses the pinned Ubuntu runner
+fallback and reports that choice in the job log. Set the variables only after
+the manual publication workflow has emitted and reviewed the corresponding
+digests.

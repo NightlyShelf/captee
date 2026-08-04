@@ -1,0 +1,245 @@
+name: CI images
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish validated images to GHCR
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: nightlyshelf/captee
+
+jobs:
+  validate-images:
+    name: Validate CI images
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Read image inputs
+        id: image-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ci/images/image-version.env
+          printf 'version=%s\n' "$IMAGE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'base_digest=%s\n' "$BASE_IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+          printf 'test_image=%s\n' "$TEST_IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'build_image=%s\n' "$BUILD_IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image for validation
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/images/test/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: captee-ci-test:${{ steps.image-inputs.outputs.version }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.image-inputs.outputs.version }}
+            IMAGE_SOURCE=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=captee-ci-test
+          cache-to: type=gha,mode=max,scope=captee-ci-test
+
+      - name: Verify test image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="captee-ci-test:${{ steps.image-inputs.outputs.version }}"
+          test "$(docker image inspect "$image" --format '{{.Architecture}}')" = amd64
+          docker run --rm --pull=never "$image" /usr/local/bin/captee-test-healthcheck
+
+      - name: Scan test image for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.61.0 image \
+            --scanners secret \
+            --exit-code 1 \
+            --no-progress \
+            "captee-ci-test:${{ steps.image-inputs.outputs.version }}"
+
+      - name: Build build image for validation
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/images/build/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: captee-ci-build:${{ steps.image-inputs.outputs.version }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.image-inputs.outputs.version }}
+            IMAGE_SOURCE=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=captee-ci-build
+          cache-to: type=gha,mode=max,scope=captee-ci-build
+
+      - name: Verify build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="captee-ci-build:${{ steps.image-inputs.outputs.version }}"
+          test "$(docker image inspect "$image" --format '{{.Architecture}}')" = amd64
+          docker run --rm --pull=never "$image" /usr/local/bin/captee-build-healthcheck
+
+      - name: Scan build image for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.61.0 image \
+            --scanners secret \
+            --exit-code 1 \
+            --no-progress \
+            "captee-ci-build:${{ steps.image-inputs.outputs.version }}"
+
+      - name: Record validated inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ci/images/image-version.env
+          mkdir -p "$RUNNER_TEMP/captee-image-metadata"
+          sha256sum \
+            ci/images/image-version.env \
+            ci/images/test-packages.txt \
+            ci/images/build-packages.txt \
+            ci/images/test/Dockerfile \
+            ci/images/test/healthcheck.sh \
+            ci/images/build/Dockerfile \
+            ci/images/build/healthcheck.sh \
+            > "$RUNNER_TEMP/captee-image-metadata/input-sha256sums.txt"
+          cat > "$RUNNER_TEMP/captee-image-metadata/validated-inputs.json" <<EOF
+          {
+            "source_sha": "${GITHUB_SHA}",
+            "image_version": "${IMAGE_VERSION}",
+            "architecture": "${IMAGE_ARCH}",
+            "base_image": "${BASE_IMAGE_REF}",
+            "base_digest": "${BASE_IMAGE_DIGEST}",
+            "test_image": "${TEST_IMAGE}:${IMAGE_VERSION}",
+            "build_image": "${BUILD_IMAGE}:${IMAGE_VERSION}"
+          }
+          EOF
+
+      - name: Upload validated image inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: captee-ci-image-inputs-${{ steps.image-inputs.outputs.version }}
+          path: ${{ runner.temp }}/captee-image-metadata
+          if-no-files-found: error
+
+  publish-images:
+    name: Publish CI images
+    if: ${{ inputs.publish == true }}
+    needs: validate-images
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Read image inputs
+        id: image-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ci/images/image-version.env
+          printf 'version=%s\n' "$IMAGE_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'base_digest=%s\n' "$BASE_IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+          printf 'test_image=%s\n' "$TEST_IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'build_image=%s\n' "$BUILD_IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Publish test image
+        id: publish-test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/images/test/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image-inputs.outputs.test_image }}:${{ steps.image-inputs.outputs.version }}
+            ${{ steps.image-inputs.outputs.test_image }}:${{ github.sha }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.image-inputs.outputs.version }}
+            IMAGE_SOURCE=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=captee-ci-test
+          cache-to: type=gha,mode=max,scope=captee-ci-test
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish build image
+        id: publish-build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/images/build/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image-inputs.outputs.build_image }}:${{ steps.image-inputs.outputs.version }}
+            ${{ steps.image-inputs.outputs.build_image }}:${{ github.sha }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.image-inputs.outputs.version }}
+            IMAGE_SOURCE=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=captee-ci-build
+          cache-to: type=gha,mode=max,scope=captee-ci-build
+          provenance: mode=max
+          sbom: true
+
+      - name: Record published digests and provenance inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ci/images/image-version.env
+          mkdir -p "$RUNNER_TEMP/captee-image-metadata"
+          cat > "$RUNNER_TEMP/captee-image-metadata/published-images.json" <<EOF
+          {
+            "source_sha": "${GITHUB_SHA}",
+            "image_version": "${IMAGE_VERSION}",
+            "architecture": "${IMAGE_ARCH}",
+            "base_image": "${BASE_IMAGE_REF}",
+            "base_digest": "${BASE_IMAGE_DIGEST}",
+            "test": {
+              "reference": "${TEST_IMAGE}:${IMAGE_VERSION}@${{ steps.publish-test.outputs.digest }}",
+              "digest": "${{ steps.publish-test.outputs.digest }}"
+            },
+            "build": {
+              "reference": "${BUILD_IMAGE}:${IMAGE_VERSION}@${{ steps.publish-build.outputs.digest }}",
+              "digest": "${{ steps.publish-build.outputs.digest }}"
+            }
+          }
+          EOF
+          sha256sum ci/images/image-version.env > "$RUNNER_TEMP/captee-image-metadata/image-version.env.sha256"
+
+      - name: Upload published image metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: captee-ci-images-${{ steps.image-inputs.outputs.version }}
+          path: ${{ runner.temp }}/captee-image-metadata
+          if-no-files-found: error

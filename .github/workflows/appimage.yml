@@ -5,9 +5,15 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 env:
   CARGO_TERM_COLOR: always
+  CAPTEE_ALLOW_RUNNER_FALLBACK: "true"
+  CAPTEE_BUILD_IMAGE: ${{ vars.CAPTEE_BUILD_IMAGE }}
+  CAPTEE_APPIMAGE_BUILD_DIR: .ci/appimage
+  GHCR_USERNAME: ${{ github.actor }}
+  GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   appimage:
@@ -15,35 +21,15 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK and AppImage build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libgtksourceview-5-dev fuse libfuse2 squashfs-tools patchelf
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-      - uses: Swatinem/rust-cache@v2
-      - name: Fetch packaging tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/captee-packaging"
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/captee-packaging/linuxdeploy" https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/captee-packaging/linuxdeploy-plugin-gtk" https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/captee-packaging/appimagetool" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/captee-packaging/runtime-x86_64" https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
-          chmod +x "$RUNNER_TEMP/captee-packaging"/*
-          sha256sum "$RUNNER_TEMP/captee-packaging"/*
+      - name: Prepare build environment
+        run: ci/images/prepare-environment.sh build
       - name: Build AppImage
         env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          LINUXDEPLOY_BIN: ${{ runner.temp }}/captee-packaging/linuxdeploy
-          LINUXDEPLOY_GTK_PLUGIN: ${{ runner.temp }}/captee-packaging/linuxdeploy-plugin-gtk
-          APPIMAGETOOL_BIN: ${{ runner.temp }}/captee-packaging/appimagetool
-          APPIMAGE_RUNTIME_FILE: ${{ runner.temp }}/captee-packaging/runtime-x86_64
-          CAPTEE_APPIMAGE_BUILD_DIR: ${{ runner.temp }}/captee-appimage
-        run: ./packaging/appimage/build.sh
+          CAPTEE_APPIMAGE_BUILD_DIR: .ci/appimage
+        run: ci/images/run-in-environment.sh ./packaging/appimage/build.sh
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: captee-appimage-x86_64
-          path: ${{ runner.temp }}/captee-appimage/*.AppImage
+          path: .ci/appimage/*.AppImage
           if-no-files-found: error
