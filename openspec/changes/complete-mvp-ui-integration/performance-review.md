@@ -93,3 +93,11 @@
 - Concurrency and lifetime: The tests use deterministic single-result coordinator delivery and backend call counters rather than compositor or D-Bus processes, eliminating timing races while retaining operation identity and cancellation semantics.
 - Mitigation: Coverage now proves the full successful portal path, portal-failure fallback, cancellation without fallback/storage/source mutation, malformed annotation/storage rejection, immutable originals, safe relative expressions, and undoable insertion.
 - Follow-up: Headless doubles intentionally cannot validate the compositor-owned portal dialog or GTK focus transitions. Those remain explicit items in the final Hyprland/Wayland smoke test.
+
+## Task 5.1: Validated persistent project settings
+
+- Finding: The settings dialog edits one cloned project-settings value, validates numeric ranges, capture availability, unique/non-empty GTK accelerators, and accelerator syntax, then writes one complete project config through atomic replacement on a named worker.
+- Impact: Validation is constant-sized (seven keybindings) and negligible. Config serialization and I/O are linear in the small JSON document. Preview zoom changes only the picture request; enabling auto-render schedules the existing debounced compiler. Format-on-save adds one formatter process and one source snapshot before the existing atomic save.
+- I/O and concurrency: Settings persistence, optional save-time formatting, and document save remain off GTK. Settings become active only after atomic config success. The settings write and confirmed document save are non-cancellable, preventing UI acknowledgment from racing a committed config or source file.
+- Mitigation: Failed validation or persistence leaves both in-memory and on-disk settings unchanged, legacy configs receive default keybindings through Serde defaults, project identity fields are preserved, and closing the project restores default application accelerators. Preview dimensions are capped at 8192 pixels per requested axis.
+- Follow-up: Typst's bundled formatter currently has no connected line-width argument, so line width is persisted as a forward-compatible preference while format-on-save itself is applied. Repeated save-time formatting incurs process startup; retain opt-in behavior and profile before considering an in-process formatter.

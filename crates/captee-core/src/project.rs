@@ -67,6 +67,47 @@ pub struct ProjectSettings {
     pub formatting: FormattingSettings,
     pub capture: CaptureSettings,
     pub preview: PreviewSettings,
+    #[serde(default)]
+    pub keybindings: KeybindingSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeybindingSettings {
+    pub save: String,
+    pub format: String,
+    pub find_replace: String,
+    pub completion: String,
+    pub capture: String,
+    pub preview: String,
+    pub export: String,
+}
+
+impl Default for KeybindingSettings {
+    fn default() -> Self {
+        Self {
+            save: "<Primary>s".to_owned(),
+            format: "<Primary><Shift>f".to_owned(),
+            find_replace: "<Primary>f".to_owned(),
+            completion: "<Primary>space".to_owned(),
+            capture: "<Primary><Shift>c".to_owned(),
+            preview: "<Primary>r".to_owned(),
+            export: "<Primary><Shift>e".to_owned(),
+        }
+    }
+}
+
+impl KeybindingSettings {
+    pub fn named_bindings(&self) -> [(&'static str, &str); 7] {
+        [
+            ("Save", &self.save),
+            ("Format", &self.format),
+            ("Find and Replace", &self.find_replace),
+            ("Completion", &self.completion),
+            ("Capture", &self.capture),
+            ("Preview", &self.preview),
+            ("Export PDF", &self.export),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +203,22 @@ mod tests {
         let decoded = ProjectConfig::from_json(&json).expect("deserializes");
         assert_eq!(decoded, config);
         assert!(json.contains("\"version\": 1"));
+    }
+
+    #[test]
+    fn older_project_settings_receive_default_keybindings() {
+        let json = r#"{
+          "version": 1,
+          "name": "Notes",
+          "entry_document": "main.typ",
+          "settings": {
+            "formatting": { "line_width": 90, "format_on_save": false },
+            "capture": { "portal_enabled": true, "fallback_enabled": true },
+            "preview": { "auto_render": true, "zoom_percent": 100 }
+          }
+        }"#;
+        let config = ProjectConfig::from_json(json).expect("old config remains readable");
+        assert_eq!(config.settings.keybindings, KeybindingSettings::default());
     }
 
     #[test]

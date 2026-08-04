@@ -7,22 +7,22 @@ use crate::{UiCommand, UiShell};
 use captee_core::{
     replace_literal, request_completions, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
-    DiagnosticSeverity, InsertionResult, Operation, OperationKind, ProjectConfig, ProjectSession,
-    RenderState, SourceDocument,
+    DiagnosticSeverity, InsertionResult, KeybindingSettings, Operation, OperationKind,
+    ProjectConfig, ProjectSession, ProjectSettings, RenderState, SourceDocument,
 };
 use captee_platform::{
-    create_project, export_pdf, insert_saved_asset, open_project, AssetStore, AsyncPreviewCompiler,
-    AutosaveSnapshot, AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture,
-    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore,
-    SavedAsset, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
-    XdgPortalCapture, AUTOSAVE_FILE,
+    create_project, export_pdf, insert_saved_asset, open_project, save_project_settings,
+    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
+    FormattedSource, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
+    ProjectDocumentPersistence, RecentProjectStore, SavedAsset, TypstCompletionProvider,
+    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, Label, MenuButton,
-    Orientation, Paned, ResponseType, ScrolledWindow, Stack,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, Entry,
+    Label, MenuButton, Orientation, Paned, ResponseType, ScrolledWindow, Stack,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
@@ -39,7 +39,7 @@ const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
 
 #[derive(Debug)]
 enum WorkspaceOperationResult {
-    Saved(SourceDocument),
+    Saved { document: SourceDocument, diagnostics: Vec<Diagnostic>, formatted: bool },
     Formatted(FormattedSource),
     Completions { items: Vec<CompletionItem>, cursor: usize },
     AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
@@ -47,6 +47,7 @@ enum WorkspaceOperationResult {
     Exported(PathBuf),
     Captured(CapturedImage),
     CaptureStored(SavedAsset),
+    SettingsSaved(ProjectSettings),
 }
 
 #[derive(Debug)]
@@ -131,6 +132,7 @@ fn build_ui(application: &Application) {
     stack.set_visible_child_name("home");
 
     let project_ui = ProjectUi {
+        application: application.downgrade(),
         window: window.downgrade(),
         shell: Rc::clone(&shell),
         status: status.clone(),
@@ -308,6 +310,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     let view = gio::Menu::new();
     view.append(Some("Preview"), Some("app.preview"));
     view.append(Some("Export PDF"), Some("app.export"));
+    view.append(Some("Settings"), Some("app.settings"));
 
     for (name, accelerator) in [
         ("new-project", "<Primary>n"),
@@ -322,6 +325,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("capture", "<Primary><Shift>c"),
         ("preview", "<Primary>r"),
         ("export", "<Primary><Shift>e"),
+        ("settings", "<Primary>comma"),
     ] {
         let action = gio::SimpleAction::new(name, None);
         application.add_action(&action);
@@ -385,6 +389,11 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let export_ui = project_ui.clone();
     action.connect_activate(move |_, _| show_export_dialog(&export_ui));
+
+    let action = application.lookup_action("settings").expect("installed settings action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let settings_ui = project_ui.clone();
+    action.connect_activate(move |_, _| show_settings_dialog(&settings_ui));
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -403,6 +412,7 @@ fn connect_project_action(action: &gio::SimpleAction, create: bool, project_ui: 
 
 #[derive(Clone)]
 struct ProjectUi {
+    application: glib::WeakRef<Application>,
     window: glib::WeakRef<ApplicationWindow>,
     shell: Rc<RefCell<UiShell>>,
     status: Label,
@@ -425,6 +435,10 @@ struct ProjectUi {
 }
 
 impl ProjectUi {
+    fn application(&self) -> Option<Application> {
+        self.application.upgrade()
+    }
+
     fn window(&self) -> Option<ApplicationWindow> {
         self.window.upgrade()
     }
@@ -583,14 +597,36 @@ fn start_save(project_ui: &ProjectUi) {
     let root = PathBuf::from(project.root);
     let entry = editor.entry_document().to_path_buf();
     let mut document = editor.document_snapshot();
+    let format_on_save = snapshot.app.settings.formatting.format_on_save;
     let _ = thread::Builder::new().name("captee-save".to_owned()).spawn(move || {
-        let result = ProjectDocumentPersistence::open(root, entry).and_then(|persistence| {
-            document.save(&persistence)?;
-            persistence.clear_autosave()?;
-            Ok(document)
-        });
+        let result: Result<(SourceDocument, Vec<Diagnostic>), String> = (|| {
+            let mut diagnostics = Vec::new();
+            if format_on_save {
+                let formatted = TypstFormatter::new(TypstRunner::discover(), &root)
+                    .format_with_diagnostics(document.text())
+                    .map_err(|error| error.to_string())?;
+                diagnostics = formatted.diagnostics;
+                if formatted.source != document.text() {
+                    let previous_len = document.text().len();
+                    document.replace(0..previous_len, &formatted.source).map_err(|error| {
+                        format!("formatted source could not be applied: {error:?}")
+                    })?;
+                }
+            }
+            let persistence =
+                ProjectDocumentPersistence::open(root, entry).map_err(|error| error.to_string())?;
+            document.save(&persistence).map_err(|error| error.to_string())?;
+            persistence.clear_autosave().map_err(|error| error.to_string())?;
+            Ok((document, diagnostics))
+        })();
         let outcome = match result {
-            Ok(document) => OperationOutcome::Completed(WorkspaceOperationResult::Saved(document)),
+            Ok((document, diagnostics)) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::Saved {
+                    document,
+                    diagnostics,
+                    formatted: format_on_save,
+                })
+            }
             Err(error) => OperationOutcome::Failed(error.to_string()),
         };
         let _ = task.finish(outcome);
@@ -1052,6 +1088,232 @@ fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32
     Ok(size)
 }
 
+fn show_settings_dialog(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    if snapshot.app.project.is_none() {
+        project_ui.status.set_text("Open a project before changing settings.");
+        return;
+    }
+    if snapshot.progress.is_some() {
+        project_ui.status.set_text("Wait for the active operation before changing settings.");
+        return;
+    }
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let settings = snapshot.app.settings;
+    let dialog = Dialog::builder()
+        .title("Project settings")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(620)
+        .default_height(680)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Save settings", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+
+    let content = GtkBox::new(Orientation::Vertical, 12);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+
+    let formatting_title = Label::new(Some("Formatting"));
+    formatting_title.add_css_class("heading");
+    formatting_title.set_xalign(0.0);
+    content.append(&formatting_title);
+    let line_width = gtk::SpinButton::with_range(1.0, 400.0, 1.0);
+    line_width.set_value(f64::from(settings.formatting.line_width));
+    let format_on_save = CheckButton::with_label("Format before saving");
+    format_on_save.set_active(settings.formatting.format_on_save);
+    let formatting_grid = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
+    let line_width_label = Label::new(Some("Preferred line width"));
+    line_width_label.set_xalign(0.0);
+    formatting_grid.attach(&line_width_label, 0, 0, 1, 1);
+    formatting_grid.attach(&line_width, 1, 0, 1, 1);
+    formatting_grid.attach(&format_on_save, 0, 1, 2, 1);
+    content.append(&formatting_grid);
+
+    let capture_title = Label::new(Some("Capture"));
+    capture_title.add_css_class("heading");
+    capture_title.set_xalign(0.0);
+    content.append(&capture_title);
+    let portal_enabled = CheckButton::with_label("Use the desktop screenshot portal");
+    portal_enabled.set_active(settings.capture.portal_enabled);
+    let fallback_enabled = CheckButton::with_label("Use slurp/grim if the portal fails");
+    fallback_enabled.set_active(settings.capture.fallback_enabled);
+    content.append(&portal_enabled);
+    content.append(&fallback_enabled);
+
+    let preview_title = Label::new(Some("Preview"));
+    preview_title.add_css_class("heading");
+    preview_title.set_xalign(0.0);
+    content.append(&preview_title);
+    let auto_render = CheckButton::with_label("Render automatically after edits");
+    auto_render.set_active(settings.preview.auto_render);
+    let zoom = gtk::SpinButton::with_range(25.0, 500.0, 5.0);
+    zoom.set_value(f64::from(settings.preview.zoom_percent));
+    let preview_grid = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
+    preview_grid.attach(&auto_render, 0, 0, 2, 1);
+    let zoom_label = Label::new(Some("Preview zoom (%)"));
+    zoom_label.set_xalign(0.0);
+    preview_grid.attach(&zoom_label, 0, 1, 1, 1);
+    preview_grid.attach(&zoom, 1, 1, 1, 1);
+    content.append(&preview_grid);
+
+    let keybindings_title = Label::new(Some("Keyboard shortcuts"));
+    keybindings_title.add_css_class("heading");
+    keybindings_title.set_xalign(0.0);
+    content.append(&keybindings_title);
+    let keybindings = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
+    let save_key = Entry::new();
+    save_key.set_text(&settings.keybindings.save);
+    let format_key = Entry::new();
+    format_key.set_text(&settings.keybindings.format);
+    let find_key = Entry::new();
+    find_key.set_text(&settings.keybindings.find_replace);
+    let completion_key = Entry::new();
+    completion_key.set_text(&settings.keybindings.completion);
+    let capture_key = Entry::new();
+    capture_key.set_text(&settings.keybindings.capture);
+    let preview_key = Entry::new();
+    preview_key.set_text(&settings.keybindings.preview);
+    let export_key = Entry::new();
+    export_key.set_text(&settings.keybindings.export);
+    for (row, (label, entry)) in [
+        ("Save", &save_key),
+        ("Format", &format_key),
+        ("Find and Replace", &find_key),
+        ("Completion", &completion_key),
+        ("Capture", &capture_key),
+        ("Preview", &preview_key),
+        ("Export PDF", &export_key),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let label = Label::new(Some(label));
+        label.set_xalign(0.0);
+        entry.set_hexpand(true);
+        entry.set_tooltip_text(Some("GTK accelerator, for example <Primary><Shift>c"));
+        keybindings.attach(&label, 0, row as i32, 1, 1);
+        keybindings.attach(entry, 1, row as i32, 1, 1);
+    }
+    content.append(&keybindings);
+    let error_label = Label::new(None);
+    error_label.add_css_class("error");
+    error_label.set_xalign(0.0);
+    error_label.set_wrap(true);
+    content.append(&error_label);
+    dialog.content_area().append(
+        &ScrolledWindow::builder()
+            .child(&content)
+            .hexpand(true)
+            .vexpand(true)
+            .min_content_height(520)
+            .build(),
+    );
+
+    let project_ui = project_ui.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dialog.close();
+            return;
+        }
+        let mut updated = settings.clone();
+        updated.formatting.line_width = line_width.value_as_int() as u16;
+        updated.formatting.format_on_save = format_on_save.is_active();
+        updated.capture.portal_enabled = portal_enabled.is_active();
+        updated.capture.fallback_enabled = fallback_enabled.is_active();
+        updated.preview.auto_render = auto_render.is_active();
+        updated.preview.zoom_percent = zoom.value_as_int() as u16;
+        updated.keybindings = KeybindingSettings {
+            save: save_key.text().to_string(),
+            format: format_key.text().to_string(),
+            find_replace: find_key.text().to_string(),
+            completion: completion_key.text().to_string(),
+            capture: capture_key.text().to_string(),
+            preview: preview_key.text().to_string(),
+            export: export_key.text().to_string(),
+        };
+        if let Err(error) = crate::validate_settings(&updated) {
+            error_label.set_text(&error.to_string());
+            return;
+        }
+        if let Some((action, binding)) = updated
+            .keybindings
+            .named_bindings()
+            .into_iter()
+            .find(|(_, binding)| gtk::accelerator_parse(*binding).is_none())
+        {
+            error_label.set_text(&format!("{action} has an invalid accelerator: {binding}"));
+            return;
+        }
+        dialog.close();
+        start_settings_save(&project_ui, updated);
+    });
+    dialog.present();
+}
+
+fn start_settings_save(project_ui: &ProjectUi, settings: ProjectSettings) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.status.set_text("The project closed before settings could be saved.");
+        return;
+    };
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::SaveSettings) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Settings, false) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Saving project settings…");
+    let root = PathBuf::from(project.root);
+    let _ = thread::Builder::new().name("captee-settings".to_owned()).spawn(move || {
+        let outcome = match save_project_settings(root, settings) {
+            Ok(config) => OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved(
+                config.settings,
+            )),
+            Err(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
+fn apply_project_accelerators(application: &Application, keybindings: &KeybindingSettings) {
+    for (action, binding) in [
+        ("save", keybindings.save.as_str()),
+        ("format", keybindings.format.as_str()),
+        ("find-replace", keybindings.find_replace.as_str()),
+        ("completion", keybindings.completion.as_str()),
+        ("capture", keybindings.capture.as_str()),
+        ("preview", keybindings.preview.as_str()),
+        ("export", keybindings.export.as_str()),
+    ] {
+        application.set_accels_for_action(&format!("app.{action}"), &[binding]);
+    }
+}
+
+fn apply_preview_zoom(project_ui: &ProjectUi) {
+    let zoom = i64::from(project_ui.shell.borrow().snapshot().app.settings.preview.zoom_percent);
+    let Some(paintable) = project_ui.preview_picture.paintable() else {
+        return;
+    };
+    let width = (i64::from(paintable.intrinsic_width()).max(1) * zoom / 100).clamp(1, 8192);
+    let height = (i64::from(paintable.intrinsic_height()).max(1) * zoom / 100).clamp(1, 8192);
+    project_ui.preview_picture.set_size_request(width as i32, height as i32);
+}
+
 #[allow(deprecated)]
 fn show_export_dialog(project_ui: &ProjectUi) {
     let state = project_ui.render_state.borrow();
@@ -1240,12 +1502,26 @@ fn apply_operation_result(
         ResultDisposition::Current(result) => {
             let source_identity = result.context.source().clone();
             match result.outcome {
-                OperationOutcome::Completed(WorkspaceOperationResult::Saved(document)) => {
-                    let state = project_ui
-                        .editor
-                        .borrow_mut()
-                        .as_mut()
-                        .and_then(|editor| editor.apply_saved_document(document));
+                OperationOutcome::Completed(WorkspaceOperationResult::Saved {
+                    document,
+                    diagnostics,
+                    formatted,
+                }) => {
+                    show_diagnostics(project_ui, &diagnostics);
+                    let mut editor = project_ui.editor.borrow_mut();
+                    if formatted
+                        && editor
+                            .as_ref()
+                            .is_some_and(|editor| editor.state().text != document.text())
+                    {
+                        let _ = editor
+                            .as_mut()
+                            .and_then(|editor| editor.update_from_buffer(document.text()).ok())
+                            .flatten();
+                    }
+                    let state =
+                        editor.as_mut().and_then(|editor| editor.apply_saved_document(document));
+                    drop(editor);
                     if let Some(state) = state {
                         let _ = project_ui
                             .shell
@@ -1255,9 +1531,12 @@ fn apply_operation_result(
                             .shell
                             .borrow_mut()
                             .dispatch(UiCommand::SetDirty(state.dirty));
-                        project_ui.status.set_text("Document saved.");
-                        refresh_project_label(project_ui);
-                        schedule_autosave(project_ui, &state);
+                        project_ui.status.set_text(if formatted {
+                            "Document formatted and saved."
+                        } else {
+                            "Document saved."
+                        });
+                        apply_editor_state(project_ui, &state, formatted);
                     } else {
                         let message =
                             "Save completed for an older source revision; current edits remain unsaved.";
@@ -1314,6 +1593,7 @@ fn apply_operation_result(
                         match gtk::gdk::Texture::from_bytes(&bytes) {
                             Ok(texture) => {
                                 project_ui.preview_picture.set_paintable(Some(&texture));
+                                apply_preview_zoom(project_ui);
                                 project_ui.preview_status.set_text("Showing current preview.");
                                 let _ =
                                     project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
@@ -1428,6 +1708,40 @@ fn apply_operation_result(
                                 "Capture saved to {}, but insertion failed: {error}",
                                 asset.relative_path().display()
                             );
+                            let _ = project_ui
+                                .shell
+                                .borrow_mut()
+                                .dispatch(UiCommand::Fail { message: message.clone() });
+                            project_ui.status.set_text(&format!("Error: {message}"));
+                        }
+                    }
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved(settings)) => {
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Complete { message: "Settings saved".to_owned() });
+                    match project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::ApplySettings(settings.clone()))
+                    {
+                        Ok(()) => {
+                            if let Some(application) = project_ui.application() {
+                                apply_project_accelerators(&application, &settings.keybindings);
+                            }
+                            apply_preview_zoom(project_ui);
+                            if settings.preview.auto_render {
+                                if let Some(state) =
+                                    project_ui.editor.borrow().as_ref().map(EditorBridge::state)
+                                {
+                                    schedule_preview(project_ui, &state);
+                                }
+                            }
+                            project_ui.status.set_text("Project settings saved and applied.");
+                        }
+                        Err(error) => {
+                            let message = format!("Saved settings could not be applied: {error}");
                             let _ = project_ui
                                 .shell
                                 .borrow_mut()
@@ -1837,7 +2151,7 @@ fn open_loaded_project(
     };
     let result = project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
         session: project.session.clone(),
-        settings: project.settings,
+        settings: project.settings.clone(),
     });
     match result {
         Ok(()) => {
@@ -1855,6 +2169,9 @@ fn open_loaded_project(
             *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_status.set_text("Preview has not been rendered yet.");
+            if let Some(application) = project_ui.application() {
+                apply_project_accelerators(&application, &project.settings.keybindings);
+            }
             refresh_project_label(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
             project_ui.status.set_text(if created {
@@ -1957,7 +2274,11 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
+            project_ui.preview_picture.set_size_request(-1, -1);
             project_ui.preview_status.set_text("Render a document to see its preview.");
+            if let Some(application) = project_ui.application() {
+                apply_project_accelerators(&application, &KeybindingSettings::default());
+            }
             refresh_project_label(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }

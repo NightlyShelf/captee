@@ -225,6 +225,16 @@ GTK. They cover portal success, fallback after portal failure, cancellation,
 invalid image rejection, immutable staging, atomic storage, and exact undoable
 Typst insertion without requiring a compositor in headless CI.
 
+Project settings remain part of `.captee.json`. GTK edits a detached settings
+copy, validates ranges, enabled capture paths, and unique parseable accelerator
+strings, then asks the platform workspace boundary to atomically replace the
+validated config. Only a successful worker result updates core state and GTK
+accelerators. Capture selection and auto-preview read the current core snapshot,
+preview zoom changes the retained picture request, and format-on-save runs the
+formatter before the same atomic document save. Older configs receive default
+keybindings without migration, and closing a workspace restores application
+defaults.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a

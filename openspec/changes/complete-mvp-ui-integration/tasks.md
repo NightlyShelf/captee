@@ -24,7 +24,7 @@
 
 ## 5. Settings and operation feedback
 
-- [ ] 5.1 Add settings UI and persistence for formatting, capture fallback, preview preferences, and keybindings using existing validation.
+- [x] 5.1 Add settings UI and persistence for formatting, capture fallback, preview preferences, and keybindings using existing validation.
 - [ ] 5.2 Add visible/accessibility-aware progress, cancellation, success, warning, and error states and disable conflicting destructive actions.
 
 ## 6. Verification and performance review

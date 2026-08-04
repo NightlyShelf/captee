@@ -22,6 +22,7 @@ pub enum OperationKind {
     Capture,
     Preview,
     Export,
+    Settings,
     LoadingProject,
 }
 
