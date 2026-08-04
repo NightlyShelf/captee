@@ -1,10 +1,248 @@
 //! Portal-first capture selection and bounded `grim`/`slurp` fallback.
 
-use captee_core::{CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage};
+use captee_core::{
+    AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
+    CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage,
+};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+const ANNOTATION_COLOR: [u8; 4] = [220, 38, 38, 255];
+const TEXT_SCALE: u32 = 2;
+const GLYPH_WIDTH: u32 = 5;
+const GLYPH_HEIGHT: u32 = 7;
+const MAX_ANNOTATION_PIXELS: usize = 16 * 1024 * 1024;
+
+/// Applies lightweight annotations to a PNG without changing the captured
+/// image. Every operation decodes into a new pixel buffer and returns a new
+/// PNG that remains staged until the caller confirms it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PngAnnotationBackend;
+
+impl PngAnnotationBackend {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AnnotationBackend for PngAnnotationBackend {
+    fn annotate(
+        &self,
+        image: &CapturedImage,
+        annotation: &Annotation,
+    ) -> AnnotationResult<AnnotatedImage> {
+        let mut bitmap = match RgbaBitmap::decode(image.bytes()) {
+            Ok(bitmap) => bitmap,
+            Err(error) => return AnnotationResult::Failed(error),
+        };
+
+        match annotation {
+            Annotation::Pointer { x, y } => bitmap.draw_pointer(*x, *y),
+            Annotation::Rectangle { x, y, width, height } => {
+                bitmap.draw_rectangle(*x, *y, *width, *height)
+            }
+            Annotation::Text { x, y, text } => bitmap.draw_text(*x, *y, text),
+        }
+
+        match bitmap.encode() {
+            Ok(bytes) => AnnotationResult::Completed(AnnotatedImage::new(bytes)),
+            Err(error) => AnnotationResult::Failed(error),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RgbaBitmap {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+impl RgbaBitmap {
+    fn decode(bytes: &[u8]) -> Result<Self, AnnotationError> {
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder
+            .read_info()
+            .map_err(|error| AnnotationError::new(format!("could not decode PNG: {error}")))?;
+        let output_size = reader.output_buffer_size();
+        let mut output = vec![0; output_size];
+        let info = reader
+            .next_frame(&mut output)
+            .map_err(|error| AnnotationError::new(format!("could not read PNG frame: {error}")))?;
+        let pixels = match info.color_type {
+            png::ColorType::Rgba => output[..info.buffer_size()].to_vec(),
+            png::ColorType::Rgb => output[..info.buffer_size()]
+                .chunks_exact(3)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+                .collect(),
+            png::ColorType::Grayscale => output[..info.buffer_size()]
+                .iter()
+                .flat_map(|value| [*value, *value, *value, 255])
+                .collect(),
+            png::ColorType::GrayscaleAlpha => output[..info.buffer_size()]
+                .chunks_exact(2)
+                .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
+                .collect(),
+            png::ColorType::Indexed => {
+                return Err(AnnotationError::new("indexed PNG output is unsupported"))
+            }
+        };
+        let expected = pixel_len(info.width, info.height)?;
+        if pixels.len() != expected {
+            return Err(AnnotationError::new("PNG pixel buffer has an invalid size"));
+        }
+        Ok(Self { width: info.width, height: info.height, pixels })
+    }
+
+    fn encode(self) -> Result<Vec<u8>, AnnotationError> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, self.width, self.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| AnnotationError::new(format!("could not encode PNG: {error}")))?;
+        writer
+            .write_image_data(&self.pixels)
+            .map_err(|error| AnnotationError::new(format!("could not encode PNG: {error}")))?;
+        drop(writer);
+        Ok(bytes)
+    }
+
+    fn draw_pointer(&mut self, x: u32, y: u32) {
+        let radius: i32 = 8;
+        for offset in -radius..=radius {
+            self.paint(x as i32 + offset, y as i32, ANNOTATION_COLOR);
+            self.paint(x as i32, y as i32 + offset, ANNOTATION_COLOR);
+        }
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy <= radius * radius && (dx.abs() + dy.abs()) % 2 == 0 {
+                    self.paint(x as i32 + dx, y as i32 + dy, ANNOTATION_COLOR);
+                }
+            }
+        }
+    }
+
+    fn draw_rectangle(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let right = x.saturating_add(width.saturating_sub(1));
+        let bottom = y.saturating_add(height.saturating_sub(1));
+        for offset in 0i32..3 {
+            for point in x as i32..=right as i32 {
+                self.paint(point, y as i32 + offset, ANNOTATION_COLOR);
+                self.paint(point, bottom as i32 - offset, ANNOTATION_COLOR);
+            }
+            for point in y as i32..=bottom as i32 {
+                self.paint(x as i32 + offset, point, ANNOTATION_COLOR);
+                self.paint(right as i32 - offset, point, ANNOTATION_COLOR);
+            }
+        }
+    }
+
+    fn draw_text(&mut self, x: u32, y: u32, text: &str) {
+        let mut cursor = x;
+        let mut line_y = y;
+        for character in text.chars() {
+            if character == '\n' {
+                cursor = x;
+                line_y = line_y.saturating_add((GLYPH_HEIGHT + 1) * TEXT_SCALE);
+                continue;
+            }
+            let glyph = glyph(character);
+            for (row, bits) in glyph.iter().enumerate() {
+                for column in 0..GLYPH_WIDTH {
+                    if bits & (1 << (GLYPH_WIDTH - 1 - column)) == 0 {
+                        continue;
+                    }
+                    for dy in 0..TEXT_SCALE {
+                        for dx in 0..TEXT_SCALE {
+                            self.paint(
+                                cursor.saturating_add(column * TEXT_SCALE + dx) as i32,
+                                line_y.saturating_add(row as u32 * TEXT_SCALE + dy) as i32,
+                                ANNOTATION_COLOR,
+                            );
+                        }
+                    }
+                }
+            }
+            cursor = cursor.saturating_add((GLYPH_WIDTH + 1) * TEXT_SCALE);
+        }
+    }
+
+    fn paint(&mut self, x: i32, y: i32, color: [u8; 4]) {
+        if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height {
+            return;
+        }
+        let index = ((y as u32 * self.width + x as u32) * 4) as usize;
+        let alpha = color[3] as u16;
+        let inverse = 255 - alpha;
+        for (channel, value) in color.iter().take(3).enumerate() {
+            self.pixels[index + channel] = ((*value as u16 * alpha
+                + self.pixels[index + channel] as u16 * inverse)
+                / 255) as u8;
+        }
+        self.pixels[index + 3] = (alpha + self.pixels[index + 3] as u16 * inverse / 255) as u8;
+    }
+}
+
+fn pixel_len(width: u32, height: u32) -> Result<usize, AnnotationError> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .filter(|_| (width as usize).saturating_mul(height as usize) <= MAX_ANNOTATION_PIXELS)
+        .ok_or_else(|| AnnotationError::new("PNG dimensions are too large"))
+}
+
+fn glyph(character: char) -> [u8; 7] {
+    match character.to_ascii_uppercase() {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
+        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110],
+        '6' => [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100],
+        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        ' ' => [0; 7],
+        _ => [0b11111, 0b10001, 0b10101, 0b10001, 0b10101, 0b10001, 0b11111],
+    }
+}
 
 /// Selects the configured portal backend first and falls back only after a
 /// portal failure. Cancellation is returned immediately and never falls back.
@@ -235,5 +473,62 @@ mod tests {
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(1));
         assert_eq!(capture.capture(), CaptureResult::Completed(CapturedImage::new(b"PNG fixture")));
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    fn fixture_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        let pixels = color.repeat((width * height) as usize);
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("PNG header");
+        writer.write_image_data(&pixels).expect("PNG pixels");
+        drop(writer);
+        bytes
+    }
+
+    fn decoded_pixels(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().expect("PNG info");
+        let mut output = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut output).expect("PNG frame");
+        (info.width, info.height, output[..info.buffer_size()].to_vec())
+    }
+
+    #[test]
+    fn annotations_return_new_pngs_and_preserve_the_capture() {
+        let original_bytes = fixture_png(32, 24, [240, 240, 240, 255]);
+        let captured = CapturedImage::new(original_bytes.clone());
+        let annotator = PngAnnotationBackend::new();
+
+        for annotation in [
+            Annotation::Pointer { x: 5, y: 6 },
+            Annotation::Rectangle { x: 8, y: 7, width: 12, height: 9 },
+            Annotation::Text { x: 2, y: 2, text: "A1".to_owned() },
+        ] {
+            let result = annotator.annotate(&captured, &annotation);
+            let AnnotationResult::Completed(annotated) = result else {
+                panic!("annotation should succeed");
+            };
+            let (width, height, pixels) = decoded_pixels(annotated.bytes());
+            assert_eq!((width, height), (32, 24));
+            assert!(pixels.chunks_exact(4).any(|pixel| pixel[0] > 200 && pixel[1] < 100));
+            assert_eq!(captured.bytes(), original_bytes.as_slice());
+        }
+    }
+
+    #[test]
+    fn annotations_clip_coordinates_and_reject_malformed_input() {
+        let captured = CapturedImage::new(fixture_png(4, 4, [240, 240, 240, 255]));
+        let annotator = PngAnnotationBackend::new();
+        assert!(matches!(
+            annotator.annotate(&captured, &Annotation::Pointer { x: u32::MAX, y: u32::MAX }),
+            AnnotationResult::Completed(_)
+        ));
+        assert!(matches!(
+            annotator
+                .annotate(&CapturedImage::new(b"not a png"), &Annotation::Pointer { x: 0, y: 0 }),
+            AnnotationResult::Failed(_)
+        ));
     }
 }

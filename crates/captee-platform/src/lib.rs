@@ -12,7 +12,7 @@ mod typst;
 mod workspace;
 
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
-pub use capture::{CaptureSelector, GrimSlurpCapture};
+pub use capture::{CaptureSelector, GrimSlurpCapture, PngAnnotationBackend};
 pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
 pub use typst::{

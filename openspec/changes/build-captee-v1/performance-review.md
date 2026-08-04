@@ -151,6 +151,28 @@ the change is archived.
 - **Follow-up:** Add process-group cancellation where available and validate
   bounded PNG dimensions before persisting capture output.
 
+## Task 6.3 — in-memory image annotations
+
+- **Scope reviewed:** `crates/captee-platform/src/capture.rs` and the PNG
+  dependency used by `PngAnnotationBackend`.
+- **Finding:** Each annotation decodes the complete PNG into an RGBA buffer and
+  encodes a complete staged PNG, so the original bytes and the proposed result
+  are resident together while confirmation is pending. Rectangle and pointer
+  work is bounded by the selected geometry; bitmap text work is bounded by the
+  text length and fixed glyph size.
+- **Impact:** Peak memory is approximately the captured PNG, decoded RGBA
+  pixels, and encoded result. Large or malicious dimensions could otherwise
+  cause excessive allocation or decompression work, and repeated annotations
+  repeat the full-image conversion.
+- **Mitigation:** Pixel-size arithmetic is checked and the decoder rejects
+  images above 16 million pixels before they are accepted as an annotation
+  surface. Drawing clips every pixel write to the image bounds, and the
+  original `CapturedImage` is borrowed immutably so cancellation or a failed
+  encode cannot mutate it.
+- **Follow-up:** Task 6.4 should validate the final PNG and asset byte budget
+  again at the persistence boundary, and the UI can coalesce multiple pending
+  strokes before re-rendering when interactive annotation controls are added.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`
