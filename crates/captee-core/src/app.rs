@@ -162,6 +162,7 @@ impl AppStateStore {
                     | AppCommand::CompleteOperation { .. }
                     | AppCommand::ReportWarning { .. }
                     | AppCommand::ReportError { .. }
+                    | AppCommand::SetDirty(_)
             )
         {
             return Err(DispatchError::Busy);
@@ -349,5 +350,21 @@ mod tests {
 
         assert_eq!(store.state().project, project);
         assert_eq!(store.state().activity, Activity::Succeeded("Rendered".into()));
+    }
+
+    #[test]
+    fn edits_can_mark_the_document_dirty_while_revision_work_is_running() {
+        let mut store = opened_store();
+        store
+            .dispatch(AppCommand::StartOperation {
+                kind: OperationKind::Preview,
+                cancellable: true,
+            })
+            .expect("preview starts");
+
+        store.dispatch(AppCommand::SetDirty(true)).expect("edit remains available");
+
+        assert!(store.state().dirty);
+        assert!(matches!(store.state().activity, Activity::Running { .. }));
     }
 }

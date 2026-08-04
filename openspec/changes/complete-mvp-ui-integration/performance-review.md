@@ -14,3 +14,11 @@
 - Impact: There is no production runtime cost. Test runtime and memory remain constant per scenario, with six small coordinator instances and one result each.
 - Mitigation: Integration tests exercise the public UI boundary rather than GTK widgets, so cancellation and stale-result regressions remain deterministic and runnable in headless CI.
 - Follow-up: Platform-specific task suites will reuse the same result contract while separately testing real worker-thread and process lifetime behavior.
+
+## Task 2.1: GTK editor bridge
+
+- Finding: Each GtkSourceView change currently copies the complete buffer into `SourceDocument`, whose undo/redo implementation stores complete text snapshots.
+- Impact: CPU and memory per edit are linear in document size, and long editing sessions can retain many full snapshots. This is acceptable for the MVP's ordinary note-sized documents but is the main scaling risk in this slice.
+- I/O and concurrency: Editing, undo, and redo perform no filesystem or process I/O. Programmatic buffer updates are guarded to prevent recursive change signals, and every accepted change advances the coordinator revision before asynchronous results can apply.
+- Mitigation: Identical buffer snapshots are ignored, only the active entry document is retained, and stale operation results are cancelled/rejected through the coordinator. Existing architecture follow-up retains the bounded edit-record optimization for larger documents.
+- Follow-up: Persistence task 2.2 must clear dirty state only after atomic success and must avoid treating programmatic recovery/save synchronization as a new user edit.

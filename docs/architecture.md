@@ -67,6 +67,13 @@ Headless integration tests use deterministic worker doubles against this public
 boundary, covering terminal outcomes and stale project/revision rejection
 without requiring GTK, threads, or platform processes.
 
+The GtkSourceView bridge owns one core `SourceDocument` for the active entry
+file. Buffer changes update that document, propagate its revision to the
+operation coordinator, and mirror dirty state into the application store.
+Programmatic open, undo, redo, and close updates suppress recursive buffer
+signals. Undo and redo are routed through the core document history so widget
+state cannot diverge from revision and dirty semantics.
+
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
 can grow approximately with document size multiplied by the number of edits.

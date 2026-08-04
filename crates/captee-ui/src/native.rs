@@ -1,3 +1,5 @@
+use crate::editor_bridge::{EditorBridge, EditorState};
+use crate::operation::OperationCoordinator;
 use crate::{UiCommand, UiShell};
 use captee_core::{ProjectConfig, ProjectSession};
 use captee_platform::{create_project, open_project};
@@ -11,7 +13,7 @@ use gtk::{
 use gtk4 as gtk;
 use sourceview::prelude::*;
 use sourceview5 as sourceview;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -28,6 +30,9 @@ pub fn run() -> glib::ExitCode {
 fn build_ui(application: &Application) {
     let menus = install_actions(application);
     let shell = Rc::new(RefCell::new(UiShell::new()));
+    let editor = Rc::new(RefCell::new(None));
+    let coordinator = Rc::new(RefCell::new(OperationCoordinator::<()>::new()));
+    let syncing_buffer = Rc::new(Cell::new(false));
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Captee")
@@ -71,6 +76,9 @@ fn build_ui(application: &Application) {
         stack: stack.clone(),
         source_buffer: source_buffer.clone(),
         project_label: project_label.clone(),
+        editor,
+        coordinator,
+        syncing_buffer,
     };
 
     let header = GtkBox::new(Orientation::Horizontal, 8);
@@ -92,6 +100,7 @@ fn build_ui(application: &Application) {
     connect_ui_actions(&shell, &status, &project_ui, application);
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
+    connect_editor_buffer(&project_ui);
     window.present();
 }
 
@@ -200,6 +209,8 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     let edit = gio::Menu::new();
     edit.append(Some("Format"), Some("app.format"));
     edit.append(Some("Find and Replace"), Some("app.find-replace"));
+    edit.append(Some("Undo"), Some("app.undo"));
+    edit.append(Some("Redo"), Some("app.redo"));
     let capture = gio::Menu::new();
     capture.append(Some("Capture"), Some("app.capture"));
     let view = gio::Menu::new();
@@ -213,6 +224,8 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("save", "<Primary>s"),
         ("format", "<Primary><Shift>f"),
         ("find-replace", "<Primary>f"),
+        ("undo", "<Primary>z"),
+        ("redo", "<Primary><Shift>z"),
         ("capture", "<Primary><Shift>c"),
         ("preview", "<Primary>r"),
         ("export", "<Primary><Shift>e"),
@@ -254,10 +267,17 @@ fn connect_ui_actions(
 
     let action = application.lookup_action("close-project").expect("installed close action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
-    let project_ui = project_ui.clone();
+    let close_ui = project_ui.clone();
     action.connect_activate(move |_, _| {
-        close_project(&project_ui);
+        close_project(&close_ui);
     });
+
+    for (name, redo) in [("undo", false), ("redo", true)] {
+        let action = application.lookup_action(name).expect("installed edit action");
+        let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+        let project_ui = project_ui.clone();
+        action.connect_activate(move |_, _| undo_or_redo(&project_ui, redo));
+    }
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -282,6 +302,73 @@ struct ProjectUi {
     stack: Stack,
     source_buffer: sourceview::Buffer,
     project_label: Label,
+    editor: Rc<RefCell<Option<EditorBridge>>>,
+    coordinator: Rc<RefCell<OperationCoordinator<()>>>,
+    syncing_buffer: Rc<Cell<bool>>,
+}
+
+fn connect_editor_buffer(project_ui: &ProjectUi) {
+    let project_ui = project_ui.clone();
+    let buffer = project_ui.source_buffer.clone();
+    buffer.connect_changed(move |buffer| {
+        if project_ui.syncing_buffer.get() {
+            return;
+        }
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+        let update = project_ui
+            .editor
+            .borrow_mut()
+            .as_mut()
+            .map(|editor| editor.update_from_buffer(text.as_str()));
+        match update {
+            Some(Ok(Some(state))) => apply_editor_state(&project_ui, &state, false),
+            Some(Err(_)) => {
+                project_ui.status.set_text("The editor produced an invalid text range.")
+            }
+            Some(Ok(None)) | None => {}
+        }
+    });
+}
+
+fn undo_or_redo(project_ui: &ProjectUi, redo: bool) {
+    let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
+        if redo {
+            editor.redo()
+        } else {
+            editor.undo()
+        }
+    });
+    if let Some(state) = state {
+        apply_editor_state(project_ui, &state, true);
+        project_ui.status.set_text(if redo { "Redo applied." } else { "Undo applied." });
+    }
+}
+
+fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer: bool) {
+    if update_buffer {
+        project_ui.syncing_buffer.set(true);
+        project_ui.source_buffer.set_text(&state.text);
+        project_ui.syncing_buffer.set(false);
+    }
+    if let Err(error) = project_ui.coordinator.borrow_mut().set_source_revision(state.revision) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty)) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    refresh_project_label(project_ui);
+}
+
+fn refresh_project_label(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.project_label.set_text("No project open");
+        return;
+    };
+    let modified = if snapshot.app.dirty { " • Modified" } else { "" };
+    project_ui.project_label.set_text(&format!("{} · {}{modified}", project.name, project.root));
 }
 
 fn choose_project_action(create: bool, project_ui: &ProjectUi) {
@@ -485,18 +572,24 @@ fn open_loaded_project(
     path: &Path,
     project_ui: &ProjectUi,
 ) -> bool {
+    if let Err(error) = project_ui.coordinator.borrow_mut().activate_project(path) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return false;
+    }
     let result = project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
         session: project.session.clone(),
         settings: project.settings,
     });
     match result {
         Ok(()) => {
-            project_ui.source_buffer.set_text(&project.source);
-            project_ui.project_label.set_text(&format!(
-                "{} · {}",
-                project.session.name,
-                path.display()
+            *project_ui.editor.borrow_mut() = Some(EditorBridge::new(
+                project.session.entry_document.clone(),
+                project.source.clone(),
             ));
+            project_ui.syncing_buffer.set(true);
+            project_ui.source_buffer.set_text(&project.source);
+            project_ui.syncing_buffer.set(false);
+            refresh_project_label(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
             project_ui.status.set_text(if created {
                 "Project created. Ready to edit."
@@ -506,6 +599,7 @@ fn open_loaded_project(
             true
         }
         Err(error) => {
+            project_ui.coordinator.borrow_mut().deactivate_project();
             project_ui.status.set_text(&format!("Error: {error}"));
             false
         }
@@ -515,9 +609,13 @@ fn open_loaded_project(
 fn close_project(project_ui: &ProjectUi) {
     match project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject) {
         Ok(()) => {
+            project_ui.coordinator.borrow_mut().deactivate_project();
+            *project_ui.editor.borrow_mut() = None;
             project_ui.stack.set_visible_child_name("home");
+            project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text("");
-            project_ui.project_label.set_text("No project open");
+            project_ui.syncing_buffer.set(false);
+            refresh_project_label(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }
         Err(error) => project_ui.status.set_text(&format!("Error: {error}")),

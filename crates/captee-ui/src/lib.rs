@@ -4,6 +4,7 @@ use captee_core::{
 };
 use std::fmt;
 
+pub mod editor_bridge;
 pub mod native;
 pub mod operation;
 
@@ -82,6 +83,7 @@ pub struct UiSnapshot {
 pub enum UiCommand {
     OpenProject { session: ProjectSession, settings: ProjectSettings },
     CloseProject,
+    SetDirty(bool),
     Navigate(AppView),
     Focus(FocusTarget),
     Save,
@@ -185,6 +187,9 @@ impl UiShell {
                 self.focused = FocusTarget::ProjectList;
                 self.progress = None;
                 self.announce("Project closed", false);
+            }
+            UiCommand::SetDirty(dirty) => {
+                self.store.dispatch(AppCommand::SetDirty(dirty))?;
             }
             UiCommand::Navigate(view) => {
                 self.store.dispatch(AppCommand::Navigate(view))?;
