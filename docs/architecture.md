@@ -24,14 +24,17 @@ pane selection, keyboard-action declarations, focus targets, progress, and
 accessible status announcements, while command execution remains routed through
 the core dispatcher. The GTK adapter uses the GTK 4 API surface and
 GtkSourceView 5 for the source editor. It is validated locally against GTK
-4.22.4 while keeping the used API subset compatible with the Ubuntu CI runner;
+4.22.4 while keeping the used API subset compatible with the Ubuntu 22.04
+runner's GTK 4.6.9 packages;
 headless state tests remain independent of a desktop session. Native startup
 renders the headless `Home` state as an explicit Welcome surface; the folder
 chooser then loads a validated project and switches to the three-pane workspace.
 The current open/create callback reads the project configuration and source
 document synchronously after the asynchronous chooser returns, so unusually
 large entry documents can briefly block the GTK loop; this should move to a
-bounded worker when large-project support is expanded.
+  bounded worker when large-project support is expanded. The chooser uses the
+  GTK 4.6-compatible native dialog API so the release builder does not require
+  a newer host development package.
 
 ## Performance considerations
 

@@ -283,19 +283,29 @@ struct ProjectUi {
     project_label: Label,
 }
 
+#[allow(deprecated)]
 fn choose_project_folder(create: bool, project_ui: &ProjectUi) {
-    let dialog = gtk::FileDialog::builder()
+    let dialog = gtk::FileChooserNative::builder()
         .title(if create { "Choose project folder" } else { "Open project folder" })
         .accept_label(if create { "Create here" } else { "Open" })
+        .cancel_label("Cancel")
+        .action(gtk::FileChooserAction::SelectFolder)
+        .transient_for(&project_ui.window)
         .modal(true)
         .build();
     let project_ui = project_ui.clone();
-    dialog.select_folder(Some(&project_ui.window), None::<&gio::Cancellable>, move |result| {
-        let Ok(file) = result else {
+    dialog.run_async(move |dialog, response| {
+        if response != gtk::ResponseType::Accept {
+            dialog.destroy();
+            return;
+        }
+        let Some(file) = dialog.file() else {
+            dialog.destroy();
             return;
         };
         let Some(path) = file.path() else {
             project_ui.status.set_text("The selected location is not a local filesystem path.");
+            dialog.destroy();
             return;
         };
         let result = if create { create_loaded_project(&path) } else { load_project(&path) };
@@ -327,6 +337,7 @@ fn choose_project_folder(create: bool, project_ui: &ProjectUi) {
                 if create { "create" } else { "open" }
             )),
         }
+        dialog.destroy();
     });
 }
 

@@ -2,10 +2,13 @@
 
 ## Supported Linux sessions
 
-The first release targets x86_64 Linux with GTK 4.22.4, GLib, and a working
-Wayland or X11 desktop session. Project editing and preview do not require a
-capture portal, but screenshot capture requires a compositor-supported desktop
-portal or the configured `grim`/`slurp` fallback commands.
+The first release targets x86_64 Linux with a bundled GTK runtime, GLib, and a
+working Wayland or X11 desktop session. Local development is validated against
+GTK 4.22.4; the Ubuntu 22.04 AppImage builder uses its available GTK 4.6.9
+development packages and the application stays within the compatible GTK 4.0
+API subset. Project editing and preview do not require a capture portal, but
+screenshot capture requires a compositor-supported desktop portal or the
+configured `grim`/`slurp` fallback commands.
 
 The GTK development packages are needed to build Captee, not to run the
 finished AppImage. The AppImage bundles the application-side GTK libraries;
