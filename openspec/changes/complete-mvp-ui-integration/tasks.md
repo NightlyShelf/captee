@@ -12,7 +12,7 @@
 ## 3. Preview and export
 
 - [x] 3.1 Connect asynchronous Typst preview compilation to source revisions, preview rendering, diagnostics, and stale-result rejection.
-- [ ] 3.2 Connect current-preview validation and native PDF destination selection to atomic PDF export.
+- [x] 3.2 Connect current-preview validation and native PDF destination selection to atomic PDF export.
 - [ ] 3.3 Add preview/export success, failure, cancellation, and last-valid-preview regression coverage.
 
 ## 4. Capture and annotation

@@ -103,6 +103,13 @@ last-valid PDF retention; GTK decodes the PNG only after both coordinator and
 render-state checks accept it. Failed renders update diagnostics and status but
 leave the last valid preview picture visible.
 
+PDF export is available only when `RenderState` holds a successful preview for
+the current source revision. A GTK native save chooser gathers a local
+destination without mutation; the worker then revalidates the preview and
+destination and writes the PDF through atomic replacement. Export owns a cloned
+immutable render snapshot, so source edits cannot change bytes already being
+written and stale completion cannot update the new revision's UI state.
+
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
 can grow approximately with document size multiplied by the number of edits.

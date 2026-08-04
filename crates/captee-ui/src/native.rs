@@ -8,8 +8,8 @@ use captee_core::{
     Operation, OperationKind, ProjectConfig, ProjectSession, RenderState, SourceDocument,
 };
 use captee_platform::{
-    create_project, open_project, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore,
-    FormattedSource, PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore,
+    create_project, export_pdf, open_project, AsyncPreviewCompiler, AutosaveSnapshot,
+    AutosaveStore, FormattedSource, PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore,
     TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, AUTOSAVE_FILE,
 };
 use gtk::gio;
@@ -39,6 +39,7 @@ enum WorkspaceOperationResult {
     Completions { items: Vec<CompletionItem>, cursor: usize },
     AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
     Preview(PreviewOutcome),
+    Exported(PathBuf),
 }
 
 #[derive(Debug)]
@@ -324,14 +325,13 @@ fn connect_ui_actions(
     project_ui: &ProjectUi,
     application: &Application,
 ) {
-    for (name, command) in [("capture", UiCommand::Capture), ("export", UiCommand::Export)] {
-        let action = application.lookup_action(name).expect("installed application action");
-        let action = action.downcast::<gio::SimpleAction>().expect("simple action");
-        let shell = Rc::clone(shell);
-        let status = status.clone();
-        action
-            .connect_activate(move |_, _| dispatch_and_announce(&shell, &status, command.clone()));
-    }
+    let action = application.lookup_action("capture").expect("installed capture action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let shell_for_capture = Rc::clone(shell);
+    let status_for_capture = status.clone();
+    action.connect_activate(move |_, _| {
+        dispatch_and_announce(&shell_for_capture, &status_for_capture, UiCommand::Capture)
+    });
 
     for (name, create) in [("new-project", true), ("open-project", false)] {
         let action = application.lookup_action(name).expect("installed project action");
@@ -377,6 +377,11 @@ fn connect_ui_actions(
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let preview_ui = project_ui.clone();
     action.connect_activate(move |_, _| start_preview(&preview_ui));
+
+    let action = application.lookup_action("export").expect("installed export action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let export_ui = project_ui.clone();
+    action.connect_activate(move |_, _| show_export_dialog(&export_ui));
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -720,6 +725,72 @@ fn start_preview(project_ui: &ProjectUi) {
     });
 }
 
+#[allow(deprecated)]
+fn show_export_dialog(project_ui: &ProjectUi) {
+    let state = project_ui.render_state.borrow();
+    let has_current_preview = state
+        .last_successful_preview()
+        .is_some_and(|preview| preview.revision == state.current_revision());
+    drop(state);
+    if !has_current_preview {
+        project_ui.status.set_text("Render the current source successfully before exporting PDF.");
+        return;
+    }
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let project_name =
+        snapshot.app.project.map(|project| project.name).unwrap_or_else(|| "document".to_owned());
+    let dialog = gtk::FileChooserNative::builder()
+        .title("Export PDF")
+        .accept_label("Export")
+        .cancel_label("Cancel")
+        .action(gtk::FileChooserAction::Save)
+        .transient_for(&window)
+        .modal(true)
+        .build();
+    dialog.set_current_name(&format!("{project_name}.pdf"));
+    let project_ui = project_ui.clone();
+    dialog.run_async(move |dialog, response| {
+        if response == ResponseType::Accept {
+            if let Some(path) = dialog.file().and_then(|file| file.path()) {
+                start_export(&project_ui, path);
+            } else {
+                project_ui.status.set_text("Choose a local filesystem destination.");
+            }
+        }
+        dialog.destroy();
+    });
+}
+
+fn start_export(project_ui: &ProjectUi, destination: PathBuf) {
+    let state = project_ui.render_state.borrow().clone();
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Export) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Export, false) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Exporting PDF…");
+    let _ = thread::Builder::new().name("captee-export".to_owned()).spawn(move || {
+        let outcome = match export_pdf(&state, &destination) {
+            Ok(()) => OperationOutcome::Completed(WorkspaceOperationResult::Exported(destination)),
+            Err(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
 fn byte_offset_for_character(source: &str, character_offset: usize) -> usize {
     source.char_indices().nth(character_offset).map(|(offset, _)| offset).unwrap_or(source.len())
 }
@@ -946,6 +1017,14 @@ fn apply_operation_result(
                             .set_text("Preview failed; the last valid preview is retained.");
                         project_ui.status.set_text(&format!("Preview error: {message}"));
                     }
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::Exported(path)) => {
+                    let message = format!("PDF exported to {}", path.display());
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Complete { message: message.clone() });
+                    project_ui.status.set_text(&message);
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                     message,

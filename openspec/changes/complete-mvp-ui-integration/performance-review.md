@@ -46,3 +46,11 @@
 - Concurrency and lifetime: Compilation runs outside GTK, results carry project/source identity, `RenderState` independently rejects stale revisions, and a failed current render retains the last valid PDF and picture. Window teardown stops polling and late results cannot reach widgets.
 - Mitigation: Preview staging files use collision-resistant project-local names and are removed after each attempt. The UI displays only the first page, caps diagnostics, and drops superseded results before texture decoding.
 - Follow-up: Large multi-page documents currently compile twice to produce PDF and PNG. A future renderer integrated as a library could rasterize the retained PDF once and avoid the second Typst process.
+
+## Task 3.2: Current-preview PDF export
+
+- Finding: Export clones the retained current PDF once, validates destination state on a worker, and performs one flushed atomic replacement. The native chooser itself performs no project mutation.
+- Impact: Memory briefly grows by the PDF size while the worker owns its snapshot; filesystem I/O is linear in the PDF size and does not block GTK.
+- Concurrency and lifetime: The export operation is tagged with the current project/source revision. A source change before worker completion makes the result stale in the coordinator, while `export_pdf` independently rejects a stale preview before writing.
+- Mitigation: The destination parent and existing target type are validated before atomic write, cancellation of the chooser starts no operation, and missing/current-preview validation occurs before presenting the chooser.
+- Follow-up: Very large exports could avoid the PDF clone by storing the immutable preview bytes in an `Arc<[u8]>`; retain the current simpler ownership until profiling shows a material peak.
