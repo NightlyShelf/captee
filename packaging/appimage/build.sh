@@ -3,6 +3,9 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 build_root="${CAPTEE_APPIMAGE_BUILD_DIR:-$project_root/dist/appimage}"
+if [[ "$build_root" != /* ]]; then
+    build_root="$project_root/$build_root"
+fi
 appdir="$build_root/AppDir"
 linuxdeploy_bin="${LINUXDEPLOY_BIN:-$(command -v linuxdeploy || true)}"
 gtk_plugin="${LINUXDEPLOY_GTK_PLUGIN:-$(command -v linuxdeploy-plugin-gtk || true)}"
