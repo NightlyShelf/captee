@@ -1,8 +1,8 @@
 ## 1. Baseline and image inputs
 
-- [ ] 1.1 Measure current test and AppImage setup, pull, and total job times; record the current Rust, GTK/GtkSourceView, Ubuntu 22.04, and packaging-tool versions.
-- [ ] 1.2 Add versioned test/build image manifests with pinned base-image digests, package lists, Rust toolchain input, packaging-tool inputs, and cache-invalidation metadata.
-- [ ] 1.3 Define GHCR image naming, immutable digest metadata, retention, read/publish permissions, and rollback reference format.
+- [x] 1.1 Measure current test and AppImage setup, pull, and total job times; record the current Rust, GTK/GtkSourceView, Ubuntu 22.04, and packaging-tool versions.
+- [x] 1.2 Add versioned test/build image manifests with pinned base-image digests, package lists, Rust toolchain input, packaging-tool inputs, and cache-invalidation metadata.
+- [x] 1.3 Define GHCR image naming, immutable digest metadata, retention, read/publish permissions, and rollback reference format.
 
 ## 2. Test environment image
 

@@ -35,3 +35,14 @@ Git history is not available in this workspace, so no established commit convent
 ## Configuration & Secrets
 
 Never commit credentials or local environment files. Provide a checked-in example such as `.env.example` for required configuration, with safe placeholder values and clear variable descriptions.
+
+## Implementation Branch and Merge Policy
+
+For every implementation change, work on a dedicated feature branch and do
+not merge it until all planned tasks, tests, performance review, and required
+documentation are complete. Keep implementation branches available for
+review until the change is verified end to end.
+
+For the `cache-rust-gtk-docker-images` change specifically, keep the test and
+build container images separate, consume only immutable image digests in
+workflows, and preserve the manual-only AppImage trigger.

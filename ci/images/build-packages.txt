@@ -1,0 +1,13 @@
+build-essential
+ca-certificates
+curl
+file
+git
+pkg-config
+python3
+fuse
+libfuse2
+squashfs-tools
+patchelf
+libgtk-4-dev
+libgtksourceview-5-dev
