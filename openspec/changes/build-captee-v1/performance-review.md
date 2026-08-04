@@ -209,6 +209,22 @@ the change is archived.
 - **Follow-up:** Task 6.6 should retain regression coverage for exact insertion
   formatting alongside cancellation, malformed PNG, and atomic cleanup cases.
 
+## Task 6.6 — capture and asset regression tests
+
+- **Scope reviewed:** `crates/captee-platform/tests/capture_regressions.rs` and
+  the atomic-create cleanup tests in `crates/captee-platform/src/atomic.rs`.
+- **Finding:** The regressions use small in-memory PNG fixtures and test doubles;
+  they do not launch compositor processes, allocate unbounded buffers, or retain
+  background workers. Temporary project roots are isolated per test.
+- **Impact:** Test runtime and memory are bounded by tiny fixture images and
+  short-lived temporary directories. Parallel tests can perform filesystem I/O
+  concurrently, but each uses a unique nanosecond-stamped root.
+- **Mitigation:** Capture cancellation, malformed output, insertion formatting,
+  and temporary-file cleanup are asserted through stable public contracts. No
+  real desktop session or external capture executable is required.
+- **Follow-up:** Keep process timeout and PNG size behavior covered by focused
+  adapter tests when portal integration and packaging fixtures are expanded.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

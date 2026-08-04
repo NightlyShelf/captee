@@ -45,7 +45,7 @@ Implementation gate: after each task, review only that task's changed code for t
 - [x] 6.3 Implement pointer, rectangle, and text annotation operations over an in-memory image while preserving the original capture until confirmation.
 - [x] 6.4 Validate PNG output, generate collision-resistant project-relative asset names, and atomically save confirmed assets under `img/`.
 - [x] 6.5 Implement Typst image-expression insertion after successful asset storage, including the no-focused-editor outcome.
-- [ ] 6.6 Add tests for portal/fallback selection, cancellation no-op behavior, malformed PNG rejection, atomic asset cleanup, and insertion formatting.
+- [x] 6.6 Add tests for portal/fallback selection, cancellation no-op behavior, malformed PNG rejection, atomic asset cleanup, and insertion formatting.
 
 ## 7. Desktop workspace UI
 

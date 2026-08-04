@@ -219,4 +219,17 @@ mod tests {
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
+
+    #[test]
+    fn atomic_create_cleans_temporary_file_when_parent_is_missing() {
+        let root = test_root();
+        let destination = root.join("missing/capture.png");
+        let result = atomic_create(&destination, b"asset");
+
+        assert!(
+            matches!(result, Err(AtomicWriteError::Io(error)) if error.kind() == io::ErrorKind::NotFound)
+        );
+        assert_eq!(fs::read_dir(&root).expect("project root").count(), 0);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 }
