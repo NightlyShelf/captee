@@ -19,6 +19,14 @@ if [[ -z "$gtk_plugin" || ! -x "$gtk_plugin" ]]; then
     printf '%s\n' 'linuxdeploy-plugin-gtk is required; set LINUXDEPLOY_GTK_PLUGIN or add it to PATH' >&2
     exit 1
 fi
+if [[ -n "$appimagetool_bin" && -z "$runtime_file" ]]; then
+    printf '%s\n' 'APPIMAGE_RUNTIME_FILE is required when using an external appimagetool' >&2
+    exit 1
+fi
+if [[ -n "$runtime_file" && ! -f "$runtime_file" ]]; then
+    printf 'runtime file does not exist: %s\n' "$runtime_file" >&2
+    exit 1
+fi
 
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications"
 cargo build --release --manifest-path "$project_root/Cargo.toml" -p captee-ui
