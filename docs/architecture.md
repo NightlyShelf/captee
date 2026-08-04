@@ -63,6 +63,9 @@ checks. A worker can enqueue only one terminal result through its single-use
 task handle, which bounds channel growth by the number of retired workers rather
 than their internal progress. GTK integration must poll results from the main
 context without a busy loop and avoid synchronously joining long-running work.
+Headless integration tests use deterministic worker doubles against this public
+boundary, covering terminal outcomes and stale project/revision rejection
+without requiring GTK, threads, or platform processes.
 
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
