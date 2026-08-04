@@ -5,15 +5,15 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, Label, Orientation, Paned,
-    PopoverMenu, ScrolledWindow, Stack,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, Label, MenuButton,
+    Orientation, Paned, ResponseType, ScrolledWindow, Stack,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
 use sourceview5 as sourceview;
 use std::cell::RefCell;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
@@ -26,7 +26,7 @@ pub fn run() -> glib::ExitCode {
 }
 
 fn build_ui(application: &Application) {
-    let file_menu = install_actions(application);
+    let menus = install_actions(application);
     let shell = Rc::new(RefCell::new(UiShell::new()));
     let window = ApplicationWindow::builder()
         .application(application)
@@ -55,27 +55,13 @@ fn build_ui(application: &Application) {
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
 
-    let new_button = Button::with_label("New project");
-    new_button.add_css_class("suggested-action");
-    new_button.set_tooltip_text(Some("Create a new Captee project"));
-    let open_button = Button::with_label("Open project");
-    open_button.add_css_class("suggested-action");
-    open_button.set_tooltip_text(Some("Open an existing Captee project"));
-    let file_button = Button::with_label("File");
-    file_button.add_css_class("suggested-action");
-    file_button.set_tooltip_text(Some("Project and document actions"));
-    let file_popover = PopoverMenu::from_model(Some(&file_menu));
-    file_popover.set_parent(&file_button);
-    let file_popover_for_click = file_popover.clone();
-    file_button.connect_clicked(move |_| file_popover_for_click.popup());
-
     let home_new_button = Button::with_label("New project");
     home_new_button.add_css_class("suggested-action");
     let home_open_button = Button::with_label("Open project");
     home_open_button.add_css_class("suggested-action");
     let stack = Stack::builder().hexpand(true).vexpand(true).build();
     stack.add_named(&build_home(&home_new_button, &home_open_button), Some("home"));
-    stack.add_named(&build_workspace(&source_view), Some("workspace"));
+    stack.add_named(&build_workspace(&source_view, &menus), Some("workspace"));
     stack.set_visible_child_name("home");
 
     let project_ui = ProjectUi {
@@ -96,9 +82,6 @@ fn build_ui(application: &Application) {
     title.add_css_class("title-3");
     header.append(&title);
     header.append(&project_label);
-    header.append(&new_button);
-    header.append(&open_button);
-    header.append(&file_button);
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&header);
@@ -107,8 +90,6 @@ fn build_ui(application: &Application) {
     window.set_child(Some(&root));
 
     connect_ui_actions(&shell, &status, &project_ui, application);
-    connect_project_button(&new_button, true, &project_ui);
-    connect_project_button(&open_button, false, &project_ui);
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     window.present();
@@ -141,7 +122,15 @@ fn build_home(new_button: &Button, open_button: &Button) -> GtkBox {
     home
 }
 
-fn build_workspace(source_view: &sourceview::View) -> Paned {
+#[derive(Clone)]
+struct WorkspaceMenus {
+    file: gio::Menu,
+    edit: gio::Menu,
+    capture: gio::Menu,
+    view: gio::Menu,
+}
+
+fn build_workspace(source_view: &sourceview::View, menus: &WorkspaceMenus) -> GtkBox {
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(16);
     navigation.set_margin_bottom(16);
@@ -175,23 +164,47 @@ fn build_workspace(source_view: &sourceview::View) -> Paned {
     workspace.set_resize_start_child(false);
     workspace.set_shrink_start_child(false);
     workspace.set_position(220);
-    workspace
+
+    let menu_strip = GtkBox::new(Orientation::Horizontal, 4);
+    menu_strip.set_halign(Align::Start);
+    menu_strip.set_margin_start(12);
+    menu_strip.set_margin_end(12);
+    menu_strip.set_margin_top(8);
+    menu_strip.set_margin_bottom(8);
+    for (label, menu, tooltip) in [
+        ("File", &menus.file, "Project and document actions"),
+        ("Edit", &menus.edit, "Editing actions"),
+        ("Capture", &menus.capture, "Capture actions"),
+        ("View", &menus.view, "Preview and export actions"),
+    ] {
+        let button = MenuButton::new();
+        button.set_label(label);
+        button.set_menu_model(Some(menu));
+        button.add_css_class("flat");
+        button.set_tooltip_text(Some(tooltip));
+        menu_strip.append(&button);
+    }
+
+    let root = GtkBox::new(Orientation::Vertical, 0);
+    root.append(&menu_strip);
+    root.append(&workspace);
+    root
 }
 
-fn install_actions(application: &Application) -> gio::Menu {
-    let menu = gio::Menu::new();
+fn install_actions(application: &Application) -> WorkspaceMenus {
     let file = gio::Menu::new();
     file.append(Some("New project"), Some("app.new-project"));
     file.append(Some("Open project"), Some("app.open-project"));
     file.append(Some("Close project"), Some("app.close-project"));
     file.append(Some("Save"), Some("app.save"));
-    file.append(Some("Format"), Some("app.format"));
-    file.append(Some("Find and Replace"), Some("app.find-replace"));
-    file.append(Some("Capture"), Some("app.capture"));
-    file.append(Some("Preview"), Some("app.preview"));
-    file.append(Some("Export PDF"), Some("app.export"));
-    menu.append_submenu(Some("File"), &file);
-    application.set_menubar(Some(&menu));
+    let edit = gio::Menu::new();
+    edit.append(Some("Format"), Some("app.format"));
+    edit.append(Some("Find and Replace"), Some("app.find-replace"));
+    let capture = gio::Menu::new();
+    capture.append(Some("Capture"), Some("app.capture"));
+    let view = gio::Menu::new();
+    view.append(Some("Preview"), Some("app.preview"));
+    view.append(Some("Export PDF"), Some("app.export"));
 
     for (name, accelerator) in [
         ("new-project", "<Primary>n"),
@@ -208,7 +221,7 @@ fn install_actions(application: &Application) -> gio::Menu {
         application.add_action(&action);
         application.set_accels_for_action(&format!("app.{name}"), &[accelerator]);
     }
-    file
+    WorkspaceMenus { file, edit, capture, view }
 }
 
 fn connect_ui_actions(
@@ -241,35 +254,23 @@ fn connect_ui_actions(
 
     let action = application.lookup_action("close-project").expect("installed close action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
-    let shell = Rc::clone(shell);
-    let status = status.clone();
-    let stack = project_ui.stack.clone();
-    let source_buffer = project_ui.source_buffer.clone();
-    let project_label = project_ui.project_label.clone();
+    let project_ui = project_ui.clone();
     action.connect_activate(move |_, _| {
-        match shell.borrow_mut().dispatch(UiCommand::CloseProject) {
-            Ok(()) => {
-                stack.set_visible_child_name("home");
-                source_buffer.set_text("");
-                project_label.set_text("No project open");
-                status.set_text("Project closed. Create or open a project to begin.");
-            }
-            Err(error) => status.set_text(&format!("Error: {error}")),
-        }
+        close_project(&project_ui);
     });
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
     let project_ui = project_ui.clone();
     button.connect_clicked(move |_| {
-        choose_project_folder(create, &project_ui);
+        choose_project_action(create, &project_ui);
     });
 }
 
 fn connect_project_action(action: &gio::SimpleAction, create: bool, project_ui: &ProjectUi) {
     let project_ui = project_ui.clone();
     action.connect_activate(move |_, _| {
-        choose_project_folder(create, &project_ui);
+        choose_project_action(create, &project_ui);
     });
 }
 
@@ -283,11 +284,128 @@ struct ProjectUi {
     project_label: Label,
 }
 
+fn choose_project_action(create: bool, project_ui: &ProjectUi) {
+    if create {
+        show_new_project_dialog(project_ui);
+    } else {
+        show_open_project_dialog(project_ui);
+    }
+}
+
+fn show_new_project_dialog(project_ui: &ProjectUi) {
+    let dialog = Dialog::builder()
+        .title("New Captee project")
+        .transient_for(&project_ui.window)
+        .modal(true)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Create", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+
+    let content = dialog.content_area();
+    let form = GtkBox::new(Orientation::Vertical, 10);
+    form.set_margin_top(16);
+    form.set_margin_bottom(16);
+    form.set_margin_start(16);
+    form.set_margin_end(16);
+
+    let name_label = Label::new(Some("Project name"));
+    name_label.set_xalign(0.0);
+    let name_entry = Entry::new();
+    name_entry.set_placeholder_text(Some("e.g. Meeting notes"));
+    name_entry.set_activates_default(true);
+    name_entry.set_hexpand(true);
+
+    let location_label = Label::new(Some("Parent location"));
+    location_label.set_xalign(0.0);
+    let location = Rc::new(RefCell::new(None::<PathBuf>));
+    let selected_location = Label::new(Some("No location selected"));
+    selected_location.set_xalign(0.0);
+    selected_location.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    let choose_location = Button::with_label("Choose location…");
+    let location_for_button = Rc::clone(&location);
+    let selected_location_for_button = selected_location.clone();
+    let window = project_ui.window.clone();
+    choose_location.connect_clicked(move |_| {
+        let chooser = gtk::FileChooserNative::builder()
+            .title("Choose parent location")
+            .accept_label("Select folder")
+            .cancel_label("Cancel")
+            .action(gtk::FileChooserAction::SelectFolder)
+            .transient_for(&window)
+            .modal(true)
+            .build();
+        let location_for_chooser = Rc::clone(&location_for_button);
+        let selected_location_for_chooser = selected_location_for_button.clone();
+        chooser.run_async(move |chooser, response| {
+            if response == ResponseType::Accept {
+                if let Some(file) = chooser.file() {
+                    if let Some(path) = file.path() {
+                        selected_location_for_chooser.set_text(&path.display().to_string());
+                        *location_for_chooser.borrow_mut() = Some(path);
+                    }
+                }
+            }
+            chooser.destroy();
+        });
+    });
+
+    let dialog_status = Label::new(None);
+    dialog_status.set_xalign(0.0);
+    dialog_status.add_css_class("error");
+    form.append(&name_label);
+    form.append(&name_entry);
+    form.append(&location_label);
+    form.append(&choose_location);
+    form.append(&selected_location);
+    form.append(&dialog_status);
+    content.append(&form);
+
+    let project_ui_for_response = project_ui.clone();
+    let location_for_response = Rc::clone(&location);
+    let dialog_status_for_response = dialog_status.clone();
+    let name_entry_for_response = name_entry.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dialog.close();
+            return;
+        }
+
+        let name = name_entry_for_response.text().trim().to_owned();
+        let Some(parent) = location_for_response.borrow().clone() else {
+            dialog_status_for_response.set_text("Choose a parent location first.");
+            return;
+        };
+        if let Err(error) = validate_project_name(&name) {
+            dialog_status_for_response.set_text(&error);
+            return;
+        }
+
+        match create_loaded_project(&parent, &name) {
+            Ok(project) => {
+                if open_loaded_project(
+                    project,
+                    true,
+                    &parent.join(name.trim()),
+                    &project_ui_for_response,
+                ) {
+                    dialog.close();
+                }
+            }
+            Err(error) => {
+                dialog_status_for_response.set_text(&format!("Could not create project: {error}"))
+            }
+        }
+    });
+    dialog.present();
+    name_entry.grab_focus();
+}
+
 #[allow(deprecated)]
-fn choose_project_folder(create: bool, project_ui: &ProjectUi) {
+fn show_open_project_dialog(project_ui: &ProjectUi) {
     let dialog = gtk::FileChooserNative::builder()
-        .title(if create { "Choose project folder" } else { "Open project folder" })
-        .accept_label(if create { "Create here" } else { "Open" })
+        .title("Open project folder")
+        .accept_label("Open")
         .cancel_label("Cancel")
         .action(gtk::FileChooserAction::SelectFolder)
         .transient_for(&project_ui.window)
@@ -308,34 +426,11 @@ fn choose_project_folder(create: bool, project_ui: &ProjectUi) {
             dialog.destroy();
             return;
         };
-        let result = if create { create_loaded_project(&path) } else { load_project(&path) };
-        match result {
+        match load_project(&path) {
             Ok(project) => {
-                project_ui.source_buffer.set_text(&project.source);
-                match project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
-                    session: project.session.clone(),
-                    settings: project.settings,
-                }) {
-                    Ok(()) => {
-                        project_ui.project_label.set_text(&format!(
-                            "{} · {}",
-                            project.session.name,
-                            path.display()
-                        ));
-                        project_ui.stack.set_visible_child_name("workspace");
-                        project_ui.status.set_text(if create {
-                            "Project created. Ready to edit."
-                        } else {
-                            "Project opened. Ready to edit."
-                        });
-                    }
-                    Err(error) => project_ui.status.set_text(&format!("Error: {error}")),
-                }
+                open_loaded_project(project, false, &path, &project_ui);
             }
-            Err(error) => project_ui.status.set_text(&format!(
-                "Could not {} project: {error}",
-                if create { "create" } else { "open" }
-            )),
+            Err(error) => project_ui.status.set_text(&format!("Could not open project: {error}")),
         }
         dialog.destroy();
     });
@@ -347,15 +442,25 @@ struct LoadedProject {
     source: String,
 }
 
-fn create_loaded_project(path: &Path) -> Result<LoadedProject, String> {
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("Captee project");
-    let config = ProjectConfig::new(name, "main.typ").map_err(|error| error.to_string())?;
-    create_project(path, config).map_err(|error| error.to_string())?;
-    load_project(path)
+fn validate_project_name(name: &str) -> Result<(), String> {
+    let path = Path::new(name);
+    if name.trim().is_empty()
+        || !path.is_relative()
+        || path == Path::new(".")
+        || path == Path::new("..")
+        || path.components().count() != 1
+    {
+        return Err("Enter a simple project name without path separators.".into());
+    }
+    Ok(())
+}
+
+fn create_loaded_project(parent: &Path, name: &str) -> Result<LoadedProject, String> {
+    validate_project_name(name)?;
+    let path = parent.join(name.trim());
+    let config = ProjectConfig::new(name.trim(), "main.typ").map_err(|error| error.to_string())?;
+    create_project(&path, config).map_err(|error| error.to_string())?;
+    load_project(&path)
 }
 
 fn load_project(path: &Path) -> Result<LoadedProject, String> {
@@ -374,6 +479,51 @@ fn load_project(path: &Path) -> Result<LoadedProject, String> {
     })
 }
 
+fn open_loaded_project(
+    project: LoadedProject,
+    created: bool,
+    path: &Path,
+    project_ui: &ProjectUi,
+) -> bool {
+    let result = project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
+        session: project.session.clone(),
+        settings: project.settings,
+    });
+    match result {
+        Ok(()) => {
+            project_ui.source_buffer.set_text(&project.source);
+            project_ui.project_label.set_text(&format!(
+                "{} · {}",
+                project.session.name,
+                path.display()
+            ));
+            project_ui.stack.set_visible_child_name("workspace");
+            project_ui.status.set_text(if created {
+                "Project created. Ready to edit."
+            } else {
+                "Project opened. Ready to edit."
+            });
+            true
+        }
+        Err(error) => {
+            project_ui.status.set_text(&format!("Error: {error}"));
+            false
+        }
+    }
+}
+
+fn close_project(project_ui: &ProjectUi) {
+    match project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject) {
+        Ok(()) => {
+            project_ui.stack.set_visible_child_name("home");
+            project_ui.source_buffer.set_text("");
+            project_ui.project_label.set_text("No project open");
+            project_ui.status.set_text("Project closed. Create or open a project to begin.");
+        }
+        Err(error) => project_ui.status.set_text(&format!("Error: {error}")),
+    }
+}
+
 fn dispatch_and_announce(shell: &Rc<RefCell<UiShell>>, status: &Label, command: UiCommand) {
     let result = shell.borrow_mut().dispatch(command);
     let snapshot = shell.borrow().snapshot();
@@ -381,5 +531,22 @@ fn dispatch_and_announce(shell: &Rc<RefCell<UiShell>>, status: &Label, command: 
         status.set_text(&format!("Error: {error}"));
     } else if let Some(announcement) = snapshot.announcement {
         status.set_text(&announcement.label);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_project_name;
+
+    #[test]
+    fn project_name_accepts_a_single_directory_name() {
+        assert!(validate_project_name("Meeting notes").is_ok());
+    }
+
+    #[test]
+    fn project_name_rejects_paths_and_empty_input() {
+        assert!(validate_project_name("").is_err());
+        assert!(validate_project_name("nested/project").is_err());
+        assert!(validate_project_name("..").is_err());
     }
 }

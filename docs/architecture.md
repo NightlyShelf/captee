@@ -36,6 +36,16 @@ large entry documents can briefly block the GTK loop; this should move to a
   GTK 4.6-compatible native dialog API so the release builder does not require
   a newer host development package.
 
+Project creation is presented as a modal name-and-parent-location form, while
+opening uses the GTK 4.6-compatible native folder chooser. Both successful
+paths route through the same workspace transition, and closing routes through
+the corresponding home transition so the editor buffer and project label cannot
+drift from the headless application state. Project-only menu buttons are built
+inside the workspace surface; the home screen keeps only its create/open
+actions. Dialog callbacks perform only the user-requested project filesystem
+operation and retain the existing follow-up for moving large project loads off
+the GTK main loop.
+
 ## Performance considerations
 
 The initial source editor stores complete text snapshots for undo and redo. This
