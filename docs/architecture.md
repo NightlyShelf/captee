@@ -22,9 +22,10 @@ the store performs no widget, filesystem, process, or thread work.
 The UI crate adds a presentation adapter over those snapshots. It owns logical
 pane selection, keyboard-action declarations, focus targets, progress, and
 accessible status announcements, while command execution remains routed through
-the core dispatcher. The GTK adapter uses the GTK 4.22 API surface and
-GtkSourceView 5 for the source editor; headless state tests remain independent
-of a desktop session.
+the core dispatcher. The GTK adapter uses the GTK 4 API surface and
+GtkSourceView 5 for the source editor. It is validated locally against GTK
+4.22.4 while keeping the used API subset compatible with the Ubuntu CI runner;
+headless state tests remain independent of a desktop session.
 
 ## Performance considerations
 

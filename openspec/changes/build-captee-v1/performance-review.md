@@ -260,7 +260,9 @@ the change is archived.
   workspace and UI checks.
 - **Follow-up:** The AppImage job still needs a pinned packaging toolchain and
   bundled GTK runtime; native widget memory and redraw costs should be profiled
-  when the preview and editor content pipelines are connected.
+  when the preview and editor content pipelines are connected. The binding is
+  intentionally compiled against the stable GTK API subset because the Ubuntu
+  CI image provides GTK 4.14.5; the release image remains pinned to GTK 4.22.4.
 
 ## Task 2.4 — core CI checks (partial)
 
