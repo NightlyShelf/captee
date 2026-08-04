@@ -5,12 +5,12 @@ use crate::operation::{
 use crate::{UiCommand, UiShell};
 use captee_core::{
     replace_literal, request_completions, CompletionItem, Diagnostic, DiagnosticSeverity,
-    Operation, OperationKind, ProjectConfig, ProjectSession, SourceDocument,
+    Operation, OperationKind, ProjectConfig, ProjectSession, RenderState, SourceDocument,
 };
 use captee_platform::{
-    create_project, open_project, AutosaveSnapshot, AutosaveStore, FormattedSource,
-    ProjectDocumentPersistence, RecentProjectStore, TypstCompletionProvider, TypstFormatter,
-    TypstRunner, AUTOSAVE_FILE,
+    create_project, open_project, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore,
+    FormattedSource, PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore,
+    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
@@ -38,6 +38,7 @@ enum WorkspaceOperationResult {
     Formatted(FormattedSource),
     Completions { items: Vec<CompletionItem>, cursor: usize },
     AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
+    Preview(PreviewOutcome),
 }
 
 #[derive(Debug)]
@@ -60,6 +61,8 @@ fn build_ui(application: &Application) {
     let coordinator = Rc::new(RefCell::new(OperationCoordinator::new()));
     let syncing_buffer = Rc::new(Cell::new(false));
     let autosave_sequence = Rc::new(Cell::new(0));
+    let preview_sequence = Rc::new(Cell::new(0));
+    let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -91,6 +94,13 @@ fn build_ui(application: &Application) {
     diagnostics_label.set_xalign(0.0);
     diagnostics_label.set_wrap(true);
     diagnostics_label.set_selectable(true);
+    let preview_picture = gtk::Picture::new();
+    preview_picture.set_hexpand(true);
+    preview_picture.set_vexpand(true);
+    preview_picture.set_can_shrink(true);
+    let preview_status = Label::new(Some("Render a document to see its preview."));
+    preview_status.set_xalign(0.0);
+    preview_status.set_wrap(true);
 
     let home_new_button = Button::with_label("New project");
     home_new_button.add_css_class("suggested-action");
@@ -98,7 +108,16 @@ fn build_ui(application: &Application) {
     home_open_button.add_css_class("suggested-action");
     let stack = Stack::builder().hexpand(true).vexpand(true).build();
     stack.add_named(&build_home(&home_new_button, &home_open_button), Some("home"));
-    stack.add_named(&build_workspace(&source_view, &diagnostics_label, &menus), Some("workspace"));
+    stack.add_named(
+        &build_workspace(
+            &source_view,
+            &preview_picture,
+            &preview_status,
+            &diagnostics_label,
+            &menus,
+        ),
+        Some("workspace"),
+    );
     stack.set_visible_child_name("home");
 
     let project_ui = ProjectUi {
@@ -109,10 +128,14 @@ fn build_ui(application: &Application) {
         source_buffer: source_buffer.clone(),
         project_label: project_label.clone(),
         diagnostics_label,
+        preview_picture,
+        preview_status,
         editor,
         coordinator,
         syncing_buffer,
         autosave_sequence,
+        preview_sequence,
+        render_state,
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -178,6 +201,8 @@ struct WorkspaceMenus {
 
 fn build_workspace(
     source_view: &sourceview::View,
+    preview_picture: &gtk::Picture,
+    preview_status: &Label,
     diagnostics_label: &Label,
     menus: &WorkspaceMenus,
 ) -> GtkBox {
@@ -200,7 +225,15 @@ fn build_workspace(
     preview.set_margin_start(16);
     preview.set_margin_end(16);
     preview.append(&Label::new(Some("Preview")));
-    preview.append(&Label::new(Some("Render a document to see its PDF preview.")));
+    preview.append(preview_status);
+    preview.append(
+        &ScrolledWindow::builder()
+            .child(preview_picture)
+            .hexpand(true)
+            .vexpand(true)
+            .min_content_height(240)
+            .build(),
+    );
     let diagnostics_title = Label::new(Some("Diagnostics"));
     diagnostics_title.set_xalign(0.0);
     diagnostics_title.add_css_class("heading");
@@ -291,11 +324,7 @@ fn connect_ui_actions(
     project_ui: &ProjectUi,
     application: &Application,
 ) {
-    for (name, command) in [
-        ("capture", UiCommand::Capture),
-        ("preview", UiCommand::Preview),
-        ("export", UiCommand::Export),
-    ] {
+    for (name, command) in [("capture", UiCommand::Capture), ("export", UiCommand::Export)] {
         let action = application.lookup_action(name).expect("installed application action");
         let action = action.downcast::<gio::SimpleAction>().expect("simple action");
         let shell = Rc::clone(shell);
@@ -343,6 +372,11 @@ fn connect_ui_actions(
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let completion_ui = project_ui.clone();
     action.connect_activate(move |_, _| start_completion(&completion_ui));
+
+    let action = application.lookup_action("preview").expect("installed preview action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let preview_ui = project_ui.clone();
+    action.connect_activate(move |_, _| start_preview(&preview_ui));
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -368,10 +402,14 @@ struct ProjectUi {
     source_buffer: sourceview::Buffer,
     project_label: Label,
     diagnostics_label: Label,
+    preview_picture: gtk::Picture,
+    preview_status: Label,
     editor: Rc<RefCell<Option<EditorBridge>>>,
     coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
     autosave_sequence: Rc<Cell<u64>>,
+    preview_sequence: Rc<Cell<u64>>,
+    render_state: Rc<RefCell<RenderState>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -429,12 +467,37 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
     }
+    project_ui.render_state.borrow_mut().set_source_revision(state.revision);
+    project_ui.preview_status.set_text("Preview is out of date.");
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty)) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
     }
     refresh_project_label(project_ui);
     schedule_autosave(project_ui, state);
+    schedule_preview(project_ui, state);
+}
+
+fn schedule_preview(project_ui: &ProjectUi, state: &EditorState) {
+    let sequence = project_ui.preview_sequence.get().saturating_add(1);
+    project_ui.preview_sequence.set(sequence);
+    if !project_ui.shell.borrow().snapshot().app.settings.preview.auto_render {
+        return;
+    }
+    let revision = state.revision;
+    let project_ui = project_ui.clone();
+    glib::timeout_add_local_once(Duration::from_millis(600), move || {
+        if project_ui.preview_sequence.get() != sequence || project_ui.window().is_none() {
+            return;
+        }
+        let current = project_ui.coordinator.borrow().active_source();
+        if current.as_ref().is_none_or(|source| source.revision() != revision)
+            || project_ui.shell.borrow().snapshot().progress.is_some()
+        {
+            return;
+        }
+        start_preview(&project_ui);
+    });
 }
 
 fn schedule_autosave(project_ui: &ProjectUi, state: &EditorState) {
@@ -615,6 +678,48 @@ fn start_completion(project_ui: &ProjectUi) {
     });
 }
 
+fn start_preview(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.status.set_text("Open a project before rendering a preview.");
+        return;
+    };
+    let Some(source) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
+        project_ui.status.set_text("No entry document is active.");
+        return;
+    };
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Preview) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Preview, true) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Rendering preview…");
+    project_ui.preview_status.set_text("Rendering current source…");
+    let root = PathBuf::from(project.root);
+    let cancellation = task.cancellation();
+    let _ = thread::Builder::new().name("captee-preview-result".to_owned()).spawn(move || {
+        let compiler =
+            AsyncPreviewCompiler::new(TypstPreviewCompiler::new(TypstRunner::discover(), root));
+        let handle = compiler.submit(source.revision, source.text);
+        let outcome = match handle.recv() {
+            Ok(_) if cancellation.is_cancelled() => OperationOutcome::Cancelled,
+            Ok(outcome) => OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)),
+            Err(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
 fn byte_offset_for_character(source: &str, character_offset: usize) -> usize {
     source.char_indices().nth(character_offset).map(|(offset, _)| offset).unwrap_or(source.len())
 }
@@ -787,6 +892,60 @@ fn apply_operation_result(
                         .borrow_mut()
                         .dispatch(UiCommand::Complete { message: "Completions ready".to_owned() });
                     show_completion_dialog(project_ui, source_identity, items, cursor);
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)) => {
+                    let preview = outcome.result.as_ref().ok().map(|artifact| {
+                        (artifact.first_page_png.clone(), artifact.diagnostics.clone())
+                    });
+                    let failure = outcome
+                        .result
+                        .as_ref()
+                        .err()
+                        .map(|error| (error.message.clone(), error.diagnostics.clone()));
+                    let accepted = outcome.apply_to(&mut project_ui.render_state.borrow_mut());
+                    if !accepted {
+                        let message = "Preview result ignored because its revision is stale.";
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Warn { message: message.to_owned() });
+                        project_ui.status.set_text(message);
+                    } else if let Some((png, diagnostics)) = preview {
+                        show_diagnostics(project_ui, &diagnostics);
+                        let bytes = glib::Bytes::from_owned(png);
+                        match gtk::gdk::Texture::from_bytes(&bytes) {
+                            Ok(texture) => {
+                                project_ui.preview_picture.set_paintable(Some(&texture));
+                                project_ui.preview_status.set_text("Showing current preview.");
+                                let _ =
+                                    project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
+                                        message: "Preview rendered".to_owned(),
+                                    });
+                                project_ui.status.set_text("Preview rendered.");
+                            }
+                            Err(error) => {
+                                let message = format!("Could not display preview image: {error}");
+                                let _ = project_ui
+                                    .shell
+                                    .borrow_mut()
+                                    .dispatch(UiCommand::Fail { message: message.clone() });
+                                project_ui.preview_status.set_text(
+                                    "Preview compiled, but its image could not be displayed.",
+                                );
+                                project_ui.status.set_text(&format!("Error: {message}"));
+                            }
+                        }
+                    } else if let Some((message, diagnostics)) = failure {
+                        show_diagnostics(project_ui, &diagnostics);
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Fail { message: message.clone() });
+                        project_ui
+                            .preview_status
+                            .set_text("Preview failed; the last valid preview is retained.");
+                        project_ui.status.set_text(&format!("Preview error: {message}"));
+                    }
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                     message,
@@ -1202,6 +1361,9 @@ fn open_loaded_project(
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
             project_ui.diagnostics_label.set_text("No diagnostics.");
+            *project_ui.render_state.borrow_mut() = RenderState::new(0);
+            project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
+            project_ui.preview_status.set_text("Preview has not been rendered yet.");
             refresh_project_label(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
             project_ui.status.set_text(if created {
@@ -1215,6 +1377,9 @@ fn open_loaded_project(
             }
             if let Some(recovery) = project.recovery {
                 show_recovery_dialog(project_ui, recovery);
+            } else if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state)
+            {
+                schedule_preview(project_ui, &state);
             }
             true
         }
@@ -1278,6 +1443,9 @@ fn show_recovery_dialog(project_ui: &ProjectUi, recovery: RecoveryDraft) {
                 project_ui.status.set_text("Autosaved draft recovered. Save to keep it.");
             }
         }
+        if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
+            schedule_preview(&project_ui, &state);
+        }
         dialog.close();
     });
     dialog.present();
@@ -1294,6 +1462,9 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.source_buffer.set_text("");
             project_ui.syncing_buffer.set(false);
             project_ui.diagnostics_label.set_text("No diagnostics.");
+            *project_ui.render_state.borrow_mut() = RenderState::new(0);
+            project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
+            project_ui.preview_status.set_text("Render a document to see its preview.");
             refresh_project_label(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }

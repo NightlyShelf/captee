@@ -95,6 +95,14 @@ applied as one core edit. Completion uses a testable provider, converts GTK
 character offsets to UTF-8 byte offsets, and rechecks project/source identity
 when the selection dialog confirms insertion.
 
+Preview requests are debounced for 600 ms and use `AsyncPreviewCompiler` with
+the discovered Typst binary outside the GTK thread. A successful attempt
+produces the complete PDF plus a first-page PNG, both tagged with the active
+source revision. `RenderState` remains authoritative for stale rejection and
+last-valid PDF retention; GTK decodes the PNG only after both coordinator and
+render-state checks accept it. Failed renders update diagnostics and status but
+leave the last valid preview picture visible.
+
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
 can grow approximately with document size multiplied by the number of edits.

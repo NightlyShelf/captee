@@ -38,3 +38,11 @@
 - Concurrency and lifetime: Format and completion carry project/revision operation identities and check cooperative cancellation before applying. Completion dialogs recheck source identity before insertion; formatter failure and dialog cancellation do not mutate source.
 - Mitigation: Temporary formatter files use collision-resistant names and are removed on all normal result paths, stale results are discarded, completion validates UTF-8 byte offsets, and formatting diagnostics retain severity/location without replacing editable source on failure.
 - Follow-up: Subprocess cancellation currently prevents result application but cannot interrupt an already-running Typst formatter; a later process supervisor should terminate the child when cancellation latency becomes observable.
+
+## Task 3.1: Connected Typst preview
+
+- Finding: One debounced preview request copies the active source, starts the asynchronous compiler, and asks bundled Typst for both the complete PDF and a first-page PNG. `RenderState` retains one PDF while GTK retains one decoded preview texture.
+- Impact: Typst process startup and dual compilation dominate CPU and I/O; memory peaks include source, PDF, PNG, and decoded texture. The 600 ms sequence debounce prevents compilation on every keystroke, and only one UI operation is accepted at a time.
+- Concurrency and lifetime: Compilation runs outside GTK, results carry project/source identity, `RenderState` independently rejects stale revisions, and a failed current render retains the last valid PDF and picture. Window teardown stops polling and late results cannot reach widgets.
+- Mitigation: Preview staging files use collision-resistant project-local names and are removed after each attempt. The UI displays only the first page, caps diagnostics, and drops superseded results before texture decoding.
+- Follow-up: Large multi-page documents currently compile twice to produce PDF and PNG. A future renderer integrated as a library could rasterize the retained PDF once and avoid the second Typst process.
