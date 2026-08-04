@@ -129,15 +129,33 @@ result cannot be applied after cancellation even when the provider itself cannot
 be interrupted. Regression tests cover this stale-result boundary and formatter
 failure preservation.
 
-CI runs formatting, clippy, and headless tests as separate jobs with a shared
-Rust cache and read-only repository permissions. Parallel jobs shorten
-feedback time but may duplicate dependency compilation. AppImage packaging is
-kept in a separate, manual-only Ubuntu 22.04 workflow so normal test feedback
-does not download packaging tools or spend time assembling a release image.
-The package workflow records tool digests and uploads the resulting artifact;
-the GTK dependency tree and squashfs assembly remain the dominant packaging
-I/O costs.
+CI runs formatting, clippy, and headless tests as separate jobs with the pinned
+test image and read-only repository permissions. Parallel jobs shorten feedback
+time but may duplicate source compilation inside their containers. AppImage
+packaging is kept in a separate, manual-only Ubuntu 22.04 workflow so normal
+test feedback does not download packaging tools or spend time assembling a
+release image. The package workflow records tool digests and uploads the
+resulting artifact; the GTK dependency tree and squashfs assembly remain the
+dominant packaging I/O costs.
 
 The CI quality gates intentionally fail on formatting drift and clippy warnings,
 so the pinned toolchain and committed lockfile are part of the reproducible build
 boundary rather than optional local conventions.
+
+## CI build environments
+
+CI uses two independent, x86_64 Ubuntu 22.04 container images: a lean test image
+for Rust formatting, linting, and headless tests, and a build image that adds
+AppImage and packaging dependencies. They are published manually through the CI
+image workflow and consumed through repository variables containing complete
+digest-qualified GHCR references. This keeps the test path independent from
+release packaging while making the toolchain and GTK versions reproducible.
+
+Image publication validates architecture, health checks, secret scans, and input
+metadata before the write-enabled publication job. Consumers verify the resolved
+digest and can fall back to a pinned Ubuntu runner setup when an image is missing
+or unavailable. The fallback preserves availability but intentionally restores
+the package-install latency that the images are meant to remove. Large GTK and
+Rust layers make cold pulls and image publication the main CI infrastructure
+bottleneck; role separation, immutable references, and per-role layer caches keep
+that cost out of ordinary test jobs as far as possible.

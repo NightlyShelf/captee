@@ -26,7 +26,7 @@
 
 ## 5. Performance and release validation
 
-- [ ] 5.1 Run image smoke checks plus the complete fmt, clippy, workspace/UI test suite and manual AppImage packaging using the new images.
-- [ ] 5.2 Compare setup, pull, and total job times with the baseline; capture cache hit/miss behavior and image-size trade-offs.
-- [ ] 5.3 Review changed Docker/workflow code for CPU, memory, network/I/O, concurrency, layer lifetime, credential exposure, and cache-invalidation bottlenecks; record findings in the active change performance log and mirror architecture consequences in `docs/architecture.md`.
-- [ ] 5.4 Document image promotion, digest updates, rollback, fallback, registry permissions, and local troubleshooting.
+- [x] 5.1 Run image smoke checks plus the complete fmt, clippy, workspace/UI test suite and manual AppImage packaging using the new images.
+- [x] 5.2 Compare setup, pull, and total job times with the baseline; capture cache hit/miss behavior and image-size trade-offs.
+- [x] 5.3 Review changed Docker/workflow code for CPU, memory, network/I/O, concurrency, layer lifetime, credential exposure, and cache-invalidation bottlenecks; record findings in the active change performance log and mirror architecture consequences in `docs/architecture.md`.
+- [x] 5.4 Document image promotion, digest updates, rollback, fallback, registry permissions, and local troubleshooting.

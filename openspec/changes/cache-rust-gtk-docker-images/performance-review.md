@@ -76,3 +76,31 @@
 - **Impact:** Fallback preserves availability but can reintroduce the multi-minute package-install bottleneck; image variables must be updated deliberately after publication.
 - **Mitigation:** Log the selected mode and exact image reference, keep fallback setup version-pinned, and limit registry write/OIDC permissions to the publication job.
 - **Follow-up:** Validate both image and fallback branches in CI and document repository variable updates alongside digest metadata.
+
+## Task 5.1 — Image-backed end-to-end validation
+
+- **Finding:** The published test image passed health checks and all four consumer jobs: rustfmt 38s, workspace tests 1m15s, UI state tests 1m19s, and clippy 1m03s. The manual AppImage workflow passed in 1m56s using the separate build image. The first AppImage attempt completed compilation in 1m03s but failed during linuxdeploy because the relative `.ci/appimage` path was resolved twice; the path normalization fix was committed in `4443f3c` and the rerun passed.
+- **Impact:** Image-backed consumers are healthy, but packaging remains sensitive to workspace/output path assumptions. The image pull and first compilation still dominate a cold AppImage run.
+- **Mitigation:** Normalize relative build directories to an absolute path before changing directories, validate the build image before compilation, and keep the artifact directory on the mounted workspace.
+- **Follow-up:** Keep the manual AppImage workflow as the release artifact path and test any future output-directory changes in both image and runner-fallback modes.
+
+## Task 5.2 — Timing, cache, and image-size comparison
+
+- **Finding:** The first successful image validation run took 5m21s and publication took 2m10s. The published compressed layer totals are approximately 495 MiB for the test image and 529 MiB for the build image. Image-backed Rust jobs completed in 38–79s, and the successful AppImage job completed in 1m56s. The earlier baseline showed 18–24s GTK setup for normal Rust jobs, 28s package setup for AppImage, and one 7m03s GTK-install outlier before cancellation. The 7m+ delay was repeated package installation, not a normal Cargo compile.
+- **Impact:** A cold image build/publish and first image pull are expensive in network and registry time, and the build image carries roughly 34 MiB more compressed layers than the test image. Once available, consumers avoid repeated package installation and remain near one-to-two-minute job durations.
+- **Mitigation:** Separate role images, use immutable digest variables, keep Buildx GHA cache scopes per role, and use the runner fallback only when the image is unavailable. Build validation and publication remain manual so normal pull-request checks do not rebuild images.
+- **Follow-up:** Monitor cold versus warm GHCR pull times after runner-cache eviction and rotate image versions only when the manifest or tool inputs change.
+
+## Task 5.3 — Final bottleneck and risk review
+
+- **Finding:** Docker image construction and publication are CPU/network intensive; package indexes, Rust dependencies, GTK development packages, and packaging binaries are downloaded once into layers. Consumer jobs add Docker startup and bind-mount overhead. Parallel Rust jobs can still compile separate source targets concurrently. Registry failures remain possible: one validation attempt hit a Docker Hub BuildKit bootstrap timeout, and an earlier validation attempt spent 8m29s before failing Cargo prefetch because manifest-only inputs lacked placeholder targets.
+- **Impact:** Registry availability and cache misses can exceed the actual test duration. Large image layers increase pull bandwidth and runner disk usage. A stale digest can block a job or invoke the documented runner fallback, reintroducing package-install latency.
+- **Mitigation:** Pin the base digest and package/tool inputs, create placeholder targets only for dependency prefetch, use separate cache scopes, scan before publication, verify health and digest before consumers run, bound image use to x86_64 Ubuntu 22.04, and never pass publish credentials to test jobs. The publication job has the only registry write permission.
+- **Follow-up:** Revisit image slimming if pull time becomes the dominant cost; prioritize removing build-only packages from the test image and moving any large packaging assets behind the build role.
+
+## Task 5.4 — Promotion and troubleshooting documentation
+
+- **Finding:** `ci/images/README.md` and `docs/ci-images.md` document manual promotion, digest variables, rollback, fallback, permissions, and local checks. The published metadata records source SHA, base digest, image references, and role digests.
+- **Impact:** Operators can update or roll back consumers without rebuilding application source, while undocumented registry-variable or local Docker issues would otherwise make failures difficult to diagnose.
+- **Mitigation:** Require a manual `publish=true` dispatch, update `CAPTEE_TEST_IMAGE` and `CAPTEE_BUILD_IMAGE` only with digest-qualified references, retain the previous digest for rollback, and provide explicit local healthcheck/build commands.
+- **Follow-up:** Keep the runbook synchronized with any registry namespace, workflow permission, or tool-version policy change.
