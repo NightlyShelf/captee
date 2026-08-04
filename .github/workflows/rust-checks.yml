@@ -8,59 +8,52 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 env:
   CARGO_TERM_COLOR: always
+  CAPTEE_ALLOW_RUNNER_FALLBACK: "true"
+  CAPTEE_TEST_IMAGE: ${{ vars.CAPTEE_TEST_IMAGE }}
+  GHCR_USERNAME: ${{ github.actor }}
+  GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   fmt:
     name: rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-          components: rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      - name: Prepare test environment
+        run: ci/images/prepare-environment.sh test
+      - name: Run rustfmt
+        run: ci/images/run-in-environment.sh cargo fmt --all -- --check
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-          components: clippy
-      - name: Install GTK build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libgtksourceview-5-dev
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Prepare test environment
+        run: ci/images/prepare-environment.sh test
+      - name: Run clippy
+        run: ci/images/run-in-environment.sh cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   workspace-tests:
     name: headless workspace tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-      - name: Install GTK build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libgtksourceview-5-dev
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - name: Prepare test environment
+        run: ci/images/prepare-environment.sh test
+      - name: Run workspace tests
+        run: ci/images/run-in-environment.sh cargo test --workspace
 
   ui-state:
     name: headless UI state tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-      - name: Install GTK build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libgtksourceview-5-dev
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p captee-ui
+      - name: Prepare test environment
+        run: ci/images/prepare-environment.sh test
+      - name: Run UI state tests
+        run: ci/images/run-in-environment.sh cargo test -p captee-ui

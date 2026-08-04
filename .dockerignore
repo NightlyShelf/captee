@@ -1,0 +1,7 @@
+.git
+.github
+dist
+target
+openspec/changes/archive
+*.AppImage
+*.log

@@ -1,0 +1,7 @@
+build-essential
+ca-certificates
+curl
+git
+pkg-config
+libgtk-4-dev
+libgtksourceview-5-dev
