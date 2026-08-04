@@ -386,4 +386,21 @@ mod tests {
         assert_eq!(shell.snapshot().app.view, AppView::Workspace);
         assert_eq!(shell.snapshot().focused, FocusTarget::SourceEditor);
     }
+
+    #[test]
+    fn closing_a_project_returns_to_the_home_surface() {
+        let mut shell = UiShell::new();
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        shell.dispatch(UiCommand::CloseProject).expect("project closes");
+        let snapshot = shell.snapshot();
+        assert_eq!(snapshot.app.view, AppView::Home);
+        assert!(snapshot.app.project.is_none());
+        assert_eq!(snapshot.active_pane, Pane::Navigation);
+        assert_eq!(snapshot.focused, FocusTarget::ProjectList);
+    }
 }
