@@ -82,6 +82,26 @@ pub struct UiSnapshot {
     pub settings_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InteractionState {
+    pub busy: bool,
+    pub cancellable: bool,
+    pub project_actions_enabled: bool,
+    pub workspace_actions_enabled: bool,
+    pub editor_enabled: bool,
+}
+
+pub fn interaction_state(snapshot: &UiSnapshot) -> InteractionState {
+    let busy = snapshot.progress.is_some();
+    InteractionState {
+        busy,
+        cancellable: snapshot.progress.as_ref().is_some_and(|progress| progress.cancellable),
+        project_actions_enabled: !busy,
+        workspace_actions_enabled: snapshot.app.project.is_some() && !busy,
+        editor_enabled: snapshot.app.project.is_some() && !busy,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCommand {
     OpenProject { session: ProjectSession, settings: ProjectSettings },
@@ -474,6 +494,40 @@ mod tests {
         assert_eq!(progress.label, "Saving capture");
         assert!(!progress.cancellable);
         assert!(shell.dispatch(UiCommand::Cancel).is_err());
+    }
+
+    #[test]
+    fn interaction_state_disables_conflicts_and_exposes_only_valid_cancellation() {
+        let mut shell = UiShell::new();
+        assert_eq!(
+            interaction_state(&shell.snapshot()),
+            InteractionState {
+                busy: false,
+                cancellable: false,
+                project_actions_enabled: true,
+                workspace_actions_enabled: false,
+                editor_enabled: false,
+            }
+        );
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        shell.dispatch(UiCommand::Capture).expect("capture starts");
+        assert_eq!(
+            interaction_state(&shell.snapshot()),
+            InteractionState {
+                busy: true,
+                cancellable: true,
+                project_actions_enabled: false,
+                workspace_actions_enabled: false,
+                editor_enabled: false,
+            }
+        );
+        shell.dispatch(UiCommand::Cancel).expect("capture cancels");
+        assert!(interaction_state(&shell.snapshot()).workspace_actions_enabled);
     }
 
     #[test]

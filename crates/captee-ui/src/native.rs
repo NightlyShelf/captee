@@ -5,7 +5,7 @@ use crate::operation::{
 };
 use crate::{UiCommand, UiShell};
 use captee_core::{
-    replace_literal, request_completions, AnnotatedImage, Annotation, AnnotationBackend,
+    replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
     DiagnosticSeverity, InsertionResult, KeybindingSettings, Operation, OperationKind,
     ProjectConfig, ProjectSession, ProjectSettings, RenderState, SourceDocument,
@@ -22,7 +22,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, Entry,
-    Label, MenuButton, Orientation, Paned, ResponseType, ScrolledWindow, Stack,
+    Label, MenuButton, Orientation, Paned, ResponseType, ScrolledWindow, Spinner, Stack,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
@@ -92,11 +92,22 @@ fn build_ui(application: &Application) {
 
     let status = Label::new(Some("Ready. Create or open a project to begin."));
     status.set_xalign(0.0);
-    status.set_margin_start(16);
-    status.set_margin_end(16);
-    status.set_margin_top(8);
-    status.set_margin_bottom(8);
     status.set_tooltip_text(Some("Accessible operation status"));
+    status.set_hexpand(true);
+    let progress_spinner = Spinner::new();
+    progress_spinner.set_visible(false);
+    progress_spinner.set_tooltip_text(Some("An operation is running"));
+    let cancel_button = Button::with_label("Cancel");
+    cancel_button.set_visible(false);
+    cancel_button.set_tooltip_text(Some("Cancel the active operation"));
+    let status_row = GtkBox::new(Orientation::Horizontal, 8);
+    status_row.set_margin_start(16);
+    status_row.set_margin_end(16);
+    status_row.set_margin_top(8);
+    status_row.set_margin_bottom(8);
+    status_row.append(&progress_spinner);
+    status_row.append(&status);
+    status_row.append(&cancel_button);
 
     let project_label = Label::new(Some("No project open"));
     project_label.set_xalign(0.0);
@@ -138,10 +149,13 @@ fn build_ui(application: &Application) {
         status: status.clone(),
         stack: stack.clone(),
         source_buffer: source_buffer.clone(),
+        source_view: source_view.clone(),
         project_label: project_label.clone(),
         diagnostics_label,
         preview_picture,
         preview_status,
+        progress_spinner,
+        cancel_button: cancel_button.clone(),
         editor,
         coordinator,
         syncing_buffer,
@@ -167,7 +181,7 @@ fn build_ui(application: &Application) {
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&header);
     root.append(&stack);
-    root.append(&status);
+    root.append(&status_row);
     window.set_child(Some(&root));
 
     connect_ui_actions(&project_ui, application);
@@ -175,6 +189,8 @@ fn build_ui(application: &Application) {
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
     connect_runtime_results(&project_ui);
+    connect_cancel_button(&cancel_button, &project_ui);
+    sync_operation_feedback(&project_ui);
     window.present();
 }
 
@@ -418,10 +434,13 @@ struct ProjectUi {
     status: Label,
     stack: Stack,
     source_buffer: sourceview::Buffer,
+    source_view: sourceview::View,
     project_label: Label,
     diagnostics_label: Label,
     preview_picture: gtk::Picture,
     preview_status: Label,
+    progress_spinner: Spinner,
+    cancel_button: Button,
     editor: Rc<RefCell<Option<EditorBridge>>>,
     coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
@@ -441,6 +460,83 @@ impl ProjectUi {
 
     fn window(&self) -> Option<ApplicationWindow> {
         self.window.upgrade()
+    }
+}
+
+fn connect_cancel_button(button: &Button, project_ui: &ProjectUi) {
+    let project_ui = project_ui.clone();
+    button.connect_clicked(move |_| match project_ui.coordinator.borrow_mut().cancel_active() {
+        Ok(_) => {
+            let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+            project_ui.status.set_text("Operation cancelled; late results will be ignored.");
+            sync_operation_feedback(&project_ui);
+        }
+        Err(error) => project_ui.status.set_text(&format!("Could not cancel operation: {error}")),
+    });
+}
+
+fn sync_operation_feedback(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let interaction = crate::interaction_state(&snapshot);
+    let progress = snapshot.progress.as_ref();
+    let busy = interaction.busy;
+    if busy {
+        project_ui.progress_spinner.start();
+    } else {
+        project_ui.progress_spinner.stop();
+    }
+    project_ui.progress_spinner.set_visible(busy);
+    let cancellable = interaction.cancellable;
+    project_ui.cancel_button.set_visible(cancellable);
+    project_ui.cancel_button.set_sensitive(cancellable);
+    if let Some(progress) = progress {
+        project_ui
+            .cancel_button
+            .set_tooltip_text(Some(&format!("Cancel {}", progress.label.to_lowercase())));
+    }
+    project_ui.source_view.set_editable(interaction.editor_enabled);
+
+    for class in ["success", "warning", "error"] {
+        project_ui.status.remove_css_class(class);
+    }
+    match snapshot.app.activity {
+        Activity::Succeeded(_) => project_ui.status.add_css_class("success"),
+        Activity::Warning(_) => project_ui.status.add_css_class("warning"),
+        Activity::Failed(_) => project_ui.status.add_css_class("error"),
+        Activity::Idle | Activity::Running { .. } => {}
+    }
+    let status_text = project_ui.status.text();
+    project_ui.status.set_tooltip_text(Some(&format!("Status: {status_text}")));
+
+    let Some(application) = project_ui.application() else {
+        return;
+    };
+    for name in ["new-project", "open-project"] {
+        set_action_enabled(&application, name, interaction.project_actions_enabled);
+    }
+    for name in [
+        "close-project",
+        "save",
+        "format",
+        "find-replace",
+        "completion",
+        "undo",
+        "redo",
+        "capture",
+        "preview",
+        "export",
+        "settings",
+    ] {
+        set_action_enabled(&application, name, interaction.workspace_actions_enabled);
+    }
+}
+
+fn set_action_enabled(application: &Application, name: &str, enabled: bool) {
+    if let Some(action) = application
+        .lookup_action(name)
+        .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+    {
+        action.set_enabled(enabled);
     }
 }
 
@@ -1490,6 +1586,7 @@ fn connect_runtime_results(project_ui: &ProjectUi) {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
+        sync_operation_feedback(&project_ui);
         glib::ControlFlow::Continue
     });
 }
@@ -1773,6 +1870,14 @@ fn apply_operation_result(
                     project_ui.status.set_text(&format!("Error: {message}"));
                 }
             }
+        }
+        ResultDisposition::Stale(result)
+            if project_ui.coordinator.borrow().active_context().is_none()
+                && project_ui.coordinator.borrow().active_source().as_ref()
+                    == Some(result.context.source()) =>
+        {
+            // Explicitly cancelled work is expected to report late. Keep the
+            // user's cancellation status instead of replacing it with a warning.
         }
         ResultDisposition::Stale(_) => {
             let message = "Background result ignored because the project or source changed.";

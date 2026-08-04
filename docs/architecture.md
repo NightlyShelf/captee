@@ -235,6 +235,15 @@ formatter before the same atomic document save. Older configs receive default
 keybindings without migration, and closing a workspace restores application
 defaults.
 
+Operation feedback is derived from the same immutable UI snapshot as command
+dispatch. A small interaction-state projection controls the workspace action
+sensitivity and editor availability, while GTK presents a spinner, textual
+status, and a Cancel button only for cancellable operations. Cancellation
+removes coordinator ownership immediately and flips the worker token; late
+results cannot mutate the UI. Non-cancellable atomic writes keep project and
+editor actions disabled until their single terminal result, preventing close,
+project replacement, or source edits from racing committed state.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a
