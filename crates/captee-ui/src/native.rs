@@ -1,5 +1,5 @@
 use crate::annotation_bridge::AnnotationDraft;
-use crate::editor_bridge::{EditorBridge, EditorState};
+use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
     OperationCoordinator, OperationOutcome, ProjectIdentity, ResultDisposition, SourceIdentity,
 };
@@ -7,14 +7,15 @@ use crate::{UiCommand, UiShell};
 use captee_core::{
     replace_literal, request_completions, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
-    DiagnosticSeverity, Operation, OperationKind, ProjectConfig, ProjectSession, RenderState,
-    SourceDocument,
+    DiagnosticSeverity, InsertionResult, Operation, OperationKind, ProjectConfig, ProjectSession,
+    RenderState, SourceDocument,
 };
 use captee_platform::{
-    create_project, export_pdf, open_project, AsyncPreviewCompiler, AutosaveSnapshot,
-    AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture, PngAnnotationBackend,
-    PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore, TypstCompletionProvider,
-    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    create_project, export_pdf, insert_saved_asset, open_project, AssetStore, AsyncPreviewCompiler,
+    AutosaveSnapshot, AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture,
+    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore,
+    SavedAsset, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
+    XdgPortalCapture, AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
@@ -45,6 +46,7 @@ enum WorkspaceOperationResult {
     Preview(PreviewOutcome),
     Exported(PathBuf),
     Captured(CapturedImage),
+    CaptureStored(SavedAsset),
 }
 
 #[derive(Debug)]
@@ -985,7 +987,14 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
         if response == ResponseType::Accept {
             *project_ui.pending_annotation.borrow_mut() = Some(draft.borrow().confirmed());
             *project_ui.pending_capture.borrow_mut() = None;
-            project_ui.status.set_text("Annotation confirmed; image is ready to save.");
+            dialog.close();
+            let image = project_ui
+                .pending_annotation
+                .borrow_mut()
+                .take()
+                .expect("confirmed annotation is staged");
+            start_capture_storage(&project_ui, image);
+            return;
         } else {
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -995,6 +1004,43 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
     });
     dialog.present();
     Ok(())
+}
+
+fn start_capture_storage(project_ui: &ProjectUi, image: AnnotatedImage) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        *project_ui.pending_annotation.borrow_mut() = Some(image);
+        project_ui.status.set_text("The active project closed before the capture could be saved.");
+        return;
+    };
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::StoreCapture) {
+        *project_ui.pending_annotation.borrow_mut() = Some(image);
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Capture, false) {
+        Ok(task) => task,
+        Err(error) => {
+            *project_ui.pending_annotation.borrow_mut() = Some(image);
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Validating and saving capture…");
+    let root = PathBuf::from(project.root);
+    let _ = thread::Builder::new().name("captee-capture-store".to_owned()).spawn(move || {
+        let outcome = match AssetStore::new(root).and_then(|store| store.save_png(image)) {
+            Ok(asset) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored(asset))
+            }
+            Err(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
 }
 
 fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32, i32), String> {
@@ -1319,6 +1365,69 @@ fn apply_operation_result(
                         }
                         Err(message) => {
                             *project_ui.pending_capture.borrow_mut() = None;
+                            let _ = project_ui
+                                .shell
+                                .borrow_mut()
+                                .dispatch(UiCommand::Fail { message: message.clone() });
+                            project_ui.status.set_text(&format!("Error: {message}"));
+                        }
+                    }
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored(asset)) => {
+                    let focused = project_ui.shell.borrow().snapshot().focused
+                        == crate::FocusTarget::SourceEditor;
+                    let character_offset =
+                        project_ui.source_buffer.cursor_position().max(0) as usize;
+                    let mut editor = project_ui.editor.borrow_mut();
+                    let cursor = editor
+                        .as_ref()
+                        .map(EditorBridge::state)
+                        .map(|state| byte_offset_for_character(&state.text, character_offset))
+                        .unwrap_or_default();
+                    let target = if focused { editor.as_mut() } else { None };
+                    let insertion = {
+                        let mut adapter = EditorInsertionBridge::new(target, cursor);
+                        insert_saved_asset(&asset, Some(&mut adapter))
+                    };
+                    let state = editor.as_ref().map(EditorBridge::state);
+                    drop(editor);
+                    match insertion {
+                        InsertionResult::Inserted => {
+                            if let Some(state) = state {
+                                apply_editor_state(project_ui, &state, true);
+                            }
+                            let message = format!(
+                                "Capture saved and inserted from {}.",
+                                asset.relative_path().display()
+                            );
+                            let _ = project_ui
+                                .shell
+                                .borrow_mut()
+                                .dispatch(UiCommand::Complete { message: message.clone() });
+                            project_ui.status.set_text(&message);
+                        }
+                        InsertionResult::NoFocusedEditor => {
+                            let message = format!(
+                                "Capture saved to {}, but no source editor was focused.",
+                                asset.relative_path().display()
+                            );
+                            let _ = project_ui
+                                .shell
+                                .borrow_mut()
+                                .dispatch(UiCommand::Warn { message: message.clone() });
+                            project_ui.status.set_text(&message);
+                        }
+                        InsertionResult::Cancelled => {
+                            let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+                            project_ui
+                                .status
+                                .set_text("Capture insertion cancelled; image was saved.");
+                        }
+                        InsertionResult::Failed(error) => {
+                            let message = format!(
+                                "Capture saved to {}, but insertion failed: {error}",
+                                asset.relative_path().display()
+                            );
                             let _ = project_ui
                                 .shell
                                 .borrow_mut()

@@ -1,4 +1,4 @@
-use captee_core::{EditError, SourceDocument};
+use captee_core::{EditError, EditorInserter, InsertionError, InsertionResult, SourceDocument};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,33 @@ pub struct EditorState {
 pub struct EditorBridge {
     entry_document: PathBuf,
     document: SourceDocument,
+}
+
+/// Narrow adapter used after capture storage succeeds. It inserts at the
+/// cursor snapshot supplied by GTK and reports the core insertion outcome.
+pub struct EditorInsertionBridge<'a> {
+    editor: Option<&'a mut EditorBridge>,
+    cursor: usize,
+}
+
+impl<'a> EditorInsertionBridge<'a> {
+    pub fn new(editor: Option<&'a mut EditorBridge>, cursor: usize) -> Self {
+        Self { editor, cursor }
+    }
+}
+
+impl EditorInserter for EditorInsertionBridge<'_> {
+    fn insert_image_expression(&mut self, expression: &str) -> InsertionResult {
+        let Some(editor) = self.editor.as_deref_mut() else {
+            return InsertionResult::NoFocusedEditor;
+        };
+        match editor.replace_range(self.cursor..self.cursor, expression) {
+            Ok(_) => InsertionResult::Inserted,
+            Err(error) => InsertionResult::Failed(InsertionError::new(format!(
+                "could not insert image expression: {error:?}"
+            ))),
+        }
+    }
 }
 
 impl EditorBridge {
@@ -138,5 +165,26 @@ mod tests {
         let state = bridge.replace_range(0..5, "goodbye").expect("replace");
         assert_eq!(state.text, "goodbye");
         assert_eq!(bridge.undo().expect("undo").text, "hello");
+    }
+
+    #[test]
+    fn capture_insertion_uses_the_cursor_and_is_undoable() {
+        let mut editor = EditorBridge::new("main.typ", "before after");
+        let mut insertion = EditorInsertionBridge::new(Some(&mut editor), 7);
+        assert_eq!(
+            insertion.insert_image_expression("#image(\"img/capture.png\")"),
+            InsertionResult::Inserted
+        );
+        assert_eq!(editor.state().text, "before #image(\"img/capture.png\")after");
+        assert_eq!(editor.undo().expect("undo insertion").text, "before after");
+    }
+
+    #[test]
+    fn capture_insertion_without_an_editor_is_a_no_op() {
+        let mut insertion = EditorInsertionBridge::new(None, 0);
+        assert_eq!(
+            insertion.insert_image_expression("#image(\"img/capture.png\")"),
+            InsertionResult::NoFocusedEditor
+        );
     }
 }

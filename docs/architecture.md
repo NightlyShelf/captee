@@ -211,6 +211,14 @@ Reset restores the original, while closing the dialog drops both buffers. No
 filesystem or source mutation is reachable until the separate confirmation
 boundary accepts the staged image.
 
+Confirmation transfers the staged PNG to the platform asset store on a worker.
+That boundary validates the complete image before a create-only atomic write,
+then returns a safe project-relative path. Only an accepted result is handed to
+the focused-editor insertion adapter, which inserts the exact generated Typst
+expression at the cursor as one undoable edit. The write is non-cancellable
+after confirmation so UI cancellation cannot race a committed file; cancellation
+before confirmation remains a strict no-op.
+
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a

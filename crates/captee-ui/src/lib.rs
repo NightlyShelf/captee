@@ -94,6 +94,7 @@ pub enum UiCommand {
     FindReplace,
     Completion,
     Capture,
+    StoreCapture,
     Preview,
     Export,
     Complete { message: String },
@@ -213,6 +214,9 @@ impl UiShell {
                 self.start(OperationKind::Completion, true, "Finding completions")?
             }
             UiCommand::Capture => self.start(OperationKind::Capture, true, "Capturing")?,
+            UiCommand::StoreCapture => {
+                self.start(OperationKind::Capture, false, "Saving capture")?
+            }
             UiCommand::Preview => self.start(OperationKind::Preview, true, "Rendering preview")?,
             UiCommand::Export => self.start(OperationKind::Export, false, "Exporting PDF")?,
             UiCommand::Complete { message } => {
@@ -398,6 +402,23 @@ mod tests {
         shell.dispatch(UiCommand::Cancel).expect("capture cancels");
         assert_eq!(shell.snapshot().app.view, AppView::Workspace);
         assert_eq!(shell.snapshot().focused, FocusTarget::SourceEditor);
+    }
+
+    #[test]
+    fn confirmed_capture_storage_is_not_cancellable_mid_write() {
+        let mut shell = UiShell::new();
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        shell.dispatch(UiCommand::StoreCapture).expect("capture storage starts");
+        let progress = shell.snapshot().progress.expect("storage progress");
+        assert_eq!(progress.operation, OperationKind::Capture);
+        assert_eq!(progress.label, "Saving capture");
+        assert!(!progress.cancellable);
+        assert!(shell.dispatch(UiCommand::Cancel).is_err());
     }
 
     #[test]
