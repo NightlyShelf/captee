@@ -76,4 +76,8 @@ Before opening a change, run `git fetch origin` and rebase or merge from `origin
 
 Releases will be produced from reviewed tags after CI passes. Release credentials belong in GitHub Actions secrets or the platform credential store, never in the repository.
 
-Branch protection is pending a GitHub plan that supports protection rules for this private repository. Until it is enabled, maintainers must avoid direct force-pushes and deletion of `main`; once available, require the `plan-validation` check and conversation resolution on the default branch.
+The `main` branch is protected. Changes must go through a pull request with
+all conversation resolved and the `plan-validation`, `rustfmt`, `clippy`,
+`headless workspace tests`, and `headless UI state tests` checks. Stale
+approvals are dismissed when present, administrators are included, and
+force-pushes and branch deletion are disabled.

@@ -5,7 +5,7 @@ Implementation gate: after each task, review only that task's changed code for t
 - [x] 1.1 Initialize the local Git repository, add a safe `.gitignore`, and document branch and commit conventions.
 - [x] 1.2 Authenticate with GitHub and verify the target repository under the user's account or organization.
 - [x] 1.3 Add and verify the GitHub `origin` remote, commit the initial project state, and push the default branch without overwriting an existing remote.
-- [ ] 1.4 Enable repository safeguards: protected default branch, required CI checks, dependency/security alerts, and least-privilege Actions permissions. (Alerts, Actions permissions, and CI are configured; branch protection is blocked by the current private-repository plan.)
+- [x] 1.4 Enable repository safeguards: protected default branch, required CI checks, dependency/security alerts, and least-privilege Actions permissions. `main` now requires pull requests, conversation resolution, plan validation, and all Rust/UI checks; force-pushes and branch deletion are disabled.
 - [x] 1.5 Document clone, authentication, contribution, release, and remote-recovery procedures in the project documentation.
 
 ## 2. Project foundation

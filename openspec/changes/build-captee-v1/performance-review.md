@@ -249,10 +249,15 @@ the change is archived.
 - **Finding:** The adapter performs constant-time intent routing and retains
   only the current progress and accessibility announcement. Settings validation
   is bounded to scalar checks; the GTK shell retains one widget tree and one
-  source buffer for the active window.
+  source buffer for the active window. The native home surface and in-window
+  File menu keep project selection visible even on desktops that do not expose
+  the application menubar.
 - **Impact:** Each state snapshot clones core state plus at most one progress
   label and one announcement. GTK retains source text in the editor buffer and
-  renders a PDF placeholder until the preview adapter is connected.
+  renders a PDF placeholder until the preview adapter is connected. After the
+  asynchronous folder chooser returns, project creation/opening currently
+  reads the configuration and source document on the GTK callback, so a very
+  large entry document can temporarily block redraw and input.
 - **Mitigation:** Logical panes, focus, keyboard actions, progress, and status
   announcements are represented as typed values; failures clear progress and
   invalid settings do not mutate prior project settings. GTK actions dispatch
@@ -263,6 +268,8 @@ the change is archived.
   when the preview and editor content pipelines are connected. The binding is
   intentionally compiled against the stable GTK API subset because the Ubuntu
   CI image provides GTK 4.14.5; the release image remains pinned to GTK 4.22.4.
+  Move project loading to a bounded worker and apply only the latest selected
+  path if large project startup becomes observable.
 
 ## Task 8.1 — runtime and release documentation
 
@@ -335,4 +342,22 @@ the change is archived.
   artifact, checksum, workflow run, and packaging input digests are recorded
   for local testing and follow-up release work.
 - **Follow-up:** Verify the handoff artifact in a clean Ubuntu 22.04 desktop
-  session and add branch protection when the repository plan permits it.
+  session. Branch protection is now enabled with required review and CI gates.
+
+## Task 1.4 — repository safeguards
+
+- **Scope reviewed:** GitHub `main` branch protection and the Actions workflow
+  permission declarations.
+- **Finding:** The public repository now enforces required status checks,
+  pull requests, conversation resolution, administrator enforcement, and
+  disabled force-push/deletion operations. Workflows retain read-only
+  `contents` permissions.
+- **Impact:** Direct changes to `main` are intentionally blocked unless the
+  configured review and CI requirements are satisfied; this adds coordination
+  time but prevents bypassing the quality gates.
+- **Mitigation:** Required checks are limited to `plan-validation`, `rustfmt`,
+  `clippy`, workspace tests, and UI-state tests. Any stale approvals are
+  dismissed after new pushes; the current workflow does not require a manual
+  approval count so automated project delivery can proceed.
+- **Follow-up:** Revisit required checks if workflow job names change or if
+  release signing is added.
