@@ -306,8 +306,8 @@ the change is archived.
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`
 - **Finding:** Formatting, clippy, and core tests run as parallel jobs, each with a separate toolchain/cache setup. This improves feedback latency but can duplicate dependency compilation and consume more concurrent runner minutes.
 - **Impact:** Initial CI runs may be slower and use more cache storage than a single combined job; clippy over all targets is intentionally stricter than the current headless test job.
-- **Mitigation:** Pin the toolchain, use a shared cache key through `Swatinem/rust-cache`, keep permissions read-only, and scope tests to `captee-core` until platform/UI dependencies are available.
-- **Follow-up:** Add an AppImage packaging job and evaluate a combined or dependency-prebuild job after GTK packaging exists. Task 2.4 remains open until that job is implemented.
+- **Mitigation:** Pin the toolchain, use a shared cache key through `Swatinem/rust-cache`, keep permissions read-only, install GTK/GtkSourceView for UI compilation, and run the Ubuntu 22.04 AppImage job with uploaded artifacts.
+- **Follow-up:** Validate the new AppImage job and evaluate a combined or dependency-prebuild job if runner cost becomes material. Task 2.4 remains open until the artifact is successfully produced and verified.
 
 ### CI failure review and repair
 
