@@ -3,10 +3,14 @@ use crate::operation::{
     OperationCoordinator, OperationOutcome, ProjectIdentity, ResultDisposition, SourceIdentity,
 };
 use crate::{UiCommand, UiShell};
-use captee_core::{OperationKind, ProjectConfig, ProjectSession, SourceDocument};
+use captee_core::{
+    replace_literal, request_completions, CompletionItem, Diagnostic, DiagnosticSeverity,
+    Operation, OperationKind, ProjectConfig, ProjectSession, SourceDocument,
+};
 use captee_platform::{
-    create_project, open_project, AutosaveSnapshot, AutosaveStore, ProjectDocumentPersistence,
-    RecentProjectStore, AUTOSAVE_FILE,
+    create_project, open_project, AutosaveSnapshot, AutosaveStore, FormattedSource,
+    ProjectDocumentPersistence, RecentProjectStore, TypstCompletionProvider, TypstFormatter,
+    TypstRunner, AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
@@ -31,6 +35,9 @@ const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
 #[derive(Debug)]
 enum WorkspaceOperationResult {
     Saved(SourceDocument),
+    Formatted(FormattedSource),
+    Completions { items: Vec<CompletionItem>, cursor: usize },
+    AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
 }
 
 #[derive(Debug)]
@@ -80,6 +87,10 @@ fn build_ui(application: &Application) {
     let project_label = Label::new(Some("No project open"));
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
+    let diagnostics_label = Label::new(Some("No diagnostics."));
+    diagnostics_label.set_xalign(0.0);
+    diagnostics_label.set_wrap(true);
+    diagnostics_label.set_selectable(true);
 
     let home_new_button = Button::with_label("New project");
     home_new_button.add_css_class("suggested-action");
@@ -87,7 +98,7 @@ fn build_ui(application: &Application) {
     home_open_button.add_css_class("suggested-action");
     let stack = Stack::builder().hexpand(true).vexpand(true).build();
     stack.add_named(&build_home(&home_new_button, &home_open_button), Some("home"));
-    stack.add_named(&build_workspace(&source_view, &menus), Some("workspace"));
+    stack.add_named(&build_workspace(&source_view, &diagnostics_label, &menus), Some("workspace"));
     stack.set_visible_child_name("home");
 
     let project_ui = ProjectUi {
@@ -97,6 +108,7 @@ fn build_ui(application: &Application) {
         stack: stack.clone(),
         source_buffer: source_buffer.clone(),
         project_label: project_label.clone(),
+        diagnostics_label,
         editor,
         coordinator,
         syncing_buffer,
@@ -164,7 +176,11 @@ struct WorkspaceMenus {
     view: gio::Menu,
 }
 
-fn build_workspace(source_view: &sourceview::View, menus: &WorkspaceMenus) -> GtkBox {
+fn build_workspace(
+    source_view: &sourceview::View,
+    diagnostics_label: &Label,
+    menus: &WorkspaceMenus,
+) -> GtkBox {
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(16);
     navigation.set_margin_bottom(16);
@@ -185,6 +201,11 @@ fn build_workspace(source_view: &sourceview::View, menus: &WorkspaceMenus) -> Gt
     preview.set_margin_end(16);
     preview.append(&Label::new(Some("Preview")));
     preview.append(&Label::new(Some("Render a document to see its PDF preview.")));
+    let diagnostics_title = Label::new(Some("Diagnostics"));
+    diagnostics_title.set_xalign(0.0);
+    diagnostics_title.add_css_class("heading");
+    preview.append(&diagnostics_title);
+    preview.append(diagnostics_label);
 
     let editor_preview = Paned::new(Orientation::Horizontal);
     editor_preview.set_start_child(Some(&editor_scroll));
@@ -234,6 +255,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     let edit = gio::Menu::new();
     edit.append(Some("Format"), Some("app.format"));
     edit.append(Some("Find and Replace"), Some("app.find-replace"));
+    edit.append(Some("Completion"), Some("app.completion"));
     edit.append(Some("Undo"), Some("app.undo"));
     edit.append(Some("Redo"), Some("app.redo"));
     let capture = gio::Menu::new();
@@ -249,6 +271,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("save", "<Primary>s"),
         ("format", "<Primary><Shift>f"),
         ("find-replace", "<Primary>f"),
+        ("completion", "<Primary>space"),
         ("undo", "<Primary>z"),
         ("redo", "<Primary><Shift>z"),
         ("capture", "<Primary><Shift>c"),
@@ -269,8 +292,6 @@ fn connect_ui_actions(
     application: &Application,
 ) {
     for (name, command) in [
-        ("format", UiCommand::Format),
-        ("find-replace", UiCommand::FindReplace),
         ("capture", UiCommand::Capture),
         ("preview", UiCommand::Preview),
         ("export", UiCommand::Export),
@@ -307,6 +328,21 @@ fn connect_ui_actions(
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let save_ui = project_ui.clone();
     action.connect_activate(move |_, _| start_save(&save_ui));
+
+    let action = application.lookup_action("format").expect("installed format action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let format_ui = project_ui.clone();
+    action.connect_activate(move |_, _| start_format(&format_ui));
+
+    let action = application.lookup_action("find-replace").expect("installed find action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let find_ui = project_ui.clone();
+    action.connect_activate(move |_, _| show_find_replace_dialog(&find_ui));
+
+    let action = application.lookup_action("completion").expect("installed completion action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let completion_ui = project_ui.clone();
+    action.connect_activate(move |_, _| start_completion(&completion_ui));
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -331,6 +367,7 @@ struct ProjectUi {
     stack: Stack,
     source_buffer: sourceview::Buffer,
     project_label: Label,
+    diagnostics_label: Label,
     editor: Rc<RefCell<Option<EditorBridge>>>,
     coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
@@ -487,6 +524,191 @@ fn start_save(project_ui: &ProjectUi) {
     });
 }
 
+fn start_format(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.status.set_text("Open a project before formatting.");
+        return;
+    };
+    let Some(source) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
+        project_ui.status.set_text("No entry document is active.");
+        return;
+    };
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Format) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Format, true) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Formatting…");
+    let cancellation = task.cancellation();
+    let root = PathBuf::from(project.root);
+    let _ = thread::Builder::new().name("captee-format".to_owned()).spawn(move || {
+        let outcome = if cancellation.is_cancelled() {
+            OperationOutcome::Cancelled
+        } else {
+            let formatter = TypstFormatter::new(TypstRunner::discover(), root);
+            match formatter.format_with_diagnostics(&source.text) {
+                Ok(_) if cancellation.is_cancelled() => OperationOutcome::Cancelled,
+                Ok(formatted) => {
+                    OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted))
+                }
+                Err(error) => {
+                    OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
+                        message: error.message,
+                        diagnostics: error.diagnostics,
+                    })
+                }
+            }
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
+fn start_completion(project_ui: &ProjectUi) {
+    let Some(source) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
+        project_ui.status.set_text("No entry document is active.");
+        return;
+    };
+    let character_offset = project_ui.source_buffer.cursor_position().max(0) as usize;
+    let cursor = byte_offset_for_character(&source.text, character_offset);
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Completion) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Completion, true) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    let cancellation = task.cancellation();
+    project_ui.status.set_text("Finding completions…");
+    let _ = thread::Builder::new().name("captee-completion".to_owned()).spawn(move || {
+        let outcome = match request_completions(
+            &TypstCompletionProvider,
+            &source.text,
+            cursor,
+            &cancellation,
+        ) {
+            Ok(Operation::Completed(items)) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::Completions { items, cursor })
+            }
+            Ok(Operation::Cancelled) => OperationOutcome::Cancelled,
+            Err(error) => match error {},
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
+fn byte_offset_for_character(source: &str, character_offset: usize) -> usize {
+    source.char_indices().nth(character_offset).map(|(offset, _)| offset).unwrap_or(source.len())
+}
+
+fn show_find_replace_dialog(project_ui: &ProjectUi) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    if project_ui.editor.borrow().is_none() {
+        project_ui.status.set_text("No entry document is active.");
+        return;
+    }
+    let dialog =
+        Dialog::builder().title("Find and Replace").transient_for(&window).modal(true).build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Replace all", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+    let form = GtkBox::new(Orientation::Vertical, 8);
+    form.set_margin_top(16);
+    form.set_margin_bottom(16);
+    form.set_margin_start(16);
+    form.set_margin_end(16);
+    let query = Entry::new();
+    query.set_placeholder_text(Some("Literal text to find"));
+    let replacement = Entry::new();
+    replacement.set_placeholder_text(Some("Replacement text"));
+    let error_label = Label::new(None);
+    error_label.add_css_class("error");
+    error_label.set_xalign(0.0);
+    form.append(&query);
+    form.append(&replacement);
+    form.append(&error_label);
+    dialog.content_area().append(&form);
+
+    let project_ui = project_ui.clone();
+    let query_for_response = query.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dialog.close();
+            return;
+        }
+        let query_text = query_for_response.text().to_string();
+        if query_text.is_empty() {
+            error_label.set_text("Enter text to find.");
+            return;
+        }
+        if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::FindReplace) {
+            error_label.set_text(&error.to_string());
+            return;
+        }
+        let source = project_ui.editor.borrow().as_ref().map(EditorBridge::state);
+        let Some(source) = source else {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: "No entry document is active.".to_owned() });
+            dialog.close();
+            return;
+        };
+        match replace_literal(&source.text, &query_text, &replacement.text(), true) {
+            Ok(Operation::Completed(replaced)) => {
+                let update =
+                    project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
+                        editor.update_from_buffer(&replaced.text).ok().flatten()
+                    });
+                if let Some(state) = update {
+                    apply_editor_state(&project_ui, &state, true);
+                }
+                let message = format!("Replaced {} match(es).", replaced.replacements);
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Complete { message: message.clone() });
+                project_ui.status.set_text(&message);
+                dialog.close();
+            }
+            Ok(Operation::Cancelled) => {
+                let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+                dialog.close();
+            }
+            Err(error) => {
+                let message = format!("Replace failed: {error:?}");
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Fail { message: message.clone() });
+                error_label.set_text(&message);
+            }
+        }
+    });
+    dialog.present();
+    query.grab_focus();
+}
+
 fn connect_runtime_results(project_ui: &ProjectUi) {
     let project_ui = project_ui.clone();
     glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -512,44 +734,84 @@ fn apply_operation_result(
     disposition: ResultDisposition<WorkspaceOperationResult>,
 ) {
     match disposition {
-        ResultDisposition::Current(result) => match result.outcome {
-            OperationOutcome::Completed(WorkspaceOperationResult::Saved(document)) => {
-                let state = project_ui
-                    .editor
-                    .borrow_mut()
-                    .as_mut()
-                    .and_then(|editor| editor.apply_saved_document(document));
-                if let Some(state) = state {
+        ResultDisposition::Current(result) => {
+            let source_identity = result.context.source().clone();
+            match result.outcome {
+                OperationOutcome::Completed(WorkspaceOperationResult::Saved(document)) => {
+                    let state = project_ui
+                        .editor
+                        .borrow_mut()
+                        .as_mut()
+                        .and_then(|editor| editor.apply_saved_document(document));
+                    if let Some(state) = state {
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Complete { message: "Document saved".to_owned() });
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::SetDirty(state.dirty));
+                        project_ui.status.set_text("Document saved.");
+                        refresh_project_label(project_ui);
+                        schedule_autosave(project_ui, &state);
+                    } else {
+                        let message =
+                            "Save completed for an older source revision; current edits remain unsaved.";
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Warn { message: message.to_owned() });
+                        project_ui.status.set_text(message);
+                    }
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted)) => {
+                    show_diagnostics(project_ui, &formatted.diagnostics);
+                    let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
+                        editor.update_from_buffer(&formatted.source).ok().flatten()
+                    });
+                    if let Some(state) = state {
+                        apply_editor_state(project_ui, &state, true);
+                    }
+                    let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
+                        message: "Formatting complete".to_owned(),
+                    });
+                    project_ui.status.set_text("Formatting complete.");
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::Completions {
+                    items,
+                    cursor,
+                }) => {
                     let _ = project_ui
                         .shell
                         .borrow_mut()
-                        .dispatch(UiCommand::Complete { message: "Document saved".to_owned() });
-                    let _ =
-                        project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty));
-                    project_ui.status.set_text("Document saved.");
-                    refresh_project_label(project_ui);
-                    schedule_autosave(project_ui, &state);
-                } else {
-                    let message = "Save completed for an older source revision; current edits remain unsaved.";
+                        .dispatch(UiCommand::Complete { message: "Completions ready".to_owned() });
+                    show_completion_dialog(project_ui, source_identity, items, cursor);
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
+                    message,
+                    diagnostics,
+                }) => {
+                    show_diagnostics(project_ui, &diagnostics);
                     let _ = project_ui
                         .shell
                         .borrow_mut()
-                        .dispatch(UiCommand::Warn { message: message.to_owned() });
-                    project_ui.status.set_text(message);
+                        .dispatch(UiCommand::Fail { message: message.clone() });
+                    project_ui.status.set_text(&format!("Error: {message}"));
+                }
+                OperationOutcome::Cancelled => {
+                    let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+                    project_ui.status.set_text("Operation cancelled.");
+                }
+                OperationOutcome::Failed(message) => {
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Fail { message: message.clone() });
+                    project_ui.status.set_text(&format!("Error: {message}"));
                 }
             }
-            OperationOutcome::Cancelled => {
-                let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
-                project_ui.status.set_text("Operation cancelled.");
-            }
-            OperationOutcome::Failed(message) => {
-                let _ = project_ui
-                    .shell
-                    .borrow_mut()
-                    .dispatch(UiCommand::Fail { message: message.clone() });
-                project_ui.status.set_text(&format!("Error: {message}"));
-            }
-        },
+        }
         ResultDisposition::Stale(_) => {
             let message = "Background result ignored because the project or source changed.";
             let _ = project_ui
@@ -560,6 +822,81 @@ fn apply_operation_result(
         }
     }
     refresh_project_label(project_ui);
+}
+
+fn show_completion_dialog(
+    project_ui: &ProjectUi,
+    source_identity: SourceIdentity,
+    items: Vec<CompletionItem>,
+    cursor: usize,
+) {
+    if items.is_empty() {
+        project_ui.status.set_text("No completions found.");
+        return;
+    }
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog =
+        Dialog::builder().title("Insert completion").transient_for(&window).modal(true).build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Insert", ResponseType::Accept);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    let choices = gtk::DropDown::from_strings(&labels);
+    choices.set_margin_top(16);
+    choices.set_margin_bottom(16);
+    choices.set_margin_start(16);
+    choices.set_margin_end(16);
+    dialog.content_area().append(&choices);
+
+    let project_ui = project_ui.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Accept
+            && project_ui.coordinator.borrow().active_source() == Some(source_identity.clone())
+        {
+            let selected = choices.selected() as usize;
+            if let Some(item) = items.get(selected) {
+                let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
+                    editor.replace_range(cursor..cursor, &item.insert_text).ok()
+                });
+                if let Some(state) = state {
+                    apply_editor_state(&project_ui, &state, true);
+                    project_ui.status.set_text(&format!("Inserted {}.", item.label));
+                }
+            }
+        } else if response == ResponseType::Accept {
+            project_ui.status.set_text("Completion ignored because the source changed.");
+        }
+        dialog.close();
+    });
+    dialog.present();
+}
+
+fn show_diagnostics(project_ui: &ProjectUi, diagnostics: &[Diagnostic]) {
+    if diagnostics.is_empty() {
+        project_ui.diagnostics_label.set_text("No diagnostics.");
+        return;
+    }
+    let text = diagnostics
+        .iter()
+        .take(20)
+        .map(|diagnostic| {
+            let severity = match diagnostic.severity {
+                DiagnosticSeverity::Error => "Error",
+                DiagnosticSeverity::Warning => "Warning",
+                DiagnosticSeverity::Info => "Info",
+            };
+            match &diagnostic.span {
+                Some(span) => format!(
+                    "{severity}: {}:{}:{}: {}",
+                    span.path, span.line, span.column, diagnostic.message
+                ),
+                None => format!("{severity}: {}", diagnostic.message),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    project_ui.diagnostics_label.set_text(&text);
 }
 
 fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult) {
@@ -864,6 +1201,7 @@ fn open_loaded_project(
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
+            project_ui.diagnostics_label.set_text("No diagnostics.");
             refresh_project_label(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
             project_ui.status.set_text(if created {
@@ -955,6 +1293,7 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text("");
             project_ui.syncing_buffer.set(false);
+            project_ui.diagnostics_label.set_text("No diagnostics.");
             refresh_project_label(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }
@@ -974,7 +1313,7 @@ fn dispatch_and_announce(shell: &Rc<RefCell<UiShell>>, status: &Label, command: 
 
 #[cfg(test)]
 mod tests {
-    use super::{recovery_draft, validate_project_name};
+    use super::{byte_offset_for_character, recovery_draft, validate_project_name};
     use captee_platform::AutosaveSnapshot;
 
     #[test]
@@ -1001,5 +1340,13 @@ mod tests {
 
         let invalid = AutosaveSnapshot { revision: 4, contents: vec![0xff] };
         assert!(recovery_draft(invalid, "disk").is_err());
+    }
+
+    #[test]
+    fn character_offsets_are_converted_to_utf8_byte_offsets() {
+        assert_eq!(byte_offset_for_character("aéz", 0), 0);
+        assert_eq!(byte_offset_for_character("aéz", 1), 1);
+        assert_eq!(byte_offset_for_character("aéz", 2), 3);
+        assert_eq!(byte_offset_for_character("aéz", 99), 4);
     }
 }

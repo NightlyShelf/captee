@@ -30,3 +30,11 @@
 - Concurrency and lifetime: Save results use project/revision-tagged coordinator delivery. Autosave and recent-project results carry project identity and are ignored after project replacement. The weak window reference stops polling after window destruction; detached workers own no widgets and terminate after bounded filesystem work.
 - Mitigation: Project paths are resolved through `ProjectPaths`, dirty state clears only after the core document's atomic save succeeds, successful save removes the project-local autosave, malformed recovery data never replaces source, and recovery requires explicit confirmation.
 - Follow-up: If very large files make one-thread-per-debounce I/O observable, replace detached persistence workers with a bounded single-worker queue and cancel superseded autosaves before copying source.
+
+## Task 2.3: Authoring actions and diagnostics
+
+- Finding: Formatting stages one source snapshot in the project, runs Typst on a named worker, reads the formatted result, and removes the temporary file. Completion scans a short static candidate list; literal replacement and completion insertion create one core undo snapshot.
+- Impact: Formatter process startup and whole-source copies dominate this slice. Completion is constant-space apart from returned items, diagnostics display is capped at 20 entries, and GTK remains responsive while formatting/completion workers run.
+- Concurrency and lifetime: Format and completion carry project/revision operation identities and check cooperative cancellation before applying. Completion dialogs recheck source identity before insertion; formatter failure and dialog cancellation do not mutate source.
+- Mitigation: Temporary formatter files use collision-resistant names and are removed on all normal result paths, stale results are discarded, completion validates UTF-8 byte offsets, and formatting diagnostics retain severity/location without replacing editable source on failure.
+- Follow-up: Subprocess cancellation currently prevents result application but cannot interrupt an already-running Typst formatter; a later process supervisor should terminate the child when cancellation latency becomes observable.

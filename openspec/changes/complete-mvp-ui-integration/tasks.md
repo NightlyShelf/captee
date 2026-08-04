@@ -7,7 +7,7 @@
 
 - [x] 2.1 Bridge GtkSourceView changes to the core source document, dirty state, undo/redo, and active entry document.
 - [x] 2.2 Wire Save, atomic autosave, recovery prompt, recent-project recording, and safe project persistence through platform boundaries.
-- [ ] 2.3 Wire Format, literal Find/Replace, Completion, and diagnostics to the editor with revision-safe result handling.
+- [x] 2.3 Wire Format, literal Find/Replace, Completion, and diagnostics to the editor with revision-safe result handling.
 
 ## 3. Preview and export
 

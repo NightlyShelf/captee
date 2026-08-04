@@ -6,6 +6,7 @@
 
 mod assets;
 mod atomic;
+mod authoring;
 mod capture;
 mod export;
 mod paths;
@@ -15,6 +16,7 @@ mod workspace;
 
 pub use assets::{insert_saved_asset, AssetError, AssetStore, SavedAsset};
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
+pub use authoring::{FormattedSource, TypstCompletionProvider, TypstFormatError, TypstFormatter};
 pub use capture::{CaptureSelector, GrimSlurpCapture, PngAnnotationBackend};
 pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};

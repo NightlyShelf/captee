@@ -24,6 +24,27 @@ impl TypstRunner {
         Self { executable: executable.into() }
     }
 
+    /// Locates the packaged compiler, a development bundle, or a PATH fallback.
+    pub fn discover() -> Self {
+        if let Some(executable) = std::env::var_os("CAPTEE_TYPST_BINARY") {
+            return Self::new(executable);
+        }
+        if let Ok(current_executable) = std::env::current_exe() {
+            if let Some(directory) = current_executable.parent() {
+                for candidate in [directory.join("typst"), directory.join("../lib/captee/typst")] {
+                    if candidate.is_file() {
+                        return Self::new(candidate);
+                    }
+                }
+            }
+        }
+        let development = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dist/typst/typst");
+        if development.is_file() {
+            return Self::new(development);
+        }
+        Self::new("typst")
+    }
+
     /// Returns the compiler's version output.
     pub fn version(&self) -> io::Result<Output> {
         self.run(["--version".to_owned()])

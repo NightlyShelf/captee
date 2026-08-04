@@ -18,6 +18,7 @@ pub enum OperationKind {
     Save,
     Format,
     FindReplace,
+    Completion,
     Capture,
     Preview,
     Export,

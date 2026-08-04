@@ -86,6 +86,15 @@ projects use a bounded, deduplicated JSON store under the GLib user-data path.
 Background persistence results carry project identity and cannot update a
 different project after navigation or window teardown.
 
+Authoring actions use the same revision boundary. Formatting stages the active
+source in a collision-resistant project-local temporary file and invokes the
+discovered packaged, development, or PATH Typst binary on a worker. Successful
+formatted text is one undoable core edit; failures retain source and render up
+to 20 structured diagnostics. Literal replacement is explicitly confirmed and
+applied as one core edit. Completion uses a testable provider, converts GTK
+character offsets to UTF-8 byte offsets, and rechecks project/source identity
+when the selection dialog confirms insertion.
+
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
 can grow approximately with document size multiplied by the number of edits.

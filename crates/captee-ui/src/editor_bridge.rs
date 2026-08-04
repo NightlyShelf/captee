@@ -1,4 +1,5 @@
 use captee_core::{EditError, SourceDocument};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +55,15 @@ impl EditorBridge {
         let previous_len = self.document.text().len();
         self.document.replace(0..previous_len, text)?;
         Ok(Some(self.state()))
+    }
+
+    pub fn replace_range(
+        &mut self,
+        range: Range<usize>,
+        replacement: &str,
+    ) -> Result<EditorState, EditError> {
+        self.document.replace(range, replacement)?;
+        Ok(self.state())
     }
 
     pub fn undo(&mut self) -> Option<EditorState> {
@@ -120,5 +130,13 @@ mod tests {
         stale.save(&MemoryPersistence).expect("stale save");
         assert!(bridge.apply_saved_document(stale).is_none());
         assert!(bridge.state().dirty);
+    }
+
+    #[test]
+    fn range_replacement_is_recorded_as_one_undoable_edit() {
+        let mut bridge = EditorBridge::new("main.typ", "hello");
+        let state = bridge.replace_range(0..5, "goodbye").expect("replace");
+        assert_eq!(state.text, "goodbye");
+        assert_eq!(bridge.undo().expect("undo").text, "hello");
     }
 }
