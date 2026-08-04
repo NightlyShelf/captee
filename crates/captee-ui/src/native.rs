@@ -1,8 +1,13 @@
 use crate::editor_bridge::{EditorBridge, EditorState};
-use crate::operation::OperationCoordinator;
+use crate::operation::{
+    OperationCoordinator, OperationOutcome, ProjectIdentity, ResultDisposition, SourceIdentity,
+};
 use crate::{UiCommand, UiShell};
-use captee_core::{ProjectConfig, ProjectSession};
-use captee_platform::{create_project, open_project};
+use captee_core::{OperationKind, ProjectConfig, ProjectSession, SourceDocument};
+use captee_platform::{
+    create_project, open_project, AutosaveSnapshot, AutosaveStore, ProjectDocumentPersistence,
+    RecentProjectStore, AUTOSAVE_FILE,
+};
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -17,8 +22,22 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
 const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
+
+#[derive(Debug)]
+enum WorkspaceOperationResult {
+    Saved(SourceDocument),
+}
+
+#[derive(Debug)]
+enum BackgroundResult {
+    Autosave { source: SourceIdentity, result: Result<(), String> },
+    RecentProject { project: ProjectIdentity, result: Result<(), String> },
+}
 
 /// Starts the GTK application with a project home screen and workspace shell.
 pub fn run() -> glib::ExitCode {
@@ -31,8 +50,10 @@ fn build_ui(application: &Application) {
     let menus = install_actions(application);
     let shell = Rc::new(RefCell::new(UiShell::new()));
     let editor = Rc::new(RefCell::new(None));
-    let coordinator = Rc::new(RefCell::new(OperationCoordinator::<()>::new()));
+    let coordinator = Rc::new(RefCell::new(OperationCoordinator::new()));
     let syncing_buffer = Rc::new(Cell::new(false));
+    let autosave_sequence = Rc::new(Cell::new(0));
+    let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Captee")
@@ -70,7 +91,7 @@ fn build_ui(application: &Application) {
     stack.set_visible_child_name("home");
 
     let project_ui = ProjectUi {
-        window: window.clone(),
+        window: window.downgrade(),
         shell: Rc::clone(&shell),
         status: status.clone(),
         stack: stack.clone(),
@@ -79,6 +100,9 @@ fn build_ui(application: &Application) {
         editor,
         coordinator,
         syncing_buffer,
+        autosave_sequence,
+        background_sender,
+        background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
 
     let header = GtkBox::new(Orientation::Horizontal, 8);
@@ -101,6 +125,7 @@ fn build_ui(application: &Application) {
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
+    connect_runtime_results(&project_ui);
     window.present();
 }
 
@@ -244,7 +269,6 @@ fn connect_ui_actions(
     application: &Application,
 ) {
     for (name, command) in [
-        ("save", UiCommand::Save),
         ("format", UiCommand::Format),
         ("find-replace", UiCommand::FindReplace),
         ("capture", UiCommand::Capture),
@@ -278,6 +302,11 @@ fn connect_ui_actions(
         let project_ui = project_ui.clone();
         action.connect_activate(move |_, _| undo_or_redo(&project_ui, redo));
     }
+
+    let action = application.lookup_action("save").expect("installed save action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let save_ui = project_ui.clone();
+    action.connect_activate(move |_, _| start_save(&save_ui));
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -296,15 +325,24 @@ fn connect_project_action(action: &gio::SimpleAction, create: bool, project_ui: 
 
 #[derive(Clone)]
 struct ProjectUi {
-    window: ApplicationWindow,
+    window: glib::WeakRef<ApplicationWindow>,
     shell: Rc<RefCell<UiShell>>,
     status: Label,
     stack: Stack,
     source_buffer: sourceview::Buffer,
     project_label: Label,
     editor: Rc<RefCell<Option<EditorBridge>>>,
-    coordinator: Rc<RefCell<OperationCoordinator<()>>>,
+    coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
+    autosave_sequence: Rc<Cell<u64>>,
+    background_sender: Sender<BackgroundResult>,
+    background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
+}
+
+impl ProjectUi {
+    fn window(&self) -> Option<ApplicationWindow> {
+        self.window.upgrade()
+    }
 }
 
 fn connect_editor_buffer(project_ui: &ProjectUi) {
@@ -359,6 +397,197 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
         return;
     }
     refresh_project_label(project_ui);
+    schedule_autosave(project_ui, state);
+}
+
+fn schedule_autosave(project_ui: &ProjectUi, state: &EditorState) {
+    let sequence = project_ui.autosave_sequence.get().saturating_add(1);
+    project_ui.autosave_sequence.set(sequence);
+    if !state.dirty {
+        return;
+    }
+    let state = state.clone();
+    let project_ui = project_ui.clone();
+    glib::timeout_add_local_once(Duration::from_millis(750), move || {
+        if project_ui.autosave_sequence.get() != sequence || project_ui.window().is_none() {
+            return;
+        }
+        let Some(source) = project_ui.coordinator.borrow().active_source() else {
+            return;
+        };
+        if source.revision() != state.revision {
+            return;
+        }
+        let snapshot = project_ui.shell.borrow().snapshot();
+        let Some(project) = snapshot.app.project else {
+            return;
+        };
+        let entry = {
+            let editor = project_ui.editor.borrow();
+            let Some(editor) = editor.as_ref() else {
+                return;
+            };
+            editor.entry_document().to_path_buf()
+        };
+        let root = PathBuf::from(project.root);
+        let sender = project_ui.background_sender.clone();
+        let _ = thread::Builder::new().name("captee-autosave".to_owned()).spawn(move || {
+            let result = ProjectDocumentPersistence::open(root, entry)
+                .and_then(|persistence| persistence.autosave(state.revision, &state.text))
+                .map_err(|error| error.to_string());
+            let _ = sender.send(BackgroundResult::Autosave { source, result });
+        });
+    });
+}
+
+fn start_save(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.status.set_text("Open a project before saving.");
+        return;
+    };
+    let Some(editor) = project_ui.editor.borrow().as_ref().cloned() else {
+        project_ui.status.set_text("No entry document is active.");
+        return;
+    };
+    if !editor.state().dirty {
+        project_ui.status.set_text("Document is already saved.");
+        return;
+    }
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Save) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Save, false) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Saving…");
+    let root = PathBuf::from(project.root);
+    let entry = editor.entry_document().to_path_buf();
+    let mut document = editor.document_snapshot();
+    let _ = thread::Builder::new().name("captee-save".to_owned()).spawn(move || {
+        let result = ProjectDocumentPersistence::open(root, entry).and_then(|persistence| {
+            document.save(&persistence)?;
+            persistence.clear_autosave()?;
+            Ok(document)
+        });
+        let outcome = match result {
+            Ok(document) => OperationOutcome::Completed(WorkspaceOperationResult::Saved(document)),
+            Err(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
+fn connect_runtime_results(project_ui: &ProjectUi) {
+    let project_ui = project_ui.clone();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        if project_ui.window().is_none() {
+            return glib::ControlFlow::Break;
+        }
+        while let Some(result) = project_ui.coordinator.borrow_mut().try_next_result() {
+            apply_operation_result(&project_ui, result);
+        }
+        loop {
+            let result = project_ui.background_receiver.borrow().try_recv();
+            match result {
+                Ok(result) => apply_background_result(&project_ui, result),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn apply_operation_result(
+    project_ui: &ProjectUi,
+    disposition: ResultDisposition<WorkspaceOperationResult>,
+) {
+    match disposition {
+        ResultDisposition::Current(result) => match result.outcome {
+            OperationOutcome::Completed(WorkspaceOperationResult::Saved(document)) => {
+                let state = project_ui
+                    .editor
+                    .borrow_mut()
+                    .as_mut()
+                    .and_then(|editor| editor.apply_saved_document(document));
+                if let Some(state) = state {
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Complete { message: "Document saved".to_owned() });
+                    let _ =
+                        project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty));
+                    project_ui.status.set_text("Document saved.");
+                    refresh_project_label(project_ui);
+                    schedule_autosave(project_ui, &state);
+                } else {
+                    let message = "Save completed for an older source revision; current edits remain unsaved.";
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Warn { message: message.to_owned() });
+                    project_ui.status.set_text(message);
+                }
+            }
+            OperationOutcome::Cancelled => {
+                let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+                project_ui.status.set_text("Operation cancelled.");
+            }
+            OperationOutcome::Failed(message) => {
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Fail { message: message.clone() });
+                project_ui.status.set_text(&format!("Error: {message}"));
+            }
+        },
+        ResultDisposition::Stale(_) => {
+            let message = "Background result ignored because the project or source changed.";
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Warn { message: message.to_owned() });
+            project_ui.status.set_text(message);
+        }
+    }
+    refresh_project_label(project_ui);
+}
+
+fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult) {
+    match background {
+        BackgroundResult::Autosave { source, result } => {
+            if project_ui.coordinator.borrow().active_source().as_ref() != Some(&source) {
+                return;
+            }
+            match result {
+                Ok(()) => project_ui.status.set_text("Draft autosaved locally."),
+                Err(message) => {
+                    project_ui.status.set_text(&format!("Autosave warning: {message}"));
+                }
+            }
+        }
+        BackgroundResult::RecentProject { project, result } => {
+            let is_current = project_ui
+                .coordinator
+                .borrow()
+                .active_source()
+                .is_some_and(|source| source.project() == &project);
+            if is_current {
+                if let Err(message) = result {
+                    project_ui.status.set_text(&format!("Recent-project warning: {message}"));
+                }
+            }
+        }
+    }
 }
 
 fn refresh_project_label(project_ui: &ProjectUi) {
@@ -380,11 +609,11 @@ fn choose_project_action(create: bool, project_ui: &ProjectUi) {
 }
 
 fn show_new_project_dialog(project_ui: &ProjectUi) {
-    let dialog = Dialog::builder()
-        .title("New Captee project")
-        .transient_for(&project_ui.window)
-        .modal(true)
-        .build();
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog =
+        Dialog::builder().title("New Captee project").transient_for(&window).modal(true).build();
     dialog.add_button("Cancel", ResponseType::Cancel);
     dialog.add_button("Create", ResponseType::Accept);
     dialog.set_default_response(ResponseType::Accept);
@@ -412,7 +641,7 @@ fn show_new_project_dialog(project_ui: &ProjectUi) {
     let choose_location = Button::with_label("Choose location…");
     let location_for_button = Rc::clone(&location);
     let selected_location_for_button = selected_location.clone();
-    let window = project_ui.window.clone();
+    let window = window.clone();
     choose_location.connect_clicked(move |_| {
         let chooser = gtk::FileChooserNative::builder()
             .title("Choose parent location")
@@ -490,12 +719,15 @@ fn show_new_project_dialog(project_ui: &ProjectUi) {
 
 #[allow(deprecated)]
 fn show_open_project_dialog(project_ui: &ProjectUi) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
     let dialog = gtk::FileChooserNative::builder()
         .title("Open project folder")
         .accept_label("Open")
         .cancel_label("Cancel")
         .action(gtk::FileChooserAction::SelectFolder)
-        .transient_for(&project_ui.window)
+        .transient_for(&window)
         .modal(true)
         .build();
     let project_ui = project_ui.clone();
@@ -527,6 +759,13 @@ struct LoadedProject {
     session: ProjectSession,
     settings: captee_core::ProjectSettings,
     source: String,
+    recovery: Option<RecoveryDraft>,
+    recovery_warning: Option<String>,
+}
+
+struct RecoveryDraft {
+    revision: u64,
+    source: String,
 }
 
 fn validate_project_name(name: &str) -> Result<(), String> {
@@ -552,9 +791,21 @@ fn create_loaded_project(parent: &Path, name: &str) -> Result<LoadedProject, Str
 
 fn load_project(path: &Path) -> Result<LoadedProject, String> {
     let workspace = open_project(path).map_err(|error| error.to_string())?;
-    let source_path = path.join(&workspace.config.entry_document);
+    let source_path = workspace
+        .paths
+        .require_file(&workspace.config.entry_document)
+        .map_err(|error| error.to_string())?;
     let source = fs::read_to_string(&source_path)
         .map_err(|error| format!("could not read {}: {error}", source_path.display()))?;
+    let (recovery, recovery_warning) = match AutosaveStore::new(path.join(AUTOSAVE_FILE)).recover()
+    {
+        Ok(Some(snapshot)) => match recovery_draft(snapshot, &source) {
+            Ok(recovery) => (recovery, None),
+            Err(error) => (None, Some(error)),
+        },
+        Ok(None) => (None, None),
+        Err(error) => (None, Some(format!("Could not read the autosave: {error}"))),
+    };
     Ok(LoadedProject {
         session: ProjectSession::new(
             path.to_string_lossy(),
@@ -563,7 +814,21 @@ fn load_project(path: &Path) -> Result<LoadedProject, String> {
         ),
         settings: workspace.config.settings,
         source,
+        recovery,
+        recovery_warning,
     })
+}
+
+fn recovery_draft(
+    snapshot: AutosaveSnapshot,
+    disk_source: &str,
+) -> Result<Option<RecoveryDraft>, String> {
+    let source = String::from_utf8(snapshot.contents)
+        .map_err(|_| "The autosave is not valid UTF-8 and was not applied.".to_owned())?;
+    if source == disk_source {
+        return Ok(None);
+    }
+    Ok(Some(RecoveryDraft { revision: snapshot.revision, source }))
 }
 
 fn open_loaded_project(
@@ -572,16 +837,26 @@ fn open_loaded_project(
     path: &Path,
     project_ui: &ProjectUi,
 ) -> bool {
-    if let Err(error) = project_ui.coordinator.borrow_mut().activate_project(path) {
-        project_ui.status.set_text(&format!("Error: {error}"));
+    if project_ui.shell.borrow().snapshot().progress.is_some() {
+        project_ui
+            .status
+            .set_text("Wait for the active operation to finish before opening another project.");
         return false;
     }
+    let project_identity = match project_ui.coordinator.borrow_mut().activate_project(path) {
+        Ok(identity) => identity,
+        Err(error) => {
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return false;
+        }
+    };
     let result = project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
         session: project.session.clone(),
         settings: project.settings,
     });
     match result {
         Ok(()) => {
+            project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
             *project_ui.editor.borrow_mut() = Some(EditorBridge::new(
                 project.session.entry_document.clone(),
                 project.source.clone(),
@@ -596,6 +871,13 @@ fn open_loaded_project(
             } else {
                 "Project opened. Ready to edit."
             });
+            record_recent_project(project_ui, project_identity);
+            if let Some(warning) = project.recovery_warning {
+                project_ui.status.set_text(&format!("Recovery warning: {warning}"));
+            }
+            if let Some(recovery) = project.recovery {
+                show_recovery_dialog(project_ui, recovery);
+            }
             true
         }
         Err(error) => {
@@ -606,9 +888,67 @@ fn open_loaded_project(
     }
 }
 
+fn record_recent_project(project_ui: &ProjectUi, project: ProjectIdentity) {
+    let store_path = glib::user_data_dir().join("captee/recent-projects.json");
+    let project_path = project.root().to_string_lossy().into_owned();
+    let sender = project_ui.background_sender.clone();
+    let _ = thread::Builder::new().name("captee-recent-project".to_owned()).spawn(move || {
+        let result = RecentProjectStore::new(store_path)
+            .record(project_path)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        let _ = sender.send(BackgroundResult::RecentProject { project, result });
+    });
+}
+
+fn show_recovery_dialog(project_ui: &ProjectUi, recovery: RecoveryDraft) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title("Recover autosaved draft?")
+        .transient_for(&window)
+        .modal(true)
+        .build();
+    dialog.add_button("Keep disk version", ResponseType::Cancel);
+    dialog.add_button("Recover draft", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+    let message = Label::new(Some(&format!(
+        "A different autosaved draft (revision {}) was found. Recover it as unsaved editor content?",
+        recovery.revision
+    )));
+    message.set_wrap(true);
+    message.set_margin_top(16);
+    message.set_margin_bottom(16);
+    message.set_margin_start(16);
+    message.set_margin_end(16);
+    dialog.content_area().append(&message);
+
+    let project_ui = project_ui.clone();
+    let source_identity = project_ui.coordinator.borrow().active_source();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Accept
+            && project_ui.coordinator.borrow().active_source() == source_identity
+        {
+            let state = project_ui
+                .editor
+                .borrow_mut()
+                .as_mut()
+                .and_then(|editor| editor.update_from_buffer(&recovery.source).ok().flatten());
+            if let Some(state) = state {
+                apply_editor_state(&project_ui, &state, true);
+                project_ui.status.set_text("Autosaved draft recovered. Save to keep it.");
+            }
+        }
+        dialog.close();
+    });
+    dialog.present();
+}
+
 fn close_project(project_ui: &ProjectUi) {
     match project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject) {
         Ok(()) => {
+            project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
             project_ui.coordinator.borrow_mut().deactivate_project();
             *project_ui.editor.borrow_mut() = None;
             project_ui.stack.set_visible_child_name("home");
@@ -634,7 +974,8 @@ fn dispatch_and_announce(shell: &Rc<RefCell<UiShell>>, status: &Label, command: 
 
 #[cfg(test)]
 mod tests {
-    use super::validate_project_name;
+    use super::{recovery_draft, validate_project_name};
+    use captee_platform::AutosaveSnapshot;
 
     #[test]
     fn project_name_accepts_a_single_directory_name() {
@@ -646,5 +987,19 @@ mod tests {
         assert!(validate_project_name("").is_err());
         assert!(validate_project_name("nested/project").is_err());
         assert!(validate_project_name("..").is_err());
+    }
+
+    #[test]
+    fn recovery_is_offered_only_for_different_valid_utf8_source() {
+        let same = AutosaveSnapshot { revision: 2, contents: b"disk".to_vec() };
+        assert!(recovery_draft(same, "disk").expect("valid autosave").is_none());
+
+        let changed = AutosaveSnapshot { revision: 3, contents: b"draft".to_vec() };
+        let recovery = recovery_draft(changed, "disk").expect("valid autosave").expect("draft");
+        assert_eq!(recovery.revision, 3);
+        assert_eq!(recovery.source, "draft");
+
+        let invalid = AutosaveSnapshot { revision: 4, contents: vec![0xff] };
+        assert!(recovery_draft(invalid, "disk").is_err());
     }
 }

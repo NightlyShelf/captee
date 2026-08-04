@@ -32,6 +32,21 @@ impl EditorBridge {
         }
     }
 
+    pub fn document_snapshot(&self) -> SourceDocument {
+        self.document.clone()
+    }
+
+    pub fn apply_saved_document(&mut self, document: SourceDocument) -> Option<EditorState> {
+        if document.revision() != self.document.revision()
+            || document.text() != self.document.text()
+            || document.is_dirty()
+        {
+            return None;
+        }
+        self.document = document;
+        Some(self.state())
+    }
+
     pub fn update_from_buffer(&mut self, text: &str) -> Result<Option<EditorState>, EditError> {
         if text == self.document.text() {
             return Ok(None);
@@ -78,5 +93,32 @@ mod tests {
         let redone = bridge.redo().expect("redo");
         assert_eq!(redone.text, "ab");
         assert!(redone.dirty);
+    }
+
+    #[test]
+    fn only_the_current_successfully_saved_snapshot_clears_dirty_state() {
+        struct MemoryPersistence;
+
+        impl captee_core::DocumentPersistence for MemoryPersistence {
+            type Error = ();
+
+            fn save(&self, _contents: &str) -> Result<(), Self::Error> {
+                Ok(())
+            }
+        }
+
+        let mut bridge = EditorBridge::new("main.typ", "a");
+        bridge.update_from_buffer("ab").expect("edit");
+        let mut saved = bridge.document_snapshot();
+        saved.save(&MemoryPersistence).expect("save");
+
+        assert!(!bridge.apply_saved_document(saved).expect("current save").dirty);
+
+        bridge.update_from_buffer("abc").expect("new edit");
+        let mut stale = bridge.document_snapshot();
+        bridge.update_from_buffer("abcd").expect("newer edit");
+        stale.save(&MemoryPersistence).expect("stale save");
+        assert!(bridge.apply_saved_document(stale).is_none());
+        assert!(bridge.state().dirty);
     }
 }

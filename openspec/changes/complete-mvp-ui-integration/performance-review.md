@@ -22,3 +22,11 @@
 - I/O and concurrency: Editing, undo, and redo perform no filesystem or process I/O. Programmatic buffer updates are guarded to prevent recursive change signals, and every accepted change advances the coordinator revision before asynchronous results can apply.
 - Mitigation: Identical buffer snapshots are ignored, only the active entry document is retained, and stale operation results are cancelled/rejected through the coordinator. Existing architecture follow-up retains the bounded edit-record optimization for larger documents.
 - Follow-up: Persistence task 2.2 must clear dirty state only after atomic success and must avoid treating programmatic recovery/save synchronization as a new user edit.
+
+## Task 2.2: Save, autosave, recovery, and recent projects
+
+- Finding: Manual saves, debounced autosaves, and recent-project persistence run on named worker threads and use flushed same-directory atomic replacement. Autosave snapshots copy the current source once after 750 ms of inactivity.
+- Impact: GTK remains responsive during filesystem synchronization. At most one debounce callback per edit may remain scheduled until its cheap sequence check, while only the newest callback starts I/O. Save and autosave can briefly hold one additional full source snapshot.
+- Concurrency and lifetime: Save results use project/revision-tagged coordinator delivery. Autosave and recent-project results carry project identity and are ignored after project replacement. The weak window reference stops polling after window destruction; detached workers own no widgets and terminate after bounded filesystem work.
+- Mitigation: Project paths are resolved through `ProjectPaths`, dirty state clears only after the core document's atomic save succeeds, successful save removes the project-local autosave, malformed recovery data never replaces source, and recovery requires explicit confirmation.
+- Follow-up: If very large files make one-thread-per-debounce I/O observable, replace detached persistence workers with a bounded single-worker queue and cancel superseded autosaves before copying source.

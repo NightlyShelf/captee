@@ -74,6 +74,18 @@ Programmatic open, undo, redo, and close updates suppress recursive buffer
 signals. Undo and redo are routed through the core document history so widget
 state cannot diverge from revision and dirty semantics.
 
+Project persistence is exposed by a platform adapter that resolves the active
+entry file inside `ProjectPaths` and implements core `DocumentPersistence` with
+atomic replacement. Manual save runs off the GTK thread and returns the saved
+core document through the revision-tagged operation channel; only that matching
+document can clear dirty state. A 750 ms sequence-based debounce writes a
+revisioned project-local autosave on a worker, and successful manual save removes
+it. Project open compares a complete autosave with disk source and requires an
+explicit modal decision before restoring it as unsaved editor content. Recent
+projects use a bounded, deduplicated JSON store under the GLib user-data path.
+Background persistence results carry project identity and cannot update a
+different project after navigation or window teardown.
+
 The initial source editor stores complete text snapshots for undo and redo. This
 keeps the implementation simple and reliable for ordinary notes, but memory use
 can grow approximately with document size multiplied by the number of edits.
