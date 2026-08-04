@@ -92,6 +92,9 @@ validates the complete final PNG frame, enforces encoded and decoded byte
 budgets, and creates a collision-resistant project-relative name with a
 create-only atomic link under `img/`, so an asset collision cannot replace an
 existing file. Missing or invalid asset directories fail before any write.
+After storage succeeds, the adapter formats the generated safe relative path
+as a Typst `#image("...")` expression and delegates insertion to the focused
+editor boundary; no-focused-editor outcomes leave the stored asset untouched.
 
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new

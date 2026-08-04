@@ -192,6 +192,23 @@ the change is archived.
 - **Follow-up:** Task 6.5 should consume `SavedAsset::relative_path` for
   insertion without rereading or copying the image bytes.
 
+## Task 6.5 — Typst image-expression insertion
+
+- **Scope reviewed:** `SavedAsset::typst_image_expression`,
+  `insert_saved_asset`, and the `EditorInserter` boundary in
+  `crates/captee-platform/src/assets.rs`.
+- **Finding:** Insertion formats one short expression and delegates one call to
+  the focused editor. It does not reread the PNG, perform filesystem I/O, or
+  create a worker or retained platform resource.
+- **Impact:** The expression allocates a small string proportional to the
+  generated relative path. A caller without focus receives an immediate typed
+  outcome and the stored asset remains available.
+- **Mitigation:** Only `SavedAsset` values produced by the validated asset store
+  expose insertion, the path is project-relative and generated from safe fixed
+  components, and the no-editor branch returns before touching editor state.
+- **Follow-up:** Task 6.6 should retain regression coverage for exact insertion
+  formatting alongside cancellation, malformed PNG, and atomic cleanup cases.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

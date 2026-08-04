@@ -2,7 +2,7 @@
 
 use crate::atomic::{atomic_create, AtomicWriteError};
 use crate::{PathError, ProjectPaths};
-use captee_core::AnnotatedImage;
+use captee_core::{AnnotatedImage, EditorInserter, InsertionResult};
 use png::Decoder;
 use std::fmt;
 use std::io::Cursor;
@@ -65,6 +65,22 @@ impl SavedAsset {
     pub fn relative_path(&self) -> &Path {
         &self.relative_path
     }
+
+    pub fn typst_image_expression(&self) -> String {
+        format!("#image(\"{}\")", self.relative_path.to_string_lossy())
+    }
+}
+
+/// Inserts a successfully stored asset into the focused editor, if one exists.
+pub fn insert_saved_asset<I: EditorInserter>(
+    asset: &SavedAsset,
+    editor: Option<&mut I>,
+) -> InsertionResult {
+    let Some(editor) = editor else {
+        return InsertionResult::NoFocusedEditor;
+    };
+    let expression = asset.typst_image_expression();
+    editor.insert_image_expression(&expression)
 }
 
 fn validate_png(bytes: &[u8]) -> Result<(), AssetError> {
@@ -138,6 +154,18 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[derive(Default)]
+    struct RecordingEditor {
+        expression: Option<String>,
+    }
+
+    impl EditorInserter for RecordingEditor {
+        fn insert_image_expression(&mut self, expression: &str) -> InsertionResult {
+            self.expression = Some(expression.to_owned());
+            InsertionResult::Inserted
+        }
+    }
+
     fn test_root(name: &str) -> PathBuf {
         let suffix = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
         let root = std::env::temp_dir().join(format!("captee-assets-{name}-{suffix}"));
@@ -194,6 +222,32 @@ mod tests {
 
         assert!(matches!(result, Err(AssetError::Path(PathError::ExpectedDirectory(_)))));
         assert_eq!(fs::read_dir(&root).expect("project root").count(), 0);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn inserts_saved_asset_expression_at_focused_editor() {
+        let root = test_root("insert");
+        let store = AssetStore::new(&root).expect("store");
+        let asset = store.save_png(AnnotatedImage::new(fixture_png())).expect("asset");
+        let mut editor = RecordingEditor::default();
+
+        assert_eq!(insert_saved_asset(&asset, Some(&mut editor)), InsertionResult::Inserted);
+        assert_eq!(editor.expression.as_deref(), Some(asset.typst_image_expression().as_str()));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn skips_insertion_without_a_focused_editor() {
+        let root = test_root("no-editor");
+        let store = AssetStore::new(&root).expect("store");
+        let asset = store.save_png(AnnotatedImage::new(fixture_png())).expect("asset");
+
+        assert_eq!(
+            insert_saved_asset::<RecordingEditor>(&asset, None),
+            InsertionResult::NoFocusedEditor
+        );
+        assert!(root.join(asset.relative_path()).is_file());
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

@@ -12,7 +12,7 @@ mod paths;
 mod typst;
 mod workspace;
 
-pub use assets::{AssetError, AssetStore, SavedAsset};
+pub use assets::{insert_saved_asset, AssetError, AssetStore, SavedAsset};
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
 pub use capture::{CaptureSelector, GrimSlurpCapture, PngAnnotationBackend};
 pub use export::{export_pdf, PdfExportError};
