@@ -29,5 +29,5 @@
 
 ## 6. Verification and performance review
 
-- [ ] 6.1 Review each changed integration slice for CPU, memory, filesystem/process I/O, concurrency, and resource-lifetime risks; record findings in performance-review.md and mirror architectural consequences in docs/architecture.md.
+- [x] 6.1 Review each changed integration slice for CPU, memory, filesystem/process I/O, concurrency, and resource-lifetime risks; record findings in performance-review.md and mirror architectural consequences in docs/architecture.md.
 - [ ] 6.2 Run formatting, clippy, the complete test suite, OpenSpec validation, and a local Hyprland/Wayland end-to-end smoke test for editing, save, preview, capture, export, and recovery.

@@ -16,6 +16,7 @@ const GLYPH_WIDTH: u32 = 5;
 const GLYPH_HEIGHT: u32 = 7;
 const MAX_ANNOTATION_PIXELS: usize = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CAPTURE_ERROR_BYTES: u64 = 1024 * 1024;
 
 /// Applies lightweight annotations to a PNG without changing the captured
 /// image. Every operation decodes into a new pixel buffer and returns a new
@@ -429,17 +430,29 @@ fn run_bounded(program: &Path, args: &[String], timeout: Duration) -> Result<Out
     let mut child = command.spawn().map_err(|error| {
         CaptureError::new(format!("could not start {}: {error}", program.display()))
     })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CaptureError::new("capture command stdout was not available"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CaptureError::new("capture command stderr was not available"))?;
+    let stdout_reader = spawn_pipe_reader(stdout, MAX_CAPTURE_BYTES, "stdout")?;
+    let stderr_reader = spawn_pipe_reader(stderr, MAX_CAPTURE_ERROR_BYTES, "stderr")?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child.wait_with_output().map_err(|error| {
-                    CaptureError::new(format!("could not read capture output: {error}"))
-                })
+            Ok(Some(status)) => {
+                let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+                let stderr = join_pipe_reader(stderr_reader, "stderr")?;
+                return Ok(Output { status, stdout, stderr });
             }
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(CaptureError::new(format!(
                     "capture command timed out after {} ms",
                     timeout.as_millis()
@@ -449,12 +462,45 @@ fn run_bounded(program: &Path, args: &[String], timeout: Duration) -> Result<Out
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(CaptureError::new(format!(
                     "could not monitor capture command: {error}"
                 )));
             }
         }
     }
+}
+
+fn spawn_pipe_reader(
+    reader: impl Read + Send + 'static,
+    limit: u64,
+    stream: &'static str,
+) -> Result<thread::JoinHandle<std::io::Result<Vec<u8>>>, CaptureError> {
+    thread::Builder::new()
+        .name(format!("captee-capture-{stream}"))
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            reader.take(limit + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > limit {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("capture command {stream} exceeded {limit} bytes"),
+                ));
+            }
+            Ok(bytes)
+        })
+        .map_err(|error| CaptureError::new(format!("could not monitor capture {stream}: {error}")))
+}
+
+fn join_pipe_reader(
+    reader: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> Result<Vec<u8>, CaptureError> {
+    reader
+        .join()
+        .map_err(|_| CaptureError::new(format!("capture {stream} reader panicked")))?
+        .map_err(|error| CaptureError::new(format!("could not read capture {stream}: {error}")))
 }
 
 fn command_failure(command: &str, output: &Output) -> CaptureError {
@@ -603,6 +649,31 @@ mod tests {
 
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(1));
         assert_eq!(capture.capture(), CaptureResult::Completed(CapturedImage::new(b"PNG fixture")));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grim_output_larger_than_a_pipe_buffer_is_drained_while_running() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("large-output");
+        let slurp = root.join("slurp");
+        let grim = root.join("grim");
+        fs::write(&slurp, "#!/bin/sh\nprintf '0,0 10x10'\n").expect("slurp script");
+        fs::write(&grim, "#!/bin/sh\ndd if=/dev/zero bs=1024 count=256 2>/dev/null\n")
+            .expect("grim script");
+        for path in [&slurp, &grim] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("script permissions");
+        }
+
+        let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(2));
+        let CaptureResult::Completed(image) = capture.capture() else {
+            panic!("large piped capture should complete");
+        };
+        assert_eq!(image.bytes().len(), 256 * 1024);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

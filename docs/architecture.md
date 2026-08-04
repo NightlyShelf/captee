@@ -179,8 +179,10 @@ platform and UI crates.
 The platform capture selector tries the portal adapter first, treats portal
 cancellation as a no-op, and uses the configured `grim`/`slurp` fallback only
 after a portal failure. Fallback subprocesses are polled with a timeout and
-terminated on expiry; their output is still unvalidated raw image data until
-the PNG-validation task.
+terminated and reaped on expiry. Their stdout and stderr are drained concurrently
+into bounded buffers while the child runs, avoiding a pipe-capacity deadlock on
+normal screenshot sizes; both reader threads are joined at the process boundary.
+Output is still unvalidated raw image data until the PNG-validation task.
 
 The concrete Linux portal adapter uses the XDG Screenshot D-Bus interface on a
 worker thread and accepts only local file URIs. Portal reads are capped at 64
