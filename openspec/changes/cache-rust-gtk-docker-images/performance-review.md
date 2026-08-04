@@ -24,9 +24,9 @@
 ## Task 2.1 — Test image
 
 - **Finding:** The test image installs the pinned Rust toolchain and GTK/GtkSourceView development packages and prefetches Cargo dependencies from workspace manifests without copying application source into the reusable image.
-- **Impact:** The image has a larger one-time build and registry footprint, while source changes do not invalidate the dependency layer.
+- **Impact:** The image has a larger one-time build and registry footprint, while source changes do not invalidate the dependency layer. The first validation also exposed that Cargo needs placeholder targets when only manifests are copied.
 - **Mitigation:** Keep the test package set lean, copy only Cargo manifests for prefetching, and use separate role images so release tooling is not pulled by test jobs.
-- **Follow-up:** Measure image size and pull time after the first publication and inspect Cargo cache hit behavior in test jobs.
+- **Follow-up:** Use non-source placeholder targets only for `cargo fetch`, then measure image size and pull time after the first publication and inspect Cargo cache hit behavior in test jobs.
 
 ## Task 2.2 — Test image health checks
 
