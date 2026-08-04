@@ -41,7 +41,7 @@ pub fn create_project(
         config.to_json().map_err(WorkspaceError::Config)?.as_bytes(),
     )
     .map_err(WorkspaceError::Atomic)?;
-    atomic_write(&entry_path, b"# Captee\n\n").map_err(WorkspaceError::Atomic)?;
+    atomic_write(&entry_path, b"= Captee\n\n").map_err(WorkspaceError::Atomic)?;
     open_project(root)
 }
 
@@ -160,6 +160,10 @@ mod tests {
         assert!(root.join(CONFIG_FILE).is_file());
         assert!(root.join("main.typ").is_file());
         assert!(root.join(IMAGE_DIRECTORY).is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join("main.typ")).expect("entry source"),
+            "= Captee\n\n"
+        );
         assert_eq!(open_project(&root).expect("open").config, config);
         fs::remove_dir_all(root).expect("cleanup");
     }

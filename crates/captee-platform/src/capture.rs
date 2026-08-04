@@ -1,4 +1,4 @@
-//! Portal-first capture selection and bounded `grim`/`slurp` fallback.
+//! Desktop-aware capture selection and bounded `grim`/`slurp` fallback.
 
 use captee_core::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
@@ -335,40 +335,70 @@ fn load_portal_capture(uri: &str) -> CaptureResult<CapturedImage> {
     CaptureResult::Completed(CapturedImage::new(bytes))
 }
 
-/// Selects the configured portal backend first and falls back only after a
-/// portal failure. Cancellation is returned immediately and never falls back.
+/// Selects enabled capture backends in desktop-appropriate order. Cancellation
+/// is returned immediately and never starts the other backend.
 #[derive(Debug, Clone)]
 pub struct CaptureSelector<P, F> {
     portal: P,
     fallback: F,
     settings: CaptureSettings,
+    fallback_first: bool,
 }
 
 impl<P, F> CaptureSelector<P, F> {
     pub fn new(portal: P, fallback: F, settings: CaptureSettings) -> Self {
-        Self { portal, fallback, settings }
+        Self { portal, fallback, settings, fallback_first: false }
+    }
+
+    pub fn with_fallback_first(mut self, fallback_first: bool) -> Self {
+        self.fallback_first = fallback_first;
+        self
     }
 }
 
 impl<P: CaptureBackend, F: CaptureBackend> CaptureBackend for CaptureSelector<P, F> {
     fn capture(&self) -> CaptureResult<CapturedImage> {
-        if self.settings.portal_enabled {
-            match self.portal.capture() {
+        if self.fallback_first && self.settings.fallback_enabled {
+            match self.fallback.capture() {
                 CaptureResult::Completed(image) => return CaptureResult::Completed(image),
                 CaptureResult::Cancelled => return CaptureResult::Cancelled,
-                CaptureResult::Failed(error) if !self.settings.fallback_enabled => {
+                CaptureResult::Failed(error) if !self.settings.portal_enabled => {
                     return CaptureResult::Failed(error)
                 }
                 CaptureResult::Failed(_) => {}
             }
         }
 
-        if self.settings.fallback_enabled {
+        if self.settings.portal_enabled {
+            match self.portal.capture() {
+                CaptureResult::Completed(image) => return CaptureResult::Completed(image),
+                CaptureResult::Cancelled => return CaptureResult::Cancelled,
+                CaptureResult::Failed(error)
+                    if !self.settings.fallback_enabled || self.fallback_first =>
+                {
+                    return CaptureResult::Failed(error)
+                }
+                CaptureResult::Failed(_) => {}
+            }
+        }
+
+        if self.settings.fallback_enabled && !self.fallback_first {
             return self.fallback.capture();
         }
 
         CaptureResult::Failed(CaptureError::new("no capture backend is enabled"))
     }
+}
+
+/// Hyprland's interactive screenshot portal may not present a region picker,
+/// while `slurp`/`grim` is its native bounded selection path.
+pub fn current_desktop_prefers_fallback_capture() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|desktop| desktop_prefers_fallback_capture(&desktop))
+}
+
+fn desktop_prefers_fallback_capture(desktop: &str) -> bool {
+    desktop.split(':').any(|name| name.eq_ignore_ascii_case("hyprland"))
 }
 
 /// Bounded Linux fallback using `slurp` for region selection and `grim` for
@@ -571,6 +601,36 @@ mod tests {
         let selector = CaptureSelector::new(portal, fallback, CaptureSettings::default());
         assert_eq!(selector.capture(), CaptureResult::Cancelled);
         assert_eq!(*fallback_calls.lock().expect("fallback calls"), 0);
+    }
+
+    #[test]
+    fn hyprland_order_prefers_fallback_and_preserves_cancellation() {
+        let (portal, portal_calls) =
+            backend(CaptureResult::Completed(CapturedImage::new(b"portal")));
+        let (fallback, fallback_calls) =
+            backend(CaptureResult::Completed(CapturedImage::new(b"fallback")));
+        let selector = CaptureSelector::new(portal, fallback, CaptureSettings::default())
+            .with_fallback_first(true);
+
+        assert_eq!(selector.capture(), CaptureResult::Completed(CapturedImage::new(b"fallback")));
+        assert_eq!(*portal_calls.lock().expect("portal calls"), 0);
+        assert_eq!(*fallback_calls.lock().expect("fallback calls"), 1);
+
+        let (portal, portal_calls) =
+            backend(CaptureResult::Completed(CapturedImage::new(b"portal")));
+        let (fallback, _) = backend(CaptureResult::Cancelled);
+        let selector = CaptureSelector::new(portal, fallback, CaptureSettings::default())
+            .with_fallback_first(true);
+        assert_eq!(selector.capture(), CaptureResult::Cancelled);
+        assert_eq!(*portal_calls.lock().expect("portal calls"), 0);
+    }
+
+    #[test]
+    fn desktop_detection_handles_hyprland_desktop_lists() {
+        assert!(desktop_prefers_fallback_capture("Hyprland"));
+        assert!(desktop_prefers_fallback_capture("wlroots:Hyprland"));
+        assert!(desktop_prefers_fallback_capture("hyprland"));
+        assert!(!desktop_prefers_fallback_capture("GNOME"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use captee_core::{CancellationToken, OperationKind};
+use std::cell::RefCell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SendError, Sender, TryRecvError};
@@ -297,6 +298,21 @@ impl<T> OperationCoordinator<T> {
     }
 }
 
+/// Drains ready results without holding the coordinator borrow while applying
+/// them. Result handlers may synchronously update project or source identity.
+pub fn drain_ready_results<T>(
+    coordinator: &RefCell<OperationCoordinator<T>>,
+    mut apply: impl FnMut(ResultDisposition<T>),
+) {
+    loop {
+        let result = { coordinator.borrow_mut().try_next_result() };
+        let Some(result) = result else {
+            break;
+        };
+        apply(result);
+    }
+}
+
 impl<T> Drop for OperationCoordinator<T> {
     fn drop(&mut self) {
         self.cancel_for_lifetime_change();
@@ -340,5 +356,19 @@ mod tests {
         };
 
         assert!(task.cancellation().is_cancelled());
+    }
+
+    #[test]
+    fn result_handlers_can_reborrow_the_coordinator() {
+        let coordinator = RefCell::new(OperationCoordinator::new());
+        coordinator.borrow_mut().activate_project("/tmp/notes").expect("project");
+        let task = coordinator.borrow_mut().begin(OperationKind::Save, false).expect("save task");
+        task.finish(OperationOutcome::Completed(())).expect("result");
+
+        drain_ready_results(&coordinator, |_| {
+            coordinator.borrow_mut().set_source_revision(1).expect("handler reborrow");
+        });
+
+        assert_eq!(coordinator.borrow().active_source().expect("source").revision(), 1);
     }
 }

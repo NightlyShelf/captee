@@ -227,6 +227,14 @@ GTK. They cover portal success, fallback after portal failure, cancellation,
 invalid image rejection, immutable staging, atomic storage, and exact undoable
 Typst insertion without requiring a compositor in headless CI.
 
+Capture backend order is desktop-aware at the platform boundary. Portal-first
+selection remains the default, while a Hyprland desktop token makes the bounded
+`slurp`/`grim` region path run first when that configured backend is enabled.
+Cancellation remains terminal and never starts the second backend. This avoids
+depending on a Hyprland screenshot portal request that may remain pending
+without presenting a usable region selector, while preserving portal behavior
+for other Wayland desktops.
+
 Project settings remain part of `.captee.json`. GTK edits a detached settings
 copy, validates ranges, enabled capture paths, and unique parseable accelerator
 strings, then asks the platform workspace boundary to atomically replace the
@@ -245,6 +253,18 @@ removes coordinator ownership immediately and flips the worker token; late
 results cannot mutate the UI. Non-cancellable atomic writes keep project and
 editor actions disabled until their single terminal result, preventing close,
 project replacement, or source edits from racing committed state.
+
+GTK result polling releases the operation coordinator's dynamic borrow before
+calling any result handler. The same rule applies to shell dispatch results
+that trigger follow-up label, settings, or project-lifetime reads. Modal capture
+confirmation takes ownership of its staged image before hiding the dialog, so
+response handling cannot re-enter through window closure and clear data that is
+about to cross the storage boundary.
+
+Project creation writes a minimal valid Typst heading (`= Captee`) through the
+same atomic workspace boundary as the config. This guarantees a new workspace
+can produce its first preview immediately instead of entering an error state
+before the first user edit.
 
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new

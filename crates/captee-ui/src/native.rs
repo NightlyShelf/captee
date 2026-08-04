@@ -1,7 +1,8 @@
 use crate::annotation_bridge::AnnotationDraft;
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
-    OperationCoordinator, OperationOutcome, ProjectIdentity, ResultDisposition, SourceIdentity,
+    drain_ready_results, OperationCoordinator, OperationOutcome, ProjectIdentity,
+    ResultDisposition, SourceIdentity,
 };
 use crate::{UiCommand, UiShell};
 use captee_core::{
@@ -11,11 +12,12 @@ use captee_core::{
     ProjectConfig, ProjectSession, ProjectSettings, RenderState, SourceDocument,
 };
 use captee_platform::{
-    create_project, export_pdf, insert_saved_asset, open_project, save_project_settings,
-    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
-    FormattedSource, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
-    ProjectDocumentPersistence, RecentProjectStore, SavedAsset, TypstCompletionProvider,
-    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    create_project, current_desktop_prefers_fallback_capture, export_pdf, insert_saved_asset,
+    open_project, save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot,
+    AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture, PngAnnotationBackend,
+    PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore, SavedAsset,
+    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture,
+    AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
@@ -891,7 +893,8 @@ fn start_capture(project_ui: &ProjectUi) {
             XdgPortalCapture::new(),
             GrimSlurpCapture::new(Duration::from_secs(120)),
             settings,
-        );
+        )
+        .with_fallback_first(current_desktop_prefers_fallback_capture());
         let result =
             if cancellation.is_cancelled() { CaptureResult::Cancelled } else { selector.capture() };
         let outcome = match result {
@@ -1117,14 +1120,10 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
     let project_ui = project_ui.clone();
     dialog.connect_response(move |dialog, response| {
         if response == ResponseType::Accept {
-            *project_ui.pending_annotation.borrow_mut() = Some(draft.borrow().confirmed());
+            let image = draft.borrow().confirmed();
             *project_ui.pending_capture.borrow_mut() = None;
-            dialog.close();
-            let image = project_ui
-                .pending_annotation
-                .borrow_mut()
-                .take()
-                .expect("confirmed annotation is staged");
+            *project_ui.pending_annotation.borrow_mut() = None;
+            dialog.hide();
             start_capture_storage(&project_ui, image);
             return;
         } else {
@@ -1132,7 +1131,7 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
             *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.status.set_text("Capture discarded; the project was not changed.");
         }
-        dialog.close();
+        dialog.hide();
     });
     dialog.present();
     Ok(())
@@ -1237,7 +1236,8 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
     content.append(&capture_title);
     let portal_enabled = CheckButton::with_label("Use the desktop screenshot portal");
     portal_enabled.set_active(settings.capture.portal_enabled);
-    let fallback_enabled = CheckButton::with_label("Use slurp/grim if the portal fails");
+    let fallback_enabled =
+        CheckButton::with_label("Use slurp/grim (preferred automatically on Hyprland)");
     fallback_enabled.set_active(settings.capture.fallback_enabled);
     content.append(&portal_enabled);
     content.append(&fallback_enabled);
@@ -1576,9 +1576,9 @@ fn connect_runtime_results(project_ui: &ProjectUi) {
         if project_ui.window().is_none() {
             return glib::ControlFlow::Break;
         }
-        while let Some(result) = project_ui.coordinator.borrow_mut().try_next_result() {
+        drain_ready_results(&project_ui.coordinator, |result| {
             apply_operation_result(&project_ui, result);
-        }
+        });
         loop {
             let result = project_ui.background_receiver.borrow().try_recv();
             match result {
@@ -1818,11 +1818,11 @@ fn apply_operation_result(
                         .shell
                         .borrow_mut()
                         .dispatch(UiCommand::Complete { message: "Settings saved".to_owned() });
-                    match project_ui
+                    let applied = project_ui
                         .shell
                         .borrow_mut()
-                        .dispatch(UiCommand::ApplySettings(settings.clone()))
-                    {
+                        .dispatch(UiCommand::ApplySettings(settings.clone()));
+                    match applied {
                         Ok(()) => {
                             if let Some(application) = project_ui.application() {
                                 apply_project_accelerators(&application, &settings.keybindings);
@@ -2365,7 +2365,8 @@ fn show_recovery_dialog(project_ui: &ProjectUi, recovery: RecoveryDraft) {
 }
 
 fn close_project(project_ui: &ProjectUi) {
-    match project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject) {
+    let closed = project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject);
+    match closed {
         Ok(()) => {
             project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
             project_ui.coordinator.borrow_mut().deactivate_project();

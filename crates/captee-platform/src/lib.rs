@@ -17,7 +17,10 @@ mod workspace;
 pub use assets::{insert_saved_asset, AssetError, AssetStore, SavedAsset};
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
 pub use authoring::{FormattedSource, TypstCompletionProvider, TypstFormatError, TypstFormatter};
-pub use capture::{CaptureSelector, GrimSlurpCapture, PngAnnotationBackend, XdgPortalCapture};
+pub use capture::{
+    current_desktop_prefers_fallback_capture, CaptureSelector, GrimSlurpCapture,
+    PngAnnotationBackend, XdgPortalCapture,
+};
 pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
 pub use persistence::{
