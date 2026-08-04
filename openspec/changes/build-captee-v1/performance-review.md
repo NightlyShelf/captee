@@ -173,6 +173,25 @@ the change is archived.
   again at the persistence boundary, and the UI can coalesce multiple pending
   strokes before re-rendering when interactive annotation controls are added.
 
+## Task 6.4 — validated atomic asset storage
+
+- **Scope reviewed:** `crates/captee-platform/src/assets.rs`, the create-only
+  path in `crates/captee-platform/src/atomic.rs`, and their public exports.
+- **Finding:** Asset storage validates the encoded PNG size and decodes one
+  complete frame before writing. It creates at most one temporary file and one
+  destination link per name attempt; name generation is process-local and
+  monotonic, while the destination link makes collision handling race-safe.
+- **Impact:** Validation temporarily holds the annotated bytes and decoded PNG
+  frame, with a bounded 32 MiB encoded asset and 64 MiB decoded frame. A
+  concurrent or pre-existing name collision retries up to 128 times, and a
+  failed write can perform small temporary-file and directory-sync I/O.
+- **Mitigation:** Pixel, decoded-buffer, and encoded-byte limits reject large
+  or decompression-heavy assets before persistence. `atomic_create` flushes and
+  syncs the temporary file, uses a non-replacing hard link, removes the
+  temporary link, and syncs the directory; all error paths remove leftovers.
+- **Follow-up:** Task 6.5 should consume `SavedAsset::relative_path` for
+  insertion without rereading or copying the image bytes.
+
 ## Task 2.4 — core CI checks (partial)
 
 - **Scope reviewed:** `.github/workflows/rust-checks.yml`

@@ -88,7 +88,10 @@ surface, applies clipped pointer, rectangle, or fixed-glyph text marks, and
 encodes a separate staged PNG. The original capture is borrowed immutably, so
 cancellation before confirmation cannot change capture bytes. A 16-million
 pixel limit bounds the adapter's decoded surface; the asset-storage boundary
-must still validate the final PNG and enforce its own byte budget.
+validates the complete final PNG frame, enforces encoded and decoded byte
+budgets, and creates a collision-resistant project-relative name with a
+create-only atomic link under `img/`, so an asset collision cannot replace an
+existing file. Missing or invalid asset directories fail before any write.
 
 Authoring services are trait boundaries so formatting and completion can run in
 platform workers rather than the UI thread. Literal find/replace creates a new

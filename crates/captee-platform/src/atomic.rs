@@ -35,6 +35,43 @@ pub fn atomic_write(path: impl AsRef<Path>, contents: &[u8]) -> Result<(), Atomi
     result
 }
 
+/// Creates a file only when the destination does not already exist, after the
+/// complete contents have been flushed to a same-directory temporary file.
+///
+/// Linking the complete temporary file into place is atomic and cannot replace
+/// an existing asset. The temporary link is removed after the destination is
+/// installed.
+pub(crate) fn atomic_create(
+    path: impl AsRef<Path>,
+    contents: &[u8],
+) -> Result<(), AtomicWriteError> {
+    let path = path.as_ref();
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temporary = temporary_path(path);
+
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(AtomicWriteError::Io)?;
+        file.write_all(contents).map_err(AtomicWriteError::Io)?;
+        file.sync_all().map_err(AtomicWriteError::Io)?;
+        fs::hard_link(&temporary, path).map_err(AtomicWriteError::Io)?;
+        fs::remove_file(&temporary).map_err(AtomicWriteError::Io)?;
+        sync_directory(parent).map_err(AtomicWriteError::Io)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// Writes a revisioned autosave and can recover it without touching the main file.
 #[derive(Debug, Clone)]
 pub struct AutosaveStore {
@@ -161,6 +198,24 @@ mod tests {
         assert_eq!(
             store.recover().expect("recover"),
             Some(AutosaveSnapshot { revision: 7, contents: b"draft".to_vec() })
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn atomic_create_preserves_existing_destination() {
+        let root = test_root();
+        let destination = root.join("img/capture.png");
+        fs::create_dir(destination.parent().expect("parent")).expect("asset directory");
+        atomic_create(&destination, b"first").expect("first create");
+        let result = atomic_create(&destination, b"second");
+        assert!(
+            matches!(result, Err(AtomicWriteError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(fs::read(&destination).expect("read destination"), b"first");
+        assert_eq!(
+            fs::read_dir(destination.parent().expect("parent")).expect("read dir").count(),
+            1
         );
         fs::remove_dir_all(root).expect("cleanup");
     }
