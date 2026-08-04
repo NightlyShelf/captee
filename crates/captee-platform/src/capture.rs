@@ -4,6 +4,7 @@ use captee_core::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
     CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage,
 };
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -14,6 +15,7 @@ const TEXT_SCALE: u32 = 2;
 const GLYPH_WIDTH: u32 = 5;
 const GLYPH_HEIGHT: u32 = 7;
 const MAX_ANNOTATION_PIXELS: usize = 16 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Applies lightweight annotations to a PNG without changing the captured
 /// image. Every operation decodes into a new pixel buffer and returns a new
@@ -244,6 +246,94 @@ fn glyph(character: char) -> [u8; 7] {
     }
 }
 
+/// Linux screenshot portal adapter. The portal request is interactive, so the
+/// desktop can offer a screen, window, or region picker appropriate for the
+/// active compositor.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct XdgPortalCapture;
+
+impl XdgPortalCapture {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CaptureBackend for XdgPortalCapture {
+    fn capture(&self) -> CaptureResult<CapturedImage> {
+        let screenshot = async_io::block_on(async {
+            let request = ashpd::desktop::screenshot::Screenshot::request()
+                .interactive(true)
+                .modal(true)
+                .send()
+                .await?;
+            request.response().map(|response| response.uri().as_str().to_owned())
+        });
+
+        match screenshot {
+            Ok(uri) => load_portal_capture(&uri),
+            Err(error) if portal_cancelled(&error) => CaptureResult::Cancelled,
+            Err(error) => CaptureResult::Failed(CaptureError::new(format!(
+                "screenshot portal failed: {error}"
+            ))),
+        }
+    }
+}
+
+fn portal_cancelled(error: &ashpd::Error) -> bool {
+    matches!(
+        error,
+        ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)
+            | ashpd::Error::Portal(ashpd::PortalError::Cancelled(_))
+    )
+}
+
+fn load_portal_capture(uri: &str) -> CaptureResult<CapturedImage> {
+    let url = match url::Url::parse(uri) {
+        Ok(url) => url,
+        Err(error) => {
+            return CaptureResult::Failed(CaptureError::new(format!(
+                "screenshot portal returned an invalid URI: {error}"
+            )))
+        }
+    };
+    let path = match url.to_file_path() {
+        Ok(path) => path,
+        Err(()) => {
+            return CaptureResult::Failed(CaptureError::new(
+                "screenshot portal returned a non-local file URI",
+            ))
+        }
+    };
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) => {
+            return CaptureResult::Failed(CaptureError::new(format!(
+                "could not open portal screenshot {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    let mut bytes = Vec::new();
+    if let Err(error) = file.take(MAX_CAPTURE_BYTES + 1).read_to_end(&mut bytes) {
+        return CaptureResult::Failed(CaptureError::new(format!(
+            "could not read portal screenshot {}: {error}",
+            path.display()
+        )));
+    }
+    if bytes.len() as u64 > MAX_CAPTURE_BYTES {
+        return CaptureResult::Failed(CaptureError::new(format!(
+            "portal screenshot exceeds the {} MiB capture limit",
+            MAX_CAPTURE_BYTES / (1024 * 1024)
+        )));
+    }
+    if bytes.is_empty() {
+        return CaptureResult::Failed(CaptureError::new(
+            "screenshot portal returned an empty file",
+        ));
+    }
+    CaptureResult::Completed(CapturedImage::new(bytes))
+}
+
 /// Selects the configured portal backend first and falls back only after a
 /// portal failure. Cancellation is returned immediately and never falls back.
 #[derive(Debug, Clone)]
@@ -452,6 +542,47 @@ mod tests {
         assert!(matches!(selector.capture(), CaptureResult::Failed(_)));
         assert_eq!(*portal_calls.lock().expect("portal calls"), 0);
         assert_eq!(*fallback_calls.lock().expect("fallback calls"), 0);
+    }
+
+    #[test]
+    fn portal_file_uri_is_decoded_and_loaded() {
+        let root = test_root("portal uri");
+        let path = root.join("capture image.png");
+        fs::write(&path, b"PNG fixture").expect("portal fixture");
+        let uri = url::Url::from_file_path(&path).expect("file URI");
+
+        assert_eq!(
+            load_portal_capture(uri.as_str()),
+            CaptureResult::Completed(CapturedImage::new(b"PNG fixture"))
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn portal_loader_rejects_remote_empty_and_oversized_results() {
+        assert!(matches!(
+            load_portal_capture("https://example.invalid/capture.png"),
+            CaptureResult::Failed(_)
+        ));
+
+        let root = test_root("portal-invalid");
+        let empty = root.join("empty.png");
+        fs::write(&empty, []).expect("empty fixture");
+        let empty_uri = url::Url::from_file_path(&empty).expect("empty URI");
+        assert!(matches!(load_portal_capture(empty_uri.as_str()), CaptureResult::Failed(_)));
+
+        let oversized = root.join("oversized.png");
+        let file = fs::File::create(&oversized).expect("oversized fixture");
+        file.set_len(MAX_CAPTURE_BYTES + 1).expect("oversized length");
+        let oversized_uri = url::Url::from_file_path(&oversized).expect("oversized URI");
+        assert!(matches!(load_portal_capture(oversized_uri.as_str()), CaptureResult::Failed(_)));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn portal_response_cancellation_is_recognized() {
+        let error = ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled);
+        assert!(portal_cancelled(&error));
     }
 
     #[cfg(unix)]

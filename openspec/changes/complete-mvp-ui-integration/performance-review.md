@@ -61,3 +61,11 @@
 - Impact: Production runtime is unchanged. Test CPU and memory are linear only in tiny fixture buffers, and temporary filesystem I/O is bounded to one export per relevant scenario.
 - Mitigation: Tests cross the public UI coordinator, platform preview outcome, core render state, and atomic export boundaries, making cancellation, staleness, last-valid retention, and cancelled destination regressions deterministic in headless CI.
 - Follow-up: The final Hyprland smoke test still needs to exercise the real native chooser and bundled Typst binary because headless tests intentionally do not emulate compositor dialogs.
+
+## Task 4.1: Portal and Hyprland capture wiring
+
+- Finding: Capture now runs on one named worker and asks the XDG Screenshot portal first through a minimal `ashpd` feature set. A portal failure may start one bounded `slurp` selection followed by one bounded `grim` process; cancellation never triggers fallback.
+- Impact: GTK remains responsive while D-Bus or compositor interaction is active. A completed capture owns one encoded image buffer, capped at 64 MiB for portal files; the fallback pipe remains bounded by the 120-second process timeout but can allocate its complete standard output before later PNG validation.
+- I/O and concurrency: Portal file reading and fallback process I/O stay off the GTK thread. Every worker reports exactly one completed, cancelled, or failed coordinator result. A source/project lifetime cancellation causes completed bytes to be discarded before UI mutation, and project replacement clears any staged capture.
+- Mitigation: Only local `file:` portal results are read, URI escaping is decoded by the URL parser, reads stop after the encoded-byte cap, empty results fail explicitly, portal cancellation is distinguished from failure, and fallback children are killed and reaped at timeout.
+- Follow-up: The portal wrapper waits for the portal response internally, so cooperative cancellation can disregard a late response but cannot yet close an already-displayed portal dialog. Task 5.2 will expose cancellation immediately at the UI boundary; a lower-level request adapter is needed if prompt closure becomes a material usability issue. Task 4.3 will validate PNG structure and decoded memory before storage.

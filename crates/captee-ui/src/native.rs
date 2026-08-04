@@ -4,13 +4,15 @@ use crate::operation::{
 };
 use crate::{UiCommand, UiShell};
 use captee_core::{
-    replace_literal, request_completions, CompletionItem, Diagnostic, DiagnosticSeverity,
-    Operation, OperationKind, ProjectConfig, ProjectSession, RenderState, SourceDocument,
+    replace_literal, request_completions, CaptureBackend, CaptureResult, CapturedImage,
+    CompletionItem, Diagnostic, DiagnosticSeverity, Operation, OperationKind, ProjectConfig,
+    ProjectSession, RenderState, SourceDocument,
 };
 use captee_platform::{
     create_project, export_pdf, open_project, AsyncPreviewCompiler, AutosaveSnapshot,
-    AutosaveStore, FormattedSource, PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore,
-    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, AUTOSAVE_FILE,
+    AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture, PreviewOutcome,
+    ProjectDocumentPersistence, RecentProjectStore, TypstCompletionProvider, TypstFormatter,
+    TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use gtk::gio;
 use gtk::glib;
@@ -40,6 +42,7 @@ enum WorkspaceOperationResult {
     AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
     Preview(PreviewOutcome),
     Exported(PathBuf),
+    Captured(CapturedImage),
 }
 
 #[derive(Debug)]
@@ -64,6 +67,7 @@ fn build_ui(application: &Application) {
     let autosave_sequence = Rc::new(Cell::new(0));
     let preview_sequence = Rc::new(Cell::new(0));
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
+    let pending_capture = Rc::new(RefCell::new(None));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -137,6 +141,7 @@ fn build_ui(application: &Application) {
         autosave_sequence,
         preview_sequence,
         render_state,
+        pending_capture,
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -157,7 +162,7 @@ fn build_ui(application: &Application) {
     root.append(&status);
     window.set_child(Some(&root));
 
-    connect_ui_actions(&shell, &status, &project_ui, application);
+    connect_ui_actions(&project_ui, application);
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
@@ -319,19 +324,11 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     WorkspaceMenus { file, edit, capture, view }
 }
 
-fn connect_ui_actions(
-    shell: &Rc<RefCell<UiShell>>,
-    status: &Label,
-    project_ui: &ProjectUi,
-    application: &Application,
-) {
+fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let action = application.lookup_action("capture").expect("installed capture action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
-    let shell_for_capture = Rc::clone(shell);
-    let status_for_capture = status.clone();
-    action.connect_activate(move |_, _| {
-        dispatch_and_announce(&shell_for_capture, &status_for_capture, UiCommand::Capture)
-    });
+    let capture_ui = project_ui.clone();
+    action.connect_activate(move |_, _| start_capture(&capture_ui));
 
     for (name, create) in [("new-project", true), ("open-project", false)] {
         let action = application.lookup_action(name).expect("installed project action");
@@ -415,6 +412,7 @@ struct ProjectUi {
     autosave_sequence: Rc<Cell<u64>>,
     preview_sequence: Rc<Cell<u64>>,
     render_state: Rc<RefCell<RenderState>>,
+    pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -725,6 +723,52 @@ fn start_preview(project_ui: &ProjectUi) {
     });
 }
 
+fn start_capture(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    if snapshot.app.project.is_none() {
+        project_ui.status.set_text("Open a project before capturing an image.");
+        return;
+    }
+    let settings = snapshot.app.settings.capture;
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Capture) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Capture, true) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = project_ui
+                .shell
+                .borrow_mut()
+                .dispatch(UiCommand::Fail { message: error.to_string() });
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Choose a screen, window, or region to capture…");
+    let cancellation = task.cancellation();
+    let _ = thread::Builder::new().name("captee-capture".to_owned()).spawn(move || {
+        let selector = CaptureSelector::new(
+            XdgPortalCapture::new(),
+            GrimSlurpCapture::new(Duration::from_secs(120)),
+            settings,
+        );
+        let result =
+            if cancellation.is_cancelled() { CaptureResult::Cancelled } else { selector.capture() };
+        let outcome = match result {
+            CaptureResult::Completed(_) if cancellation.is_cancelled() => {
+                OperationOutcome::Cancelled
+            }
+            CaptureResult::Completed(image) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::Captured(image))
+            }
+            CaptureResult::Cancelled => OperationOutcome::Cancelled,
+            CaptureResult::Failed(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
 #[allow(deprecated)]
 fn show_export_dialog(project_ui: &ProjectUi) {
     let state = project_ui.render_state.borrow();
@@ -1025,6 +1069,14 @@ fn apply_operation_result(
                         .borrow_mut()
                         .dispatch(UiCommand::Complete { message: message.clone() });
                     project_ui.status.set_text(&message);
+                }
+                OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
+                    *project_ui.pending_capture.borrow_mut() = Some(image);
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Complete { message: "Capture ready".to_owned() });
+                    project_ui.status.set_text("Capture ready for annotation.");
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                     message,
@@ -1441,6 +1493,7 @@ fn open_loaded_project(
             project_ui.syncing_buffer.set(false);
             project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
+            *project_ui.pending_capture.borrow_mut() = None;
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_status.set_text("Preview has not been rendered yet.");
             refresh_project_label(project_ui);
@@ -1542,22 +1595,13 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.syncing_buffer.set(false);
             project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
+            *project_ui.pending_capture.borrow_mut() = None;
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_status.set_text("Render a document to see its preview.");
             refresh_project_label(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }
         Err(error) => project_ui.status.set_text(&format!("Error: {error}")),
-    }
-}
-
-fn dispatch_and_announce(shell: &Rc<RefCell<UiShell>>, status: &Label, command: UiCommand) {
-    let result = shell.borrow_mut().dispatch(command);
-    let snapshot = shell.borrow().snapshot();
-    if let Err(error) = result {
-        status.set_text(&format!("Error: {error}"));
-    } else if let Some(announcement) = snapshot.announcement {
-        status.set_text(&announcement.label);
     }
 }
 

@@ -6,9 +6,12 @@ license.workspace = true
 description = "Captee filesystem, compiler, capture, and Linux adapters"
 
 [dependencies]
+ashpd.workspace = true
+async-io.workspace = true
 captee-core = { path = "../captee-core" }
 png.workspace = true
 serde_json.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

@@ -182,6 +182,14 @@ after a portal failure. Fallback subprocesses are polled with a timeout and
 terminated on expiry; their output is still unvalidated raw image data until
 the PNG-validation task.
 
+The concrete Linux portal adapter uses the XDG Screenshot D-Bus interface on a
+worker thread and accepts only local file URIs. Portal reads are capped at 64
+MiB and portal cancellation is terminal, while a genuine portal failure may
+enter the configured `slurp`/`grim` path used by Hyprland. Capture results carry
+the active project and source revision through the UI operation coordinator;
+late results after cancellation or project replacement are discarded, and only
+an accepted result becomes the single staged capture owned by the workspace.
+
 The platform annotation adapter decodes each captured PNG into a bounded RGBA
 surface, applies clipped pointer, rectangle, or fixed-glyph text marks, and
 encodes a separate staged PNG. The original capture is borrowed immutably, so
