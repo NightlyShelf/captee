@@ -46,9 +46,13 @@ pub fn current_capture_origin() -> Option<CaptureOrigin> {
     })
 }
 
-/// Moves the already-mapped review window to the workspace captured before
-/// selection and focuses it so it is stacked above the original active app.
-pub fn move_capture_review_to_workspace(title: &str, workspace: &str) -> Result<(), String> {
+/// Places the already-mapped review window as a floating monitor-sized window
+/// on the workspace captured before selection and focuses it above the app.
+pub fn place_capture_review_window(
+    title: &str,
+    workspace: &str,
+    monitor_name: &str,
+) -> Result<(), String> {
     let clients = Command::new("hyprctl")
         .args(["clients", "-j"])
         .output()
@@ -70,7 +74,32 @@ pub fn move_capture_review_to_workspace(title: &str, workspace: &str) -> Result<
         .ok_or_else(|| "capture review window is not mapped yet".to_owned())?;
     let destination = format!("{workspace},address:{address}");
     run_hyprctl_dispatch("movetoworkspacesilent", &destination)?;
+    run_hyprctl_dispatch("setfloating", &format!("address:{address}"))?;
+    if let Some((x, y, width, height)) = hyprland_monitor_rect(monitor_name) {
+        run_hyprctl_dispatch(
+            "resizewindowpixel",
+            &format!("exact {width} {height},address:{address}"),
+        )?;
+        run_hyprctl_dispatch("movewindowpixel", &format!("exact {x} {y},address:{address}"))?;
+    }
     run_hyprctl_dispatch("focuswindow", &format!("address:{address}"))
+}
+
+fn hyprland_monitor_rect(monitor_name: &str) -> Option<(i64, i64, i64, i64)> {
+    let output = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let monitors: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let monitor = monitors.as_array()?.iter().find(|monitor| {
+        monitor.get("name").and_then(serde_json::Value::as_str) == Some(monitor_name)
+    })?;
+    Some((
+        monitor.get("x")?.as_i64()?,
+        monitor.get("y")?.as_i64()?,
+        monitor.get("width")?.as_i64()?,
+        monitor.get("height")?.as_i64()?,
+    ))
 }
 
 fn run_hyprctl_dispatch(dispatcher: &str, argument: &str) -> Result<(), String> {

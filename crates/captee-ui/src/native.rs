@@ -14,14 +14,13 @@ use captee_core::{
 };
 use captee_platform::{
     confirm_and_trash, create_project, create_project_item, current_capture_origin,
-    current_desktop_prefers_fallback_capture, export_pdf, list_project_tree,
-    move_capture_review_to_workspace, move_project_item, open_project, register_capture_shortcut,
-    rename_project_item, save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot,
-    AutosaveStore, CaptureOrigin, CaptureSelector, FormattedSource, GlobalShortcutEvent,
-    GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence,
-    ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend, TrashError,
-    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture,
-    AUTOSAVE_FILE,
+    current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
+    open_project, place_capture_review_window, register_capture_shortcut, rename_project_item,
+    save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore,
+    CaptureOrigin, CaptureSelector, FormattedSource, GlobalShortcutEvent, GrimSlurpCapture,
+    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry,
+    RecentProjectStore, SavedAsset, TrashBackend, TrashError, TypstCompletionProvider,
+    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use gtk::gio;
@@ -1762,6 +1761,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         .build();
     let review_title = format!("Captee Capture Review {}", std::process::id());
     review_window.set_title(Some(&review_title));
+    if let Some(monitor) = monitor.as_ref() {
+        let geometry = monitor.geometry();
+        review_window.set_default_size(geometry.width(), geometry.height());
+    } else {
+        review_window.set_default_size(1280, 800);
+    }
     review_window.add_css_class("capture-review-window");
 
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
@@ -2006,19 +2011,15 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     });
 
     review_window.present();
-    if let Some(monitor) = monitor {
-        review_window.fullscreen_on_monitor(&monitor);
-    } else {
-        review_window.fullscreen();
-    }
 
     if let Some(origin) = origin {
         let title = review_title.clone();
         let workspace = origin.workspace;
+        let monitor_name = origin.monitor;
         let _ =
             thread::Builder::new().name("captee-capture-placement".to_owned()).spawn(move || {
                 for _ in 0..20 {
-                    if move_capture_review_to_workspace(&title, &workspace).is_ok() {
+                    if place_capture_review_window(&title, &workspace, &monitor_name).is_ok() {
                         break;
                     }
                     thread::sleep(Duration::from_millis(25));
