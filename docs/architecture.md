@@ -285,7 +285,7 @@ Capture can also be initiated without workspace focus through the XDG
 GlobalShortcuts portal. The listener is owned by a platform worker and forwards
 activation events to the GTK main context, where the existing capture
 coordinator applies project and cancellation checks. Before creating the
-session, the worker registers `com.nightlyshelf.Captee` as the host app on the
+session, the worker registers `com.nightlyshelf.captee` as the host app on the
 same D-Bus connection, which gives unsandboxed development and installed
 launches the application identity required by the portal. For a host-launched
 development binary, it also installs the checked-in desktop entry into the

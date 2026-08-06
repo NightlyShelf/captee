@@ -43,7 +43,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
+const APPLICATION_ID: &str = "com.nightlyshelf.captee";
 
 #[derive(Debug)]
 enum WorkspaceOperationResult {

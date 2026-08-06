@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
+const APPLICATION_ID: &str = "com.nightlyshelf.captee";
 const DESKTOP_ENTRY: &str =
-    include_str!("../../../packaging/appimage/com.nightlyshelf.Captee.desktop");
+    include_str!("../../../packaging/appimage/com.nightlyshelf.captee.desktop");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GlobalShortcutEvent {
@@ -87,11 +87,21 @@ fn ensure_desktop_entry() -> Result<(), std::io::Error> {
     let applications = data_home.join("applications");
     fs::create_dir_all(&applications)?;
     let destination = applications.join(format!("{APPLICATION_ID}.desktop"));
-    if destination.exists() {
+    let contents = desktop_entry_for_current_executable()?;
+    let existing = fs::read_to_string(&destination).ok();
+    if existing.as_deref() == Some(contents.as_str()) {
+        return Ok(());
+    }
+    if destination.exists() && existing.as_deref() != Some(DESKTOP_ENTRY) {
         return Ok(());
     }
     let temporary =
         applications.join(format!(".{APPLICATION_ID}.desktop.{}.tmp", std::process::id()));
-    fs::write(&temporary, DESKTOP_ENTRY)?;
+    fs::write(&temporary, contents)?;
     fs::rename(temporary, destination)
+}
+
+fn desktop_entry_for_current_executable() -> Result<String, std::io::Error> {
+    let executable = std::env::current_exe()?.to_string_lossy().replace('"', "\\\"");
+    Ok(DESKTOP_ENTRY.replace("Exec=captee-ui", &format!("Exec=\"{executable}\"")))
 }
