@@ -267,19 +267,19 @@ worker-backed enumeration remain follow-up work for very large projects. The
 project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization.
 
-Capture confirmation is a staged document-composition surface drawn as a
-borderless transparent monitor-sized floating overlay on the workspace and
-monitor that were active when capture began, not inside the main Captee
-workspace window.
-The Hyprland adapter records that placement before the selector takes focus,
-then moves and focuses the mapped review surface above the original active
-application. It keeps the selected screen surface and selection stroke visible,
-carries fallback screen-space selection geometry, and shows a short dimmed
-source context while the user edits Typst
+Capture confirmation is a staged document-composition popup drawn as a small
+borderless floating window on the workspace that was active when capture
+began, not as a monitor-sized surface and not inside the main Captee workspace
+window. The Hyprland adapter records that placement before the selector takes
+focus, then moves and focuses the mapped popup at the selected screen
+coordinates above the original active application. The live desktop remains
+unchanged behind the popup; no selection stroke, desktop screenshot, or dim
+layer is retained after the selector closes. The popup shows a short source
+context while the user edits Typst
 annotation code, chooses before/after placement, invokes keyboard command
 suggestions, modifies the selection, or confirms/discards with Enter/Escape.
 The review does not add a duplicate captured-image background; only the
-selection frame and panel are added. Only confirmation transfers image bytes
+popup panel is added. Only confirmation transfers image bytes
 and insertion metadata to the existing bounded storage worker. Both the main
 source editor and the capture editor load the checked-in Typst GtkSourceView
 language definition, with a Markdown fallback for runtimes that do not package
@@ -300,21 +300,16 @@ that maps the requested trigger to `com.nightlyshelf.captee:capture`; XDPH
 exposes the registered shortcut but does not create that compositor keybind
 itself.
 
-The review surface selects the recorded GDK monitor when available, requests a
-monitor-sized surface without compositor fullscreen state, and converts the
-selected rectangle into the review surface's local coordinates after
-allocation. The background remains the live desktop surface beneath the
-transparent overlay; no full-screen screenshot is inserted into the review.
-Portal
+The review popup uses the fallback compositor coordinates directly for its
+Hyprland placement and does not render a captured desktop background. Portal
 captures without geometry use the active application monitor as a fallback and
 show the unavailable-geometry status. GTK result polling releases the
 operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results
-that trigger follow-up label, settings, or project-lifetime reads. In-place
-capture confirmation removes its overlay children and closes the temporary
-review surface before handing the staged image to storage, so cancellation,
-modification, and confirmation cannot leave a stale review surface or re-enter
-through a duplicate review.
+that trigger follow-up label, settings, or project-lifetime reads. Capture
+confirmation closes the temporary review popup before handing the staged image
+to storage, so cancellation, modification, and confirmation cannot leave a
+stale review surface or re-enter through a duplicate review.
 
 Project creation writes a minimal valid Typst heading (`= Captee`) through the
 same atomic workspace boundary as the config. This guarantees a new workspace

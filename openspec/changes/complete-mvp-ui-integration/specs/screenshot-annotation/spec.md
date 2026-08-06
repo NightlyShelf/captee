@@ -30,12 +30,12 @@ The UI MUST provide controls for pointer, rectangle, and text annotations while 
 
 ### Requirement: Document-aware capture review
 
-Before and after region selection, the application SHALL retain the active desktop workspace/monitor context when the platform exposes it. After selection succeeds, it SHALL retain the selected region and its available screen-space geometry, preserve the existing screen surface and selection stroke, and add a borderless transparent monitor-sized floating review surface on that same workspace and monitor rather than rerendering the captured region as a background image or placing the review inside Captee's main workspace window. The review surface SHALL visibly darken the surrounding screen and contain only the preceding Typst context, an annotation code editor, and the three bottom controls Before/After, Confirm, and Cancel. The preceding Typst lines SHALL be rendered as dimmed context, while the annotation editor SHALL support full Typst syntax. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
+Before and after region selection, the application SHALL retain the active desktop workspace context when the platform exposes it. After selection succeeds, it SHALL open only a small borderless floating review popup at the selection's screen coordinates on that same workspace, without preserving the selection stroke, rerendering the captured region, dimming the desktop, or placing a monitor-sized surface over the active window. The popup SHALL contain the preceding Typst context, an annotation code editor, and the bottom controls Before/After, Confirm, and Cancel. The annotation editor SHALL support full Typst syntax and show its default description inside the textbox until the user types. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
 
 #### Scenario: Region selection becomes a staged review
 
 - **WHEN** the user completes a region drag
-- **THEN** the selected screen region and stroke remain visible under the dimmed screen, the transparent review surface is added beside it on the capture workspace/monitor above the original active application, and no duplicate captured-image background is rendered, without changing the project source or writing an asset
+- **THEN** a small borderless review popup appears at the selection coordinates on the capture workspace, the live active window remains unchanged behind it, and no selection overlay, desktop screenshot, or source/asset mutation is introduced before confirmation
 
 #### Scenario: Default annotation placement
 

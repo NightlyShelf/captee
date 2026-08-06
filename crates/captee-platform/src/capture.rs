@@ -56,12 +56,13 @@ pub fn current_capture_origin() -> Option<CaptureOrigin> {
     })
 }
 
-/// Places the already-mapped review window as a floating monitor-sized window
-/// on the workspace captured before selection and focuses it above the app.
+/// Places the already-mapped review popup as a small floating window on the
+/// workspace captured before selection and focuses it above the app.
 pub fn place_capture_review_window(
     title: &str,
     workspace: &str,
-    monitor_name: &str,
+    x: i64,
+    y: i64,
 ) -> Result<(), String> {
     let clients = Command::new("hyprctl")
         .args(["clients", "-j"])
@@ -85,13 +86,7 @@ pub fn place_capture_review_window(
     let destination = format!("{workspace},address:{address}");
     run_hyprctl_dispatch("movetoworkspacesilent", &destination)?;
     run_hyprctl_dispatch("setfloating", &format!("address:{address}"))?;
-    if let Some((x, y, width, height)) = hyprland_monitor_rect(monitor_name) {
-        run_hyprctl_dispatch(
-            "resizewindowpixel",
-            &format!("exact {width} {height},address:{address}"),
-        )?;
-        run_hyprctl_dispatch("movewindowpixel", &format!("exact {x} {y},address:{address}"))?;
-    }
+    run_hyprctl_dispatch("movewindowpixel", &format!("exact {x} {y},address:{address}"))?;
     run_hyprctl_dispatch("focuswindow", &format!("address:{address}"))
 }
 
