@@ -260,20 +260,23 @@ indentation and type icons, starts at roughly one sixth of the default window
 width, and leaves the remaining paned area to the editor and preview. Clicks
 open files, folder clicks toggle expansion, triple-click opens rename, and drag
 sources/drop targets support validated moves including the project root.
-Context actions route create, rename, move, and delete through the platform
-workspace boundary after small confirmation dialogs. Tree refresh currently
-scans synchronously and skips symlinks; lazy expansion and worker-backed
-enumeration remain follow-up work for very large projects.
+Context actions route create, inline rename, move, and delete through the
+platform workspace boundary after small confirmation dialogs. Tree refresh
+currently scans synchronously and skips symlinks; lazy expansion and
+worker-backed enumeration remain follow-up work for very large projects. The
+project divider is user-resizable, the initial editor/preview divider is set to
+an equal split, and long labels use GTK ellipsization.
 
 Capture confirmation is a staged document-composition surface drawn as an
 overlay inside the existing workspace, not a second window. It keeps the
-selected image staged and shows a short dimmed source context while the user
-edits Typst annotation code, chooses before/after placement, invokes keyboard
-command suggestions, modifies the selection, or confirms/discards with
-Enter/Escape. Only confirmation transfers image bytes and insertion metadata
-to the existing bounded storage worker. Both the main source editor and the
-capture editor load the checked-in Typst GtkSourceView language definition,
-with a Markdown fallback for runtimes that do not package the definition.
+selected image staged and visible, carries fallback screen-space selection
+geometry, and shows a short dimmed source context while the user edits Typst
+annotation code, chooses before/after placement, invokes keyboard command
+suggestions, modifies the selection, or confirms/discards with Enter/Escape.
+Only confirmation transfers image bytes and insertion metadata to the existing
+bounded storage worker. Both the main source editor and the capture editor load
+the checked-in Typst GtkSourceView language definition, with a Markdown
+fallback for runtimes that do not package the definition.
 
 GTK result polling releases the operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results

@@ -27,7 +27,7 @@ pub use authoring::{
 pub use capture::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
     CaptureBackend, CaptureError, CaptureResult, CapturedImage, EditorInserter, InsertionError,
-    InsertionResult,
+    InsertionResult, SelectionGeometry,
 };
 pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceSpan};
 pub use editor::{DocumentPersistence, EditError, SourceDocument};

@@ -2,7 +2,7 @@
 
 use captee_core::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
-    CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage,
+    CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage, SelectionGeometry,
 };
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -442,6 +442,12 @@ impl CaptureBackend for GrimSlurpCapture {
             return CaptureResult::Cancelled;
         }
 
+        let Some(selection) = parse_selection_geometry(&geometry) else {
+            return CaptureResult::Failed(CaptureError::new(format!(
+                "slurp returned invalid selection geometry: {geometry}"
+            )));
+        };
+
         let grim_args = vec!["-g".to_owned(), geometry, "-".to_owned()];
         let image = match run_bounded(&self.grim, &grim_args, self.timeout) {
             Ok(output) => output,
@@ -450,8 +456,22 @@ impl CaptureBackend for GrimSlurpCapture {
         if !image.status.success() {
             return CaptureResult::Failed(command_failure("grim", &image));
         }
-        CaptureResult::Completed(CapturedImage::new(image.stdout))
+        CaptureResult::Completed(CapturedImage::with_selection(image.stdout, selection))
     }
+}
+
+fn parse_selection_geometry(value: &str) -> Option<SelectionGeometry> {
+    let mut parts = value.split_whitespace();
+    let position = parts.next()?;
+    let size = parts.next()?;
+    let (x, y) = position.split_once(',')?;
+    let (width, height) = size.trim().split_once('x')?;
+    Some(SelectionGeometry {
+        x: x.parse().ok()?,
+        y: y.parse().ok()?,
+        width: width.parse().ok()?,
+        height: height.parse().ok()?,
+    })
 }
 
 fn run_bounded(program: &Path, args: &[String], timeout: Duration) -> Result<Output, CaptureError> {
@@ -708,7 +728,13 @@ mod tests {
         }
 
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(1));
-        assert_eq!(capture.capture(), CaptureResult::Completed(CapturedImage::new(b"PNG fixture")));
+        assert_eq!(
+            capture.capture(),
+            CaptureResult::Completed(CapturedImage::with_selection(
+                b"PNG fixture",
+                SelectionGeometry { x: 0, y: 0, width: 10, height: 10 },
+            ))
+        );
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -735,6 +761,15 @@ mod tests {
         };
         assert_eq!(image.bytes().len(), 256 * 1024);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn selection_geometry_is_parsed_from_slurp_output() {
+        assert_eq!(
+            parse_selection_geometry("12,34 567x890"),
+            Some(SelectionGeometry { x: 12, y: 34, width: 567, height: 890 })
+        );
+        assert_eq!(parse_selection_geometry("invalid"), None);
     }
 
     fn fixture_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {

@@ -72,7 +72,12 @@ The application SHALL provide a project home for creating/opening projects and a
 #### Scenario: Rename an item by triple click
 
 - **WHEN** the user triple-clicks a file or folder row, enters a safe single-component name, and confirms
-- **THEN** the item is renamed in place and the tree refreshes without changing its parent
+- **THEN** an inline text field replaces the row label at that file or folder position, the item is renamed in place, and the tree refreshes without changing its parent
+
+#### Scenario: Resize and truncate the project panel
+
+- **WHEN** the project panel is narrower than a file name or the user drags its divider
+- **THEN** the panel can be resized, long names ellipsize instead of changing the editor/preview structure, and the editor and preview retain an equal initial split of the remaining width
 
 #### Scenario: Workspace menu placement
 

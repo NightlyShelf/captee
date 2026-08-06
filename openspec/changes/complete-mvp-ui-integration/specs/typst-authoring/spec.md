@@ -49,6 +49,11 @@ Every Typst text editor in the workspace, including the main source editor and t
 - **WHEN** the user edits annotation code in the capture review
 - **THEN** the same Typst syntax-aware styling is applied in the annotation editor
 
+#### Scenario: Use the dark editor presentation
+
+- **WHEN** the workspace uses a dark desktop theme
+- **THEN** the editor surface, line-number gutter, syntax text, and caret retain visible contrasting colors without a white gutter or dark-on-dark caret
+
 ### Requirement: Typst command autocomplete in every editor
 
 Every Typst text editor in the workspace SHALL offer command autocomplete, including the main source editor and capture annotation editor. Suggestions SHALL be derived from the current Typst command context and SHALL be dismissible without changing text.

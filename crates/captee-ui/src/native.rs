@@ -9,7 +9,8 @@ use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
     DiagnosticSeverity, EditorInserter, InsertionResult, KeybindingSettings, Operation,
-    OperationKind, ProjectConfig, ProjectSession, ProjectSettings, RenderState, SourceDocument,
+    OperationKind, ProjectConfig, ProjectSession, ProjectSettings, RenderState, SelectionGeometry,
+    SourceDocument,
 };
 use captee_platform::{
     confirm_and_trash, create_project, create_project_item,
@@ -95,8 +96,15 @@ fn build_ui(application: &Application) {
     let style = gtk::CssProvider::new();
     style.load_from_data(
         ".capture-backdrop { background-color: rgba(0, 0, 0, 0.72); }\
-         .capture-review-panel { background-color: @theme_base_color; border-radius: 4px; }\
-         .capture-context { color: alpha(@theme_fg_color, 0.45); }",
+         .capture-review-panel { background-color: #202124; border-radius: 4px; }\
+         .capture-context { color: #9aa0a6; }\
+         .typst-editor, .typst-editor.view, .typst-editor text {\
+           background-color: #202124; color: #e8eaed; caret-color: #ffffff;\
+         }\
+         .typst-editor gutter, .typst-editor gutter.left {\
+           background-color: #292a2d; color: #9aa0a6;\
+         }\
+         .typst-editor border { background-color: #3c4043; }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -113,6 +121,7 @@ fn build_ui(application: &Application) {
     source_view.set_monospace(true);
     source_view.set_hexpand(true);
     source_view.set_vexpand(true);
+    source_view.add_css_class("typst-editor");
     source_view.set_tooltip_text(Some("Typst source editor"));
 
     let status = Label::new(Some("Ready. Create or open a project to begin."));
@@ -323,12 +332,22 @@ fn build_workspace(
     editor_preview.set_end_child(Some(&preview));
     editor_preview.set_resize_start_child(true);
     editor_preview.set_shrink_start_child(false);
+    editor_preview.set_resize_end_child(true);
+    editor_preview.set_wide_handle(true);
+    editor_preview.connect_map(|paned| {
+        let width = paned.width();
+        if width > 0 {
+            paned.set_position(width / 2);
+        }
+    });
 
     let workspace = Paned::new(Orientation::Horizontal);
     workspace.set_start_child(Some(&navigation));
     workspace.set_end_child(Some(&editor_preview));
-    workspace.set_resize_start_child(false);
+    workspace.set_resize_start_child(true);
     workspace.set_shrink_start_child(false);
+    workspace.set_resize_end_child(true);
+    workspace.set_wide_handle(true);
     workspace.set_position(212);
 
     let menu_strip = GtkBox::new(Orientation::Horizontal, 4);
@@ -707,6 +726,8 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     let label = Label::new(Some(name));
     label.set_xalign(0.0);
     label.set_hexpand(true);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_max_width_chars(24);
     label.set_margin_start(4);
     label.set_margin_top(3);
     label.set_margin_bottom(3);
@@ -717,23 +738,20 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     row.set_child(Some(&content));
 
     let is_directory = entry.is_directory;
-    let path_for_open = entry.relative_path.clone();
-    let project_ui_for_open = project_ui.clone();
-    row.connect_activate(move |_| {
-        if is_directory {
-            toggle_tree_path(&project_ui_for_open, &path_for_open);
-        } else {
-            open_project_tree_file(&project_ui_for_open, &path_for_open);
-        }
-    });
-
-    let rename_ui = project_ui.clone();
-    let rename_path = entry.relative_path.clone();
+    let path_for_click = entry.relative_path.clone();
+    let project_ui_for_click = project_ui.clone();
+    let row_for_click = row.clone();
     let click = GestureClick::new();
     click.set_button(1);
     click.connect_pressed(move |_, n_press, _, _| {
         if n_press == 3 {
-            show_rename_project_item_dialog(&rename_ui, &rename_path);
+            begin_inline_rename(&project_ui_for_click, &row_for_click, &path_for_click);
+        } else if n_press == 1 {
+            if is_directory {
+                toggle_tree_path(&project_ui_for_click, &path_for_click);
+            } else {
+                open_project_tree_file(&project_ui_for_click, &path_for_click);
+            }
         }
     });
     row.add_controller(click);
@@ -819,12 +837,13 @@ fn show_project_tree_context_menu(project_ui: &ProjectUi, row: &ListBoxRow, path
         let project_ui = project_ui.clone();
         let path = path.to_path_buf();
         let popover_for_action = popover.clone();
+        let row_for_action = row.clone();
         button.connect_clicked(move |_| {
             popover_for_action.popdown();
             match action {
                 0 => show_create_project_item_dialog(&project_ui, &path, false),
                 1 => show_create_project_item_dialog(&project_ui, &path, true),
-                2 => show_rename_project_item_dialog(&project_ui, &path),
+                2 => begin_inline_rename(&project_ui, &row_for_action, &path),
                 3 => show_move_project_item_dialog(&project_ui, &path),
                 _ => show_delete_project_item_dialog(&project_ui, &path),
             }
@@ -952,58 +971,75 @@ fn show_move_project_item_dialog(project_ui: &ProjectUi, source: &Path) {
     entry.grab_focus();
 }
 
-fn show_rename_project_item_dialog(project_ui: &ProjectUi, source: &Path) {
-    let Some(window) = project_ui.window() else {
-        return;
-    };
-    let dialog = Dialog::builder()
-        .title("Rename project item")
-        .transient_for(&window)
-        .modal(true)
-        .default_width(380)
-        .build();
-    dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button("Rename", ResponseType::Accept);
-    dialog.set_default_response(ResponseType::Accept);
-    let form = GtkBox::new(Orientation::Vertical, 8);
-    form.set_margin_top(12);
-    form.set_margin_bottom(12);
-    form.set_margin_start(12);
-    form.set_margin_end(12);
+fn begin_inline_rename(project_ui: &ProjectUi, row: &ListBoxRow, source: &Path) {
+    let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default();
     let entry = Entry::new();
-    entry.set_text(source.file_name().and_then(|name| name.to_str()).unwrap_or_default());
-    entry.set_activates_default(true);
-    let error = Label::new(None);
-    error.add_css_class("error");
-    error.set_xalign(0.0);
-    form.append(&entry);
-    form.append(&error);
-    dialog.content_area().append(&form);
-    let project_ui = project_ui.clone();
-    let source = source.to_path_buf();
-    let entry_for_response = entry.clone();
-    dialog.connect_response(move |dialog, response| {
-        if response != ResponseType::Accept {
-            dialog.close();
-            return;
-        }
-        let snapshot = project_ui.shell.borrow().snapshot();
-        let Some(project) = snapshot.app.project else {
-            dialog.close();
-            return;
-        };
-        match rename_project_item(&project.root, &source, entry_for_response.text().trim()) {
-            Ok(_) => {
-                refresh_project_tree(&project_ui);
-                project_ui.status.set_text("Project item renamed.");
-                dialog.close();
-            }
-            Err(item_error) => error.set_text(&item_error.to_string()),
-        }
-    });
-    dialog.present();
+    entry.set_text(name);
+    entry.set_hexpand(true);
+    entry.set_margin_start(8);
+    entry.set_margin_end(8);
+    entry.set_margin_top(2);
+    entry.set_margin_bottom(2);
+    entry.set_tooltip_text(Some("Rename project item; press Enter to confirm or Escape to cancel"));
+    row.set_child(Some(&entry));
     entry.grab_focus();
     entry.select_region(0, -1);
+
+    let finished = Rc::new(Cell::new(false));
+    let commit = Rc::new({
+        let project_ui = project_ui.clone();
+        let row = row.clone();
+        let source = source.to_path_buf();
+        let entry = entry.clone();
+        let finished = finished.clone();
+        move |cancelled: bool| {
+            if finished.get() {
+                return;
+            }
+            if cancelled {
+                finished.set(true);
+                refresh_project_tree(&project_ui);
+                return;
+            }
+            let snapshot = project_ui.shell.borrow().snapshot();
+            let Some(project) = snapshot.app.project else {
+                finished.set(true);
+                refresh_project_tree(&project_ui);
+                return;
+            };
+            match rename_project_item(&project.root, &source, entry.text().trim()) {
+                Ok(_) => {
+                    finished.set(true);
+                    refresh_project_tree(&project_ui);
+                    project_ui.status.set_text("Project item renamed.");
+                }
+                Err(error) => {
+                    project_ui.status.set_text(&format!("Could not rename item: {error}"));
+                    row.set_child(Some(&entry));
+                    entry.grab_focus();
+                }
+            }
+        }
+    });
+
+    let commit_for_activate = commit.clone();
+    entry.connect_activate(move |_| commit_for_activate(false));
+
+    let key = gtk::EventControllerKey::new();
+    let commit_for_key = commit.clone();
+    key.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            commit_for_key(true);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    entry.add_controller(key);
+
+    let focus = gtk::EventControllerFocus::new();
+    let commit_for_focus = commit.clone();
+    focus.connect_leave(move |_| commit_for_focus(false));
+    entry.add_controller(focus);
 }
 
 struct GioTrashBackend;
@@ -1668,6 +1704,15 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     backdrop.set_can_target(true);
     backdrop.add_css_class("capture-backdrop");
 
+    let selected_picture = gtk::Picture::new();
+    selected_picture.set_can_shrink(true);
+    selected_picture.set_halign(Align::Center);
+    selected_picture.set_valign(Align::Center);
+    selected_picture.set_opacity(0.58);
+    let (capture_width, capture_height) =
+        display_annotation_image(&selected_picture, image.bytes())?;
+    selected_picture.set_size_request(capture_width, capture_height);
+
     let panel = GtkBox::new(Orientation::Vertical, 8);
     panel.set_width_request(640);
     panel.set_height_request(360);
@@ -1706,6 +1751,15 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     context_label.add_css_class("capture-context");
     panel.append(&context_label);
 
+    let selection_text = image
+        .selection()
+        .map(format_selection_geometry)
+        .unwrap_or_else(|| "Selection geometry unavailable for this capture backend".to_owned());
+    let selection_label = Label::new(Some(&selection_text));
+    selection_label.set_xalign(0.0);
+    selection_label.add_css_class("capture-context");
+    panel.append(&selection_label);
+
     let placement = ToggleButton::with_label("Insert annotation before image");
     placement.set_active(true);
     placement.set_tooltip_text(Some(
@@ -1728,6 +1782,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     code_view.set_monospace(true);
     code_view.set_hexpand(true);
     code_view.set_vexpand(true);
+    code_view.add_css_class("typst-editor");
     code_view.set_tooltip_text(Some("Full Typst annotation code"));
 
     panel.append(
@@ -1757,6 +1812,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.prepend(&modify);
 
     project_ui.workspace_overlay.add_overlay(&backdrop);
+    project_ui.workspace_overlay.add_overlay(&selected_picture);
     project_ui.workspace_overlay.add_overlay(&panel);
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
@@ -1818,9 +1874,11 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let modify_ui = project_ui.clone();
     let modify_backdrop = backdrop.clone();
+    let modify_picture = selected_picture.clone();
     let modify_panel = panel.clone();
     modify.connect_clicked(move |_| {
         modify_ui.workspace_overlay.remove_overlay(&modify_backdrop);
+        modify_ui.workspace_overlay.remove_overlay(&modify_picture);
         modify_ui.workspace_overlay.remove_overlay(&modify_panel);
         *modify_ui.pending_capture.borrow_mut() = None;
         modify_ui.status.set_text("Select a new capture region.");
@@ -1829,9 +1887,11 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let cancel_ui = project_ui.clone();
     let cancel_backdrop = backdrop.clone();
+    let cancel_picture = selected_picture.clone();
     let cancel_panel = panel.clone();
     cancel.connect_clicked(move |_| {
         cancel_ui.workspace_overlay.remove_overlay(&cancel_backdrop);
+        cancel_ui.workspace_overlay.remove_overlay(&cancel_picture);
         cancel_ui.workspace_overlay.remove_overlay(&cancel_panel);
         *cancel_ui.pending_capture.borrow_mut() = None;
         *cancel_ui.pending_annotation.borrow_mut() = None;
@@ -1840,6 +1900,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let confirm_ui = project_ui.clone();
     let confirm_backdrop = backdrop.clone();
+    let confirm_picture = selected_picture.clone();
     let confirm_panel = panel.clone();
     confirm.connect_clicked(move |_| {
         let text =
@@ -1851,6 +1912,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         }
         let before_image = placement.is_active();
         confirm_ui.workspace_overlay.remove_overlay(&confirm_backdrop);
+        confirm_ui.workspace_overlay.remove_overlay(&confirm_picture);
         confirm_ui.workspace_overlay.remove_overlay(&confirm_panel);
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
@@ -1948,6 +2010,13 @@ fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32
     Ok(size)
 }
 
+fn format_selection_geometry(selection: SelectionGeometry) -> String {
+    format!(
+        "Selection: x={}, y={}, width={}, height={}",
+        selection.x, selection.y, selection.width, selection.height
+    )
+}
+
 fn configure_typst_buffer(buffer: &sourceview::Buffer) {
     let manager = sourceview::LanguageManager::default();
     let asset_dir = format!("{}/assets", env!("CARGO_MANIFEST_DIR"));
@@ -1961,6 +2030,11 @@ fn configure_typst_buffer(buffer: &sourceview::Buffer) {
     let language = manager.language("typst").or_else(|| manager.language("markdown"));
     buffer.set_language(language.as_ref());
     buffer.set_highlight_syntax(language.is_some());
+    let schemes = sourceview::StyleSchemeManager::default();
+    let dark_scheme = ["Adwaita-dark", "oblivion", "solarized-dark"]
+        .into_iter()
+        .find_map(|name| schemes.scheme(name));
+    buffer.set_style_scheme(dark_scheme.as_ref());
 }
 
 fn capture_insertion_expression(

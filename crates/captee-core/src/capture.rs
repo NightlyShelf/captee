@@ -6,11 +6,25 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedImage {
     bytes: Vec<u8>,
+    selection: Option<SelectionGeometry>,
+}
+
+/// Screen-space region selected by an interactive capture backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl CapturedImage {
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
-        Self { bytes: bytes.into() }
+        Self { bytes: bytes.into(), selection: None }
+    }
+
+    pub fn with_selection(bytes: impl Into<Vec<u8>>, selection: SelectionGeometry) -> Self {
+        Self { bytes: bytes.into(), selection: Some(selection) }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -19,6 +33,10 @@ impl CapturedImage {
 
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    pub fn selection(&self) -> Option<SelectionGeometry> {
+        self.selection
     }
 }
 

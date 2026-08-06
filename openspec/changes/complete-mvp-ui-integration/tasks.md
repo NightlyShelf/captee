@@ -34,7 +34,7 @@
 
 ## 7. Document-aware capture review
 
-- [x] 7.1 Define staged capture-review state that retains the selected region, darkens the surrounding workspace, renders the prior Typst context in an in-place overlay, and prevents source or asset mutation before confirmation.
+- [x] 7.1 Define staged capture-review state that retains the selected region and available geometry, keeps the selected image visible, darkens the surrounding workspace, renders the prior Typst context in an in-place overlay, and prevents source or asset mutation before confirmation.
 - [x] 7.2 Add the capture annotation editor with full Typst editing, syntax highlighting, command autocomplete, default-before placement, and a Before/After toggle that updates the staged document composition.
 - [x] 7.3 Add Modify/reselect behavior plus Escape discard, Enter confirmation, focus handling, and accessible labels for the review controls.
 - [x] 7.4 Connect confirmed annotation placement to validated asset storage and insertion of the annotation and image Typst blocks in the selected order, with focused regression tests for cancellation and reselect.
@@ -50,7 +50,7 @@
 
 ## 9. Interactive project workspace
 
-- [x] 9.1 Replace the project listing with a recursive clickable tree showing the project name, add-file/add-folder icons, files, and folders; support opening files and expanding folders.
+- [x] 9.1 Replace the project listing with a recursive clickable tree showing the project name, add-file/add-folder icons, files, and folders; support direct expand/collapse, inline rename, opening files, truncation, and a resizable project divider.
 - [x] 9.2 Add valid drag-and-drop moves and context-menu create, move, and delete actions through project-root-safe platform boundaries, with small confirmation dialogs for every mutation.
 - [x] 9.3 Style the workspace menu as compact regular menu items with no rounded button treatment or stroke, add the horizontal separator, and set the initial project/editor/preview geometry to approximately 1/6, 5/12, and 5/12 of the window width.
 - [ ] 9.4 Add focused tree, drag/drop, context-menu, confirmation, path-validation, and layout tests.
