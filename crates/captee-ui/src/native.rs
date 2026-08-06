@@ -190,10 +190,12 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
-            &preview_status,
-            &preview_scroller,
-            &preview_scale,
-            &diagnostics_label,
+            PreviewWidgets {
+                status: &preview_status,
+                scroller: &preview_scroller,
+                scale: &preview_scale,
+                diagnostics: &diagnostics_label,
+            },
             &menus,
             &project_tree,
             &project_tree_title,
@@ -303,16 +305,26 @@ struct WorkspaceMenus {
     view: gio::Menu,
 }
 
+struct PreviewWidgets<'a> {
+    status: &'a Label,
+    scroller: &'a ScrolledWindow,
+    scale: &'a gtk::DropDown,
+    diagnostics: &'a Label,
+}
+
 fn build_workspace(
     source_view: &sourceview::View,
-    preview_status: &Label,
-    preview_scroller: &ScrolledWindow,
-    preview_scale: &gtk::DropDown,
-    diagnostics_label: &Label,
+    preview_widgets: PreviewWidgets<'_>,
     menus: &WorkspaceMenus,
     project_tree: &ListBox,
     project_tree_title: &Label,
 ) -> GtkBox {
+    let PreviewWidgets {
+        status: preview_status,
+        scroller: preview_scroller,
+        scale: preview_scale,
+        diagnostics: diagnostics_label,
+    } = preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(16);
     navigation.set_margin_bottom(16);
