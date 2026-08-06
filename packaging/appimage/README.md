@@ -22,6 +22,6 @@ The script also fetches and verifies the pinned Typst archive into the AppDir
 using `tools/fetch-typst.sh`. Record the exact linuxdeploy, plugin,
 appimagetool, and runtime versions and SHA-256 digests with each artifact.
 
-The desktop entry is `packaging/appimage/com.nightlyshelf.Captee.desktop`.
+The desktop entry is `packaging/appimage/com.nightlyshelf.captee.desktop`.
 Record the exact linuxdeploy/appimagetool versions and SHA-256 digests with
 each release artifact.

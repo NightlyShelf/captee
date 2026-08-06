@@ -2,7 +2,7 @@
 
 use captee_core::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
-    CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage,
+    CaptureBackend, CaptureError, CaptureResult, CaptureSettings, CapturedImage, SelectionGeometry,
 };
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,112 @@ const GLYPH_HEIGHT: u32 = 7;
 const MAX_ANNOTATION_PIXELS: usize = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAPTURE_ERROR_BYTES: u64 = 1024 * 1024;
+
+/// The Hyprland workspace and monitor that were active when capture started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureOrigin {
+    pub workspace: String,
+    pub monitor: String,
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
+/// Reads the active Hyprland placement before a global capture selector takes
+/// focus. Other desktops return no origin and retain their normal window rules.
+pub fn current_capture_origin() -> Option<CaptureOrigin> {
+    if !std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .any(|desktop| desktop.eq_ignore_ascii_case("hyprland"))
+    {
+        return None;
+    }
+    let output = Command::new("hyprctl").args(["activeworkspace", "-j"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let monitor = value.get("monitor")?.as_str()?.to_owned();
+    let (x, y, width, height) = hyprland_monitor_rect(&monitor)?;
+    Some(CaptureOrigin {
+        workspace: value.get("name")?.as_str()?.to_owned(),
+        monitor,
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+/// Places the already-mapped review popup as a small floating window on the
+/// workspace captured before selection and focuses it above the app.
+pub fn place_capture_review_window(
+    title: &str,
+    workspace: &str,
+    x: i64,
+    y: i64,
+) -> Result<(), String> {
+    let clients = Command::new("hyprctl")
+        .args(["clients", "-j"])
+        .output()
+        .map_err(|error| format!("could not inspect Hyprland windows: {error}"))?;
+    if !clients.status.success() {
+        return Err("Hyprland did not return its window list".to_owned());
+    }
+    let clients: serde_json::Value = serde_json::from_slice(&clients.stdout)
+        .map_err(|error| format!("could not parse Hyprland window list: {error}"))?;
+    let address = clients
+        .as_array()
+        .and_then(|windows| {
+            windows.iter().find_map(|window| {
+                (window.get("title")?.as_str()? == title)
+                    .then(|| window.get("address")?.as_str())
+                    .flatten()
+            })
+        })
+        .ok_or_else(|| "capture review window is not mapped yet".to_owned())?;
+    let destination = format!("{workspace},address:{address}");
+    run_hyprctl_dispatch("movetoworkspacesilent", &destination)?;
+    run_hyprctl_dispatch("setfloating", &format!("address:{address}"))?;
+    run_hyprctl_dispatch("movewindowpixel", &format!("exact {x} {y},address:{address}"))?;
+    run_hyprctl_dispatch("focuswindow", &format!("address:{address}"))
+}
+
+fn hyprland_monitor_rect(monitor_name: &str) -> Option<(i64, i64, i64, i64)> {
+    let output = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let monitors: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let monitor = monitors.as_array()?.iter().find(|monitor| {
+        monitor.get("name").and_then(serde_json::Value::as_str) == Some(monitor_name)
+    })?;
+    Some((
+        monitor.get("x")?.as_i64()?,
+        monitor.get("y")?.as_i64()?,
+        monitor.get("width")?.as_i64()?,
+        monitor.get("height")?.as_i64()?,
+    ))
+}
+
+fn run_hyprctl_dispatch(dispatcher: &str, argument: &str) -> Result<(), String> {
+    let output = Command::new("hyprctl")
+        .args(["dispatch", dispatcher, argument])
+        .output()
+        .map_err(|error| format!("could not run Hyprland {dispatcher}: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if detail.is_empty() {
+            format!("Hyprland rejected {dispatcher}")
+        } else {
+            format!("Hyprland rejected {dispatcher}: {detail}")
+        })
+    }
+}
 
 /// Applies lightweight annotations to a PNG without changing the captured
 /// image. Every operation decodes into a new pixel buffer and returns a new
@@ -442,6 +548,12 @@ impl CaptureBackend for GrimSlurpCapture {
             return CaptureResult::Cancelled;
         }
 
+        let Some(selection) = parse_selection_geometry(&geometry) else {
+            return CaptureResult::Failed(CaptureError::new(format!(
+                "slurp returned invalid selection geometry: {geometry}"
+            )));
+        };
+
         let grim_args = vec!["-g".to_owned(), geometry, "-".to_owned()];
         let image = match run_bounded(&self.grim, &grim_args, self.timeout) {
             Ok(output) => output,
@@ -450,8 +562,22 @@ impl CaptureBackend for GrimSlurpCapture {
         if !image.status.success() {
             return CaptureResult::Failed(command_failure("grim", &image));
         }
-        CaptureResult::Completed(CapturedImage::new(image.stdout))
+        CaptureResult::Completed(CapturedImage::with_selection(image.stdout, selection))
     }
+}
+
+fn parse_selection_geometry(value: &str) -> Option<SelectionGeometry> {
+    let mut parts = value.split_whitespace();
+    let position = parts.next()?;
+    let size = parts.next()?;
+    let (x, y) = position.split_once(',')?;
+    let (width, height) = size.trim().split_once('x')?;
+    Some(SelectionGeometry {
+        x: x.parse().ok()?,
+        y: y.parse().ok()?,
+        width: width.parse().ok()?,
+        height: height.parse().ok()?,
+    })
 }
 
 fn run_bounded(program: &Path, args: &[String], timeout: Duration) -> Result<Output, CaptureError> {
@@ -708,7 +834,13 @@ mod tests {
         }
 
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(1));
-        assert_eq!(capture.capture(), CaptureResult::Completed(CapturedImage::new(b"PNG fixture")));
+        assert_eq!(
+            capture.capture(),
+            CaptureResult::Completed(CapturedImage::with_selection(
+                b"PNG fixture",
+                SelectionGeometry { x: 0, y: 0, width: 10, height: 10 },
+            ))
+        );
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -735,6 +867,15 @@ mod tests {
         };
         assert_eq!(image.bytes().len(), 256 * 1024);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn selection_geometry_is_parsed_from_slurp_output() {
+        assert_eq!(
+            parse_selection_geometry("12,34 567x890"),
+            Some(SelectionGeometry { x: 12, y: 34, width: 567, height: 890 })
+        );
+        assert_eq!(parse_selection_geometry("invalid"), None);
     }
 
     fn fixture_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {

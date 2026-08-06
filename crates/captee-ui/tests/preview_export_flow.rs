@@ -23,7 +23,7 @@ fn success(revision: u64, pdf: &[u8]) -> PreviewOutcome {
         revision,
         result: Ok(PreviewArtifact {
             pdf: pdf.to_vec(),
-            first_page_png: b"png".to_vec(),
+            page_pngs: vec![b"png".to_vec()],
             diagnostics: Vec::new(),
         }),
         rendered_at: UNIX_EPOCH,

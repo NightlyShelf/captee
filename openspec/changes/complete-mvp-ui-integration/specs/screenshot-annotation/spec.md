@@ -27,3 +27,42 @@ The UI MUST provide controls for pointer, rectangle, and text annotations while 
 
 - **WHEN** the user changes or cancels an annotation
 - **THEN** the original captured image remains available and no project asset is written
+
+### Requirement: Document-aware capture review
+
+Before and after region selection, the application SHALL retain the active desktop workspace context when the platform exposes it. After selection succeeds, it SHALL open only a small borderless floating review popup at the selection's screen coordinates on that same workspace, without preserving the selection stroke, rerendering the captured region, dimming the desktop, or placing a monitor-sized surface over the active window. The popup SHALL contain the preceding Typst context, an annotation code editor, and the bottom controls Before/After, Confirm, and Cancel. The annotation editor SHALL support full Typst syntax and show its default description inside the textbox until the user types. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
+
+#### Scenario: Region selection becomes a staged review
+
+- **WHEN** the user completes a region drag
+- **THEN** a small borderless review popup appears at the selection coordinates on the capture workspace, the live active window remains unchanged behind it, and no selection overlay, desktop screenshot, or source/asset mutation is introduced before confirmation
+
+#### Scenario: Default annotation placement
+
+- **WHEN** the staged review opens
+- **THEN** the annotation code position is before the staged image block and the review retains the default Before state
+
+#### Scenario: Move annotation after the image
+
+- **WHEN** the user activates the Before/After control
+- **THEN** the staged insertion order changes to place the annotation code after the image block
+
+#### Scenario: Confirm with keyboard
+
+- **WHEN** the staged review is focused and the user presses Enter
+- **THEN** the review is confirmed using the selected order, the image is stored, and the annotation plus image Typst blocks are inserted at the proposed document position
+
+#### Scenario: Discard with keyboard
+
+- **WHEN** the staged review is open and the user presses Escape
+- **THEN** the review is discarded, the selected image is released, and no project asset or source edit is created
+
+#### Scenario: Modify the selected region
+
+- **WHEN** the user activates Modify in the staged review
+- **THEN** the region-selection interaction reopens for the current capture so the user can reselect the image before returning to review
+
+#### Scenario: Start capture without workspace focus
+
+- **WHEN** the user invokes the registered global capture shortcut while another application is focused
+- **THEN** Captee starts region selection without requiring the user to switch to or focus the Captee window first

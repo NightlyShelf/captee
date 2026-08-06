@@ -17,7 +17,7 @@ impl PreviewCompiler for FixtureCompiler {
         if source == SUCCESS_SOURCE {
             return Ok(PreviewArtifact {
                 pdf: b"fixture-success-pdf".to_vec(),
-                first_page_png: b"fixture-success-png".to_vec(),
+                page_pngs: vec![b"fixture-success-png".to_vec()],
                 diagnostics: Vec::new(),
             });
         }

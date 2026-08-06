@@ -97,11 +97,16 @@ when the selection dialog confirms insertion.
 
 Preview requests are debounced for 600 ms and use `AsyncPreviewCompiler` with
 the discovered Typst binary outside the GTK thread. A successful attempt
-produces the complete PDF plus a first-page PNG, both tagged with the active
-source revision. `RenderState` remains authoritative for stale rejection and
-last-valid PDF retention; GTK decodes the PNG only after both coordinator and
-render-state checks accept it. Failed renders update diagnostics and status but
-leave the last valid preview picture visible.
+produces the complete PDF plus one PNG per rendered page, both tagged with the
+active source revision. `RenderState` remains authoritative for stale
+rejection and last-valid PDF retention; GTK presents the accepted page images
+in document order inside one scrollable preview pane. Failed renders update
+diagnostics and status but leave the last valid preview pages visible. Preview
+busy state does not disable the source editor: a source edit cancels the
+superseded render, clears its progress state, and schedules the next debounced
+revision. A scale dropdown below the preview defaults to Fit page, computes a
+page size that fits both dimensions of the allocated preview viewport, and also
+offers fixed percentage scales without changing the rendered document.
 
 PDF export is available only when `RenderState` holds a successful preview for
 the current source revision. A GTK native save chooser gathers a local
@@ -156,9 +161,10 @@ platform-side responsibilities for the preview scheduler.
 The platform preview adapter stages each in-memory source snapshot in a unique
 project-local temporary file so relative Typst assets resolve as they do for the
 entry document. It invokes the bundled Typst runner on a worker thread, reads
-the generated PDF into a revision-tagged outcome, and removes both temporary
-files on every completion path. Applying the outcome through core render state
-is the authoritative stale-result check.
+the generated PDF and page-numbered PNG files into a revision-tagged outcome,
+and removes the temporary source, PDF, and page files on every completion path.
+Applying the outcome through core render state is the authoritative stale-result
+check.
 
 PDF export reads only the preview whose revision matches the active source and
 rejects missing or stale previews before touching the destination. It validates
@@ -254,12 +260,62 @@ results cannot mutate the UI. Non-cancellable atomic writes keep project and
 editor actions disabled until their single terminal result, preventing close,
 project replacement, or source edits from racing committed state.
 
-GTK result polling releases the operation coordinator's dynamic borrow before
+The workspace navigation boundary now exposes a project-relative tree model to
+GTK. The tree renders files and folders in parent-before-child order with
+indentation and type icons, starts at roughly one sixth of the default window
+width, and leaves the remaining paned area to the editor and preview. Clicks
+open files, folder clicks toggle expansion, triple-click opens rename, and drag
+sources/drop targets support validated moves including the project root.
+Context actions route create, inline rename, move, and delete through the
+platform workspace boundary after small confirmation dialogs. Tree refresh
+currently scans synchronously and skips symlinks; lazy expansion and
+worker-backed enumeration remain follow-up work for very large projects. The
+project divider is user-resizable, the initial editor/preview divider is set to
+an equal split, and long labels use GTK ellipsization.
+
+Capture confirmation is a staged document-composition popup drawn as a small
+borderless floating window on the workspace that was active when capture
+began, not as a monitor-sized surface and not inside the main Captee workspace
+window. The Hyprland adapter records that placement before the selector takes
+focus, then moves and focuses the mapped popup at the selected screen
+coordinates above the original active application. The live desktop remains
+unchanged behind the popup; no selection stroke, desktop screenshot, or dim
+layer is retained after the selector closes. The popup shows a short source
+context while the user edits Typst
+annotation code, chooses before/after placement, invokes keyboard command
+suggestions, modifies the selection, or confirms/discards with Enter/Escape.
+The review does not add a duplicate captured-image background; only the
+popup panel is added. Only confirmation transfers image bytes
+and insertion metadata to the existing bounded storage worker. Both the main
+source editor and the capture editor load the checked-in Typst GtkSourceView
+language definition, with a Markdown fallback for runtimes that do not package
+the definition.
+
+Capture can also be initiated without workspace focus through the XDG
+GlobalShortcuts portal. The listener is owned by a platform worker and forwards
+activation events to the GTK main context, where the existing capture
+coordinator applies project and cancellation checks. Before creating the
+session, the worker registers `com.nightlyshelf.captee` as the host app on the
+same D-Bus connection, which gives unsandboxed development and installed
+launches the application identity required by the portal. For a host-launched
+development binary, it also installs the checked-in desktop entry into the
+user application-data directory when absent, because the portal requires the
+registered ID to match a desktop-entry basename.
+On Hyprland, the worker additionally installs the runtime `global` keybind
+that maps the requested trigger to `com.nightlyshelf.captee:capture`; XDPH
+exposes the registered shortcut but does not create that compositor keybind
+itself.
+
+The review popup uses the fallback compositor coordinates directly for its
+Hyprland placement and does not render a captured desktop background. Portal
+captures without geometry use the active application monitor as a fallback and
+show the unavailable-geometry status. GTK result polling releases the
+operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results
-that trigger follow-up label, settings, or project-lifetime reads. Modal capture
-confirmation takes ownership of its staged image before hiding the dialog, so
-response handling cannot re-enter through window closure and clear data that is
-about to cross the storage boundary.
+that trigger follow-up label, settings, or project-lifetime reads. Capture
+confirmation closes the temporary review popup before handing the staged image
+to storage, so cancellation, modification, and confirmation cannot leave a
+stale review surface or re-enter through a duplicate review.
 
 Project creation writes a minimal valid Typst heading (`= Captee`) through the
 same atomic workspace boundary as the config. This guarantees a new workspace

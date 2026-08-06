@@ -11,7 +11,7 @@ linuxdeploy_bin="${LINUXDEPLOY_BIN:-$(command -v linuxdeploy || true)}"
 gtk_plugin="${LINUXDEPLOY_GTK_PLUGIN:-$(command -v linuxdeploy-plugin-gtk || true)}"
 appimagetool_bin="${APPIMAGETOOL_BIN:-$(command -v appimagetool || true)}"
 runtime_file="${APPIMAGE_RUNTIME_FILE:-}"
-desktop_file="$project_root/packaging/appimage/com.nightlyshelf.Captee.desktop"
+desktop_file="$project_root/packaging/appimage/com.nightlyshelf.captee.desktop"
 icon_file="$project_root/packaging/appimage/captee.svg"
 
 if [[ -z "$linuxdeploy_bin" || ! -x "$linuxdeploy_bin" ]]; then
@@ -34,7 +34,7 @@ fi
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications"
 cargo build --release --manifest-path "$project_root/Cargo.toml" -p captee-ui
 cp "$project_root/target/release/captee-ui" "$appdir/usr/bin/captee-ui"
-cp "$desktop_file" "$appdir/usr/share/applications/com.nightlyshelf.Captee.desktop"
+cp "$desktop_file" "$appdir/usr/share/applications/com.nightlyshelf.captee.desktop"
 "$project_root/tools/fetch-typst.sh" "$appdir/usr/share/captee/typst"
 
 export PATH="$(dirname "$gtk_plugin"):$PATH"
@@ -42,7 +42,7 @@ cd "$build_root"
 linuxdeploy_args=( \
     --appdir "$appdir" \
     --executable "$appdir/usr/bin/captee-ui" \
-    --desktop-file "$appdir/usr/share/applications/com.nightlyshelf.Captee.desktop" \
+    --desktop-file "$appdir/usr/share/applications/com.nightlyshelf.captee.desktop" \
     --icon-file "$icon_file" \
     --icon-filename captee \
     --plugin gtk
