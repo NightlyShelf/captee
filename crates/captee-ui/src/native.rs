@@ -13,14 +13,15 @@ use captee_core::{
     SourceDocument,
 };
 use captee_platform::{
-    confirm_and_trash, create_project, create_project_item,
-    current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
-    open_project, register_capture_shortcut, rename_project_item, save_project_settings,
-    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
-    FormattedSource, GlobalShortcutEvent, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
-    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
-    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
-    XdgPortalCapture, AUTOSAVE_FILE,
+    confirm_and_trash, create_project, create_project_item, current_capture_origin,
+    current_desktop_prefers_fallback_capture, export_pdf, list_project_tree,
+    move_capture_review_to_workspace, move_project_item, open_project, register_capture_shortcut,
+    rename_project_item, save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot,
+    AutosaveStore, CaptureOrigin, CaptureSelector, FormattedSource, GlobalShortcutEvent,
+    GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence,
+    ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend, TrashError,
+    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture,
+    AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use gtk::gio;
@@ -209,6 +210,7 @@ fn build_ui(application: &Application) {
         render_state,
         pending_capture,
         pending_annotation,
+        capture_origin: Rc::new(RefCell::new(None)),
         global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
@@ -550,6 +552,7 @@ struct ProjectUi {
     render_state: Rc<RefCell<RenderState>>,
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
+    capture_origin: Rc<RefCell<Option<CaptureOrigin>>>,
     global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
@@ -1465,6 +1468,7 @@ fn start_capture(project_ui: &ProjectUi) {
         return;
     }
     let settings = snapshot.app.settings.capture;
+    *project_ui.capture_origin.borrow_mut() = current_capture_origin();
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Capture) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
@@ -1737,7 +1741,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         return Err("The workspace window is no longer available.".to_owned());
     };
     let selection = image.selection();
-    let monitor = capture_monitor(&application, selection);
+    let origin = project_ui.capture_origin.borrow().clone();
+    let monitor = capture_monitor(
+        &application,
+        selection,
+        origin.as_ref().map(|origin| origin.monitor.as_str()),
+    );
     let capture_surface = gtk::Overlay::new();
     capture_surface.add_css_class("capture-review-surface");
     capture_surface.set_hexpand(true);
@@ -1751,6 +1760,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         .resizable(false)
         .child(&capture_surface)
         .build();
+    let review_title = format!("Captee Capture Review {}", std::process::id());
+    review_window.set_title(Some(&review_title));
     review_window.add_css_class("capture-review-window");
 
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
@@ -2001,6 +2012,20 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         review_window.fullscreen();
     }
 
+    if let Some(origin) = origin {
+        let title = review_title.clone();
+        let workspace = origin.workspace;
+        let _ =
+            thread::Builder::new().name("captee-capture-placement".to_owned()).spawn(move || {
+                for _ in 0..20 {
+                    if move_capture_review_to_workspace(&title, &workspace).is_ok() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+            });
+    }
+
     let position_surface = capture_surface.clone();
     let position_frame = selected_frame.clone();
     let position_panel = panel.clone();
@@ -2018,9 +2043,23 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 fn capture_monitor(
     application: &Application,
     selection: Option<SelectionGeometry>,
+    connector: Option<&str>,
 ) -> Option<gtk::gdk::Monitor> {
     let display = gtk::gdk::Display::default()?;
     let monitors = display.monitors();
+    if let Some(connector) = connector {
+        for index in 0..monitors.n_items() {
+            let Some(item) = monitors.item(index) else {
+                continue;
+            };
+            let Ok(monitor) = item.downcast::<gtk::gdk::Monitor>() else {
+                continue;
+            };
+            if monitor.connector().as_deref() == Some(connector) {
+                return Some(monitor);
+            }
+        }
+    }
     let fallback = application.active_window().and_then(|window| {
         window.surface().and_then(|surface| display.monitor_at_surface(&surface))
     });

@@ -268,10 +268,13 @@ project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization.
 
 Capture confirmation is a staged document-composition surface drawn as a
-borderless transparent fullscreen overlay on the monitor where the region was
-selected, not inside the main workspace window. It keeps the selected screen
-surface and selection stroke visible, carries fallback screen-space selection
-geometry, and shows a short dimmed source context while the user edits Typst
+borderless transparent fullscreen overlay on the workspace and monitor that
+were active when capture began, not inside the main Captee workspace window.
+The Hyprland adapter records that placement before the selector takes focus,
+then moves and focuses the mapped review surface above the original active
+application. It keeps the selected screen surface and selection stroke visible,
+carries fallback screen-space selection geometry, and shows a short dimmed
+source context while the user edits Typst
 annotation code, chooses before/after placement, invokes keyboard command
 suggestions, modifies the selection, or confirms/discards with Enter/Escape.
 The review does not add a duplicate captured-image background; only the
@@ -296,9 +299,9 @@ that maps the requested trigger to `com.nightlyshelf.captee:capture`; XDPH
 exposes the registered shortcut but does not create that compositor keybind
 itself.
 
-The review surface selects a GDK monitor from the fallback compositor
-coordinates, requests fullscreen on that monitor, and converts the selected
-rectangle into the review surface's local coordinates after allocation. Portal
+The review surface selects the recorded GDK monitor when available, requests
+fullscreen on that monitor, and converts the selected rectangle into the review
+surface's local coordinates after allocation. Portal
 captures without geometry use the active application monitor as a fallback and
 show the unavailable-geometry status. GTK result polling releases the
 operation coordinator's dynamic borrow before

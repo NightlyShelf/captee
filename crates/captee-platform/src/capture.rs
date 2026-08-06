@@ -18,6 +18,78 @@ const MAX_ANNOTATION_PIXELS: usize = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAPTURE_ERROR_BYTES: u64 = 1024 * 1024;
 
+/// The Hyprland workspace and monitor that were active when capture started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureOrigin {
+    pub workspace: String,
+    pub monitor: String,
+}
+
+/// Reads the active Hyprland placement before a global capture selector takes
+/// focus. Other desktops return no origin and retain their normal window rules.
+pub fn current_capture_origin() -> Option<CaptureOrigin> {
+    if !std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .any(|desktop| desktop.eq_ignore_ascii_case("hyprland"))
+    {
+        return None;
+    }
+    let output = Command::new("hyprctl").args(["activeworkspace", "-j"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(CaptureOrigin {
+        workspace: value.get("name")?.as_str()?.to_owned(),
+        monitor: value.get("monitor")?.as_str()?.to_owned(),
+    })
+}
+
+/// Moves the already-mapped review window to the workspace captured before
+/// selection and focuses it so it is stacked above the original active app.
+pub fn move_capture_review_to_workspace(title: &str, workspace: &str) -> Result<(), String> {
+    let clients = Command::new("hyprctl")
+        .args(["clients", "-j"])
+        .output()
+        .map_err(|error| format!("could not inspect Hyprland windows: {error}"))?;
+    if !clients.status.success() {
+        return Err("Hyprland did not return its window list".to_owned());
+    }
+    let clients: serde_json::Value = serde_json::from_slice(&clients.stdout)
+        .map_err(|error| format!("could not parse Hyprland window list: {error}"))?;
+    let address = clients
+        .as_array()
+        .and_then(|windows| {
+            windows.iter().find_map(|window| {
+                (window.get("title")?.as_str()? == title)
+                    .then(|| window.get("address")?.as_str())
+                    .flatten()
+            })
+        })
+        .ok_or_else(|| "capture review window is not mapped yet".to_owned())?;
+    let destination = format!("{workspace},address:{address}");
+    run_hyprctl_dispatch("movetoworkspacesilent", &destination)?;
+    run_hyprctl_dispatch("focuswindow", &format!("address:{address}"))
+}
+
+fn run_hyprctl_dispatch(dispatcher: &str, argument: &str) -> Result<(), String> {
+    let output = Command::new("hyprctl")
+        .args(["dispatch", dispatcher, argument])
+        .output()
+        .map_err(|error| format!("could not run Hyprland {dispatcher}: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if detail.is_empty() {
+            format!("Hyprland rejected {dispatcher}")
+        } else {
+            format!("Hyprland rejected {dispatcher}: {detail}")
+        })
+    }
+}
+
 /// Applies lightweight annotations to a PNG without changing the captured
 /// image. Every operation decodes into a new pixel buffer and returns a new
 /// PNG that remains staged until the caller confirms it.
