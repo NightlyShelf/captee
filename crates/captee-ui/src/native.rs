@@ -98,7 +98,11 @@ fn build_ui(application: &Application) {
     let style = gtk::CssProvider::new();
     style.load_from_data(
         ".capture-review-window, .capture-review-surface { background-color: transparent; }\
-         .capture-backdrop { background-color: rgba(0, 0, 0, 0.72); }\
+         .capture-review-window, .capture-review-window.background,\
+         .capture-review-surface, .capture-review-surface.background {\
+           background-color: transparent; background-image: none; box-shadow: none;\
+         }\
+         .capture-backdrop { background-color: rgba(0, 0, 0, 0.42); }\
          .capture-review-panel { background-color: #202124; border-radius: 4px; }\
          .capture-context { color: #9aa0a6; }\
          .capture-selection { border: 3px solid #ffcc66; }\
