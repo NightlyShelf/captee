@@ -155,5 +155,5 @@
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.
 - Impact: Startup adds one portal session/bind request and one bounded event stream thread; no GTK or filesystem work is performed by the shortcut worker. The worker remains alive for the application lifetime so another focused application can trigger selection.
-- Mitigation: Portal registration failures are surfaced as status text, activation still passes through the normal project/busy/cancellation checks, and the existing capture worker remains responsible for screenshot subprocess bounds.
+- Mitigation: The worker registers `com.nightlyshelf.Captee` as a host app on the same D-Bus connection before creating the shortcut session, avoiding the portal's missing-app-id rejection for unsandboxed development launches. Registration failures are surfaced as status text, activation still passes through the normal project/busy/cancellation checks, and the existing capture worker remains responsible for screenshot subprocess bounds.
 - Follow-up: Some desktop portals require a one-time shortcut approval/configuration flow, and portal availability varies by compositor; the in-window Capture action remains the fallback.

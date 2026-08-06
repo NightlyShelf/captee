@@ -2,9 +2,12 @@
 
 use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
 use ashpd::desktop::CreateSessionOptions;
+use ashpd::{register_host_app_with_connection, AppID};
 use futures_util::StreamExt;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+
+const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GlobalShortcutEvent {
@@ -26,7 +29,15 @@ pub fn register_capture_shortcut(trigger: impl Into<String>) -> Receiver<GlobalS
 fn register_shortcut_worker(trigger: String, sender: Sender<GlobalShortcutEvent>) {
     let sender_for_worker = sender.clone();
     let result = async_io::block_on(async move {
-        let portal = GlobalShortcuts::new().await.map_err(|error| error.to_string())?;
+        let connection =
+            ashpd::zbus::Connection::session().await.map_err(|error| error.to_string())?;
+        let app_id = AppID::try_from(APPLICATION_ID).map_err(|error| error.to_string())?;
+        register_host_app_with_connection(connection.clone(), app_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let portal = GlobalShortcuts::with_connection(connection)
+            .await
+            .map_err(|error| error.to_string())?;
         let session = portal
             .create_session(CreateSessionOptions::default())
             .await
