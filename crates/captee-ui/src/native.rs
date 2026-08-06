@@ -15,11 +15,12 @@ use captee_core::{
 use captee_platform::{
     confirm_and_trash, create_project, create_project_item,
     current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
-    open_project, rename_project_item, save_project_settings, AssetStore, AsyncPreviewCompiler,
-    AutosaveSnapshot, AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture,
-    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry,
-    RecentProjectStore, SavedAsset, TrashBackend, TrashError, TypstCompletionProvider,
-    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    open_project, register_capture_shortcut, rename_project_item, save_project_settings,
+    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
+    FormattedSource, GlobalShortcutEvent, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
+    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
+    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
+    XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use gtk::gio;
@@ -27,8 +28,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, DragSource,
-    DropTarget, Entry, GestureClick, Label, ListBox, ListBoxRow, MenuButton, Orientation, Paned,
-    Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton,
+    DropTarget, Entry, Frame, GestureClick, Label, ListBox, ListBoxRow, MenuButton, Orientation,
+    Paned, Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
@@ -81,6 +82,7 @@ fn build_ui(application: &Application) {
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let pending_capture = Rc::new(RefCell::new(None));
     let pending_annotation = Rc::new(RefCell::new(None));
+    let global_capture_receiver = register_capture_shortcut("CTRL+SHIFT+C");
     let project_tree = ListBox::new();
     project_tree.set_selection_mode(gtk::SelectionMode::None);
     project_tree.set_hexpand(true);
@@ -98,6 +100,7 @@ fn build_ui(application: &Application) {
         ".capture-backdrop { background-color: rgba(0, 0, 0, 0.72); }\
          .capture-review-panel { background-color: #202124; border-radius: 4px; }\
          .capture-context { color: #9aa0a6; }\
+         .capture-selection { border: 3px solid #ffcc66; }\
          .typst-editor, .typst-editor.view, .typst-editor text {\
            background-color: #202124; color: #e8eaed; caret-color: #ffffff;\
          }\
@@ -205,6 +208,7 @@ fn build_ui(application: &Application) {
         render_state,
         pending_capture,
         pending_annotation,
+        global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -232,6 +236,7 @@ fn build_ui(application: &Application) {
     connect_editor_buffer(&project_ui);
     connect_project_tree(&project_ui);
     connect_runtime_results(&project_ui);
+    connect_global_capture_shortcut(&project_ui);
     connect_cancel_button(&cancel_button, &project_ui);
     sync_operation_feedback(&project_ui);
     window.present();
@@ -335,10 +340,13 @@ fn build_workspace(
     editor_preview.set_resize_end_child(true);
     editor_preview.set_wide_handle(true);
     editor_preview.connect_map(|paned| {
-        let width = paned.width();
-        if width > 0 {
-            paned.set_position(width / 2);
-        }
+        let paned = paned.clone();
+        glib::idle_add_local_once(move || {
+            let width = paned.width();
+            if width > 0 {
+                paned.set_position(width / 2);
+            }
+        });
     });
 
     let workspace = Paned::new(Orientation::Horizontal);
@@ -348,7 +356,15 @@ fn build_workspace(
     workspace.set_shrink_start_child(false);
     workspace.set_resize_end_child(true);
     workspace.set_wide_handle(true);
-    workspace.set_position(212);
+    workspace.connect_map(|paned| {
+        let paned = paned.clone();
+        glib::idle_add_local_once(move || {
+            let width = paned.width();
+            if width > 0 {
+                paned.set_position(width / 6);
+            }
+        });
+    });
 
     let menu_strip = GtkBox::new(Orientation::Horizontal, 4);
     menu_strip.set_halign(Align::Start);
@@ -533,6 +549,7 @@ struct ProjectUi {
     render_state: Rc<RefCell<RenderState>>,
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
+    global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -556,6 +573,26 @@ fn connect_cancel_button(button: &Button, project_ui: &ProjectUi) {
             sync_operation_feedback(&project_ui);
         }
         Err(error) => project_ui.status.set_text(&format!("Could not cancel operation: {error}")),
+    });
+}
+
+fn connect_global_capture_shortcut(project_ui: &ProjectUi) {
+    let project_ui = project_ui.clone();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        loop {
+            let event = project_ui.global_capture_receiver.borrow_mut().try_recv();
+            match event {
+                Ok(GlobalShortcutEvent::Activated) => start_capture(&project_ui),
+                Ok(GlobalShortcutEvent::Failed(error)) => {
+                    project_ui
+                        .status
+                        .set_text(&format!("Global capture shortcut unavailable: {error}"));
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+            }
+        }
+        glib::ControlFlow::Continue
     });
 }
 
@@ -1695,23 +1732,31 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
 }
 
 fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
-    if project_ui.window().is_none() {
+    let Some(window) = project_ui.window() else {
         return Err("The workspace window is no longer available.".to_owned());
-    }
+    };
+    window.present();
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
     backdrop.set_hexpand(true);
     backdrop.set_vexpand(true);
     backdrop.set_can_target(true);
     backdrop.add_css_class("capture-backdrop");
 
-    let selected_picture = gtk::Picture::new();
-    selected_picture.set_can_shrink(true);
-    selected_picture.set_halign(Align::Center);
-    selected_picture.set_valign(Align::Center);
-    selected_picture.set_opacity(0.58);
-    let (capture_width, capture_height) =
-        display_annotation_image(&selected_picture, image.bytes())?;
-    selected_picture.set_size_request(capture_width, capture_height);
+    let selected_frame = Frame::new(None);
+    selected_frame.set_halign(Align::Start);
+    selected_frame.set_valign(Align::Start);
+    if let Some(selection) = image.selection() {
+        let frame_width = selection.width.min(720) as i32;
+        let frame_height = selection.height.min(480) as i32;
+        selected_frame.set_size_request(frame_width, frame_height);
+        let max_x = project_ui.workspace_overlay.width().saturating_sub(frame_width);
+        let max_y = project_ui.workspace_overlay.height().saturating_sub(frame_height);
+        selected_frame.set_margin_start(selection.x.clamp(0, max_x));
+        selected_frame.set_margin_top(selection.y.clamp(0, max_y));
+    } else {
+        selected_frame.set_visible(false);
+    }
+    selected_frame.add_css_class("capture-selection");
 
     let panel = GtkBox::new(Orientation::Vertical, 8);
     panel.set_width_request(640);
@@ -1723,6 +1768,15 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.set_margin_top(24);
     panel.set_margin_bottom(24);
     panel.add_css_class("capture-review-panel");
+    if let Some(selection) = image.selection() {
+        panel.set_halign(Align::Start);
+        panel.set_valign(Align::Start);
+        let requested_x = selection.x.saturating_add(selection.width as i32).saturating_add(16);
+        let max_x = project_ui.workspace_overlay.width().saturating_sub(680).max(16);
+        panel.set_margin_start(requested_x.clamp(16, max_x));
+        let max_y = project_ui.workspace_overlay.height().saturating_sub(400).max(16);
+        panel.set_margin_top(selection.y.clamp(16, max_y));
+    }
 
     let source_context = project_ui
         .editor
@@ -1776,7 +1830,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let code_buffer = sourceview::Buffer::builder().highlight_matching_brackets(true).build();
     configure_typst_buffer(&code_buffer);
-    code_buffer.set_text("#text(weight: \"bold\")[Annotation]\n");
+    code_buffer.set_text("");
     let code_view = sourceview::View::with_buffer(&code_buffer);
     code_view.set_show_line_numbers(true);
     code_view.set_monospace(true);
@@ -1785,14 +1839,26 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     code_view.add_css_class("typst-editor");
     code_view.set_tooltip_text(Some("Full Typst annotation code"));
 
-    panel.append(
-        &ScrolledWindow::builder()
-            .child(&code_view)
-            .hexpand(true)
-            .vexpand(true)
-            .min_content_height(220)
-            .build(),
-    );
+    let code_scroller = ScrolledWindow::builder()
+        .child(&code_view)
+        .hexpand(true)
+        .vexpand(true)
+        .min_content_height(220)
+        .build();
+    let code_editor = gtk::Overlay::new();
+    code_editor.set_child(Some(&code_scroller));
+    let code_placeholder = Label::new(Some("Type Typst annotation here…"));
+    code_placeholder.set_halign(Align::Start);
+    code_placeholder.set_valign(Align::Start);
+    code_placeholder.set_margin_start(12);
+    code_placeholder.set_margin_top(10);
+    code_placeholder.add_css_class("capture-context");
+    code_editor.add_overlay(&code_placeholder);
+    let code_placeholder_for_change = code_placeholder.clone();
+    code_buffer.connect_changed(move |buffer| {
+        code_placeholder_for_change.set_visible(buffer.char_count() == 0);
+    });
+    panel.append(&code_editor);
     let bottom = GtkBox::new(Orientation::Horizontal, 8);
     bottom.set_margin_top(4);
     bottom.append(&placement);
@@ -1812,7 +1878,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.prepend(&modify);
 
     project_ui.workspace_overlay.add_overlay(&backdrop);
-    project_ui.workspace_overlay.add_overlay(&selected_picture);
+    project_ui.workspace_overlay.add_overlay(&selected_frame);
     project_ui.workspace_overlay.add_overlay(&panel);
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
@@ -1874,11 +1940,11 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let modify_ui = project_ui.clone();
     let modify_backdrop = backdrop.clone();
-    let modify_picture = selected_picture.clone();
+    let modify_selection = selected_frame.clone();
     let modify_panel = panel.clone();
     modify.connect_clicked(move |_| {
         modify_ui.workspace_overlay.remove_overlay(&modify_backdrop);
-        modify_ui.workspace_overlay.remove_overlay(&modify_picture);
+        modify_ui.workspace_overlay.remove_overlay(&modify_selection);
         modify_ui.workspace_overlay.remove_overlay(&modify_panel);
         *modify_ui.pending_capture.borrow_mut() = None;
         modify_ui.status.set_text("Select a new capture region.");
@@ -1887,11 +1953,11 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let cancel_ui = project_ui.clone();
     let cancel_backdrop = backdrop.clone();
-    let cancel_picture = selected_picture.clone();
+    let cancel_selection = selected_frame.clone();
     let cancel_panel = panel.clone();
     cancel.connect_clicked(move |_| {
         cancel_ui.workspace_overlay.remove_overlay(&cancel_backdrop);
-        cancel_ui.workspace_overlay.remove_overlay(&cancel_picture);
+        cancel_ui.workspace_overlay.remove_overlay(&cancel_selection);
         cancel_ui.workspace_overlay.remove_overlay(&cancel_panel);
         *cancel_ui.pending_capture.borrow_mut() = None;
         *cancel_ui.pending_annotation.borrow_mut() = None;
@@ -1900,7 +1966,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let confirm_ui = project_ui.clone();
     let confirm_backdrop = backdrop.clone();
-    let confirm_picture = selected_picture.clone();
+    let confirm_selection = selected_frame.clone();
     let confirm_panel = panel.clone();
     confirm.connect_clicked(move |_| {
         let text =
@@ -1912,7 +1978,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         }
         let before_image = placement.is_active();
         confirm_ui.workspace_overlay.remove_overlay(&confirm_backdrop);
-        confirm_ui.workspace_overlay.remove_overlay(&confirm_picture);
+        confirm_ui.workspace_overlay.remove_overlay(&confirm_selection);
         confirm_ui.workspace_overlay.remove_overlay(&confirm_panel);
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;

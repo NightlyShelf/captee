@@ -84,6 +84,11 @@ The application SHALL provide a project home for creating/opening projects and a
 - **WHEN** a project is active
 - **THEN** compact, squared, regular menu items such as File and Edit are shown in a left-aligned menu strip with minimal spacing, no rounded button treatment, and no visible button stroke, while a horizontal separator divides the menu from the workspace
 
+#### Scenario: Global capture shortcut
+
+- **WHEN** the configured global capture shortcut is pressed while Captee is not focused
+- **THEN** the capture selection starts without requiring a workspace focus change
+
 #### Scenario: Project tree toolbar actions
 
 - **WHEN** a project is active

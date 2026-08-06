@@ -130,11 +130,11 @@
 
 ## Task 7: Document-aware capture review
 
-- Finding: The post-selection review is an in-place workspace overlay that retains one captured image and optional selection geometry until the user confirms, discards, or modifies it. The review also retains one Typst annotation buffer and a short, last-lines-only source-context string; confirmed storage runs on the existing worker boundary.
-- Impact: The GTK review adds one editable source buffer, short context string, and one decoded display texture while visible; the original encoded capture remains the single staged source of truth. Annotation insertion creates one additional source string proportional to the annotation and image expression, while PNG validation and storage remain linear in image size.
+- Finding: The post-selection review is an in-place workspace overlay that retains optional selection geometry and a stroked selection frame until the user confirms, discards, or modifies it. The review also retains one Typst annotation buffer and a short, last-lines-only source-context string; it does not add a duplicate captured-image background. Confirmed storage runs on the existing worker boundary.
+- Impact: The GTK review adds one editable source buffer, short context string, and one lightweight selection frame while visible; captured image bytes remain staged without a second display decode. Annotation insertion creates one additional source string proportional to the annotation and image expression, while PNG validation and storage remain linear in image size.
 - I/O and concurrency: No filesystem mutation occurs when the review opens, toggles placement, edits code, or is discarded. Modify starts a new capture operation after dropping the staged capture. Enter/confirm transfers only the selected image and insertion metadata to the non-cancellable storage worker.
 - Mitigation: Capture and source identity checks remain at the coordinator boundary; the selected order is represented explicitly; the review's Escape and Cancel paths clear staged state; command suggestions insert only through the editor buffer; image storage still uses the existing bounded PNG validator and create-only atomic write.
-- Follow-up: The fallback capture now carries parsed `slurp` screen geometry; portal captures still have no geometry in the portal response and show the image centered with an explicit unavailable-geometry label. Mapping global compositor coordinates to a Wayland window-local overlay remains a platform-specific follow-up. The older pointer/rectangle/text image-mark dialog remains available as a compatibility path but is not used by the new capture insertion flow.
+- Follow-up: The fallback capture now carries parsed `slurp` screen geometry; portal captures still have no geometry in the portal response and show an explicit unavailable-geometry label. Mapping global compositor coordinates to a Wayland window-local overlay remains a platform-specific follow-up. The older pointer/rectangle/text image-mark dialog remains available as a compatibility path but is not used by the new capture insertion flow.
 
 ## Task 8: Shared Typst editor assistance
 
@@ -150,3 +150,10 @@
 - I/O and concurrency: Create/move operations validate project-relative paths through `ProjectPaths`; move rejects self/descendant destinations and refreshes only after success. Delete confirmation routes the accepted absolute path through the desktop Gio trash boundary. Context confirmation prevents declined actions from mutating the project.
 - Mitigation: Symlink entries are skipped during tree enumeration, unsafe names and path escapes are rejected, collisions fail before mutation, and all rows are rebuilt from the project root after a successful operation.
 - Follow-up: Add a bounded worker-backed tree model for very large projects and persist selection/expanded folders across project reloads.
+
+## Global capture shortcut
+
+- Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.
+- Impact: Startup adds one portal session/bind request and one bounded event stream thread; no GTK or filesystem work is performed by the shortcut worker. The worker remains alive for the application lifetime so another focused application can trigger selection.
+- Mitigation: Portal registration failures are surfaced as status text, activation still passes through the normal project/busy/cancellation checks, and the existing capture worker remains responsible for screenshot subprocess bounds.
+- Follow-up: Some desktop portals require a one-time shortcut approval/configuration flow, and portal availability varies by compositor; the in-window Capture action remains the fallback.

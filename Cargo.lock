@@ -234,6 +234,7 @@ dependencies = [
  "ashpd",
  "async-io",
  "captee-core",
+ "futures-util",
  "png",
  "serde_json",
  "url",

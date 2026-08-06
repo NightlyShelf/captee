@@ -49,6 +49,11 @@ Every Typst text editor in the workspace, including the main source editor and t
 - **WHEN** the user edits annotation code in the capture review
 - **THEN** the same Typst syntax-aware styling is applied in the annotation editor
 
+#### Scenario: Show an empty annotation editor
+
+- **WHEN** the capture review opens
+- **THEN** the annotation buffer is empty and a dimmed Typst description placeholder is visible until the user types
+
 #### Scenario: Use the dark editor presentation
 
 - **WHEN** the workspace uses a dark desktop theme

@@ -11,6 +11,7 @@ mod capture;
 mod export;
 mod paths;
 mod persistence;
+mod shortcuts;
 mod typst;
 mod workspace;
 
@@ -27,6 +28,7 @@ pub use persistence::{
     PersistenceError, ProjectDocumentPersistence, RecentProjectError, RecentProjectStore,
     AUTOSAVE_FILE,
 };
+pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent};
 pub use typst::{
     AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewError, PreviewHandle,
     PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,

@@ -30,12 +30,12 @@ The UI MUST provide controls for pointer, rectangle, and text annotations while 
 
 ### Requirement: Document-aware capture review
 
-After region selection succeeds, the application SHALL retain the selected region and its available screen-space geometry, leave the selected image visible, and draw a staged review surface inside the existing workspace window, anchored at the capture interaction location rather than opening a second window or modal capture dialog. The review surface SHALL visibly darken the surrounding workspace and contain only the preceding Typst context, an annotation code editor, and the three bottom controls Before/After, Confirm, and Cancel. The preceding Typst lines SHALL be rendered as dimmed context, while the annotation editor SHALL support full Typst syntax. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
+After region selection succeeds, the application SHALL retain the selected region and its available screen-space geometry, preserve the existing screen/workspace surface and selection stroke, and add a staged review surface inside the same screen rather than rerendering the captured region as a background image or opening a second capture window. The review surface SHALL visibly darken the surrounding workspace and contain only the preceding Typst context, an annotation code editor, and the three bottom controls Before/After, Confirm, and Cancel. The preceding Typst lines SHALL be rendered as dimmed context, while the annotation editor SHALL support full Typst syntax. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
 
 #### Scenario: Region selection becomes a staged review
 
 - **WHEN** the user completes a region drag
-- **THEN** the selected image and its available coordinates remain visible, the existing workspace is darkened around the in-place review surface, and the review shows only the dimmed prior Typst context and annotation editor without changing the project source or writing an asset
+- **THEN** the selected screen region and stroke remain visible under the dimmed workspace, the in-place review surface is added beside it, and no duplicate captured-image background is rendered, without changing the project source or writing an asset
 
 #### Scenario: Default annotation placement
 
@@ -61,3 +61,8 @@ After region selection succeeds, the application SHALL retain the selected regio
 
 - **WHEN** the user activates Modify in the staged review
 - **THEN** the region-selection interaction reopens for the current capture so the user can reselect the image before returning to review
+
+#### Scenario: Start capture without workspace focus
+
+- **WHEN** the user invokes the registered global capture shortcut while another application is focused
+- **THEN** Captee starts region selection without requiring the user to switch to or focus the Captee window first

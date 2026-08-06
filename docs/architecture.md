@@ -269,14 +269,22 @@ an equal split, and long labels use GTK ellipsization.
 
 Capture confirmation is a staged document-composition surface drawn as an
 overlay inside the existing workspace, not a second window. It keeps the
-selected image staged and visible, carries fallback screen-space selection
-geometry, and shows a short dimmed source context while the user edits Typst
+selected screen/workspace surface and selection stroke visible, carries
+fallback screen-space selection geometry, and shows a short dimmed source
+context while the user edits Typst
 annotation code, chooses before/after placement, invokes keyboard command
 suggestions, modifies the selection, or confirms/discards with Enter/Escape.
-Only confirmation transfers image bytes and insertion metadata to the existing
-bounded storage worker. Both the main source editor and the capture editor load
-the checked-in Typst GtkSourceView language definition, with a Markdown
-fallback for runtimes that do not package the definition.
+The review does not add a duplicate captured-image background; only the
+selection frame and panel are added. Only confirmation transfers image bytes
+and insertion metadata to the existing bounded storage worker. Both the main
+source editor and the capture editor load the checked-in Typst GtkSourceView
+language definition, with a Markdown fallback for runtimes that do not package
+the definition.
+
+Capture can also be initiated without workspace focus through the XDG
+GlobalShortcuts portal. The listener is owned by a platform worker and forwards
+activation events to the GTK main context, where the existing capture
+coordinator applies project and cancellation checks.
 
 GTK result polling releases the operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results
