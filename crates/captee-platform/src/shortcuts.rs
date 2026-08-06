@@ -6,6 +6,7 @@ use ashpd::{register_host_app_with_connection, AppID};
 use futures_util::StreamExt;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -54,6 +55,7 @@ fn register_shortcut_worker(trigger: String, sender: Sender<GlobalShortcutEvent>
             .await
             .map_err(|error| error.to_string())?;
         request.response().map_err(|error| error.to_string())?;
+        configure_hyprland_bind(&trigger)?;
         let mut activated = portal.receive_activated().await.map_err(|error| error.to_string())?;
         while let Some(event) = activated.next().await {
             if event.shortcut_id() == "capture"
@@ -104,4 +106,60 @@ fn ensure_desktop_entry() -> Result<(), std::io::Error> {
 fn desktop_entry_for_current_executable() -> Result<String, std::io::Error> {
     let executable = std::env::current_exe()?.to_string_lossy().replace('"', "\\\"");
     Ok(DESKTOP_ENTRY.replace("Exec=captee-ui", &format!("Exec=\"{executable}\"")))
+}
+
+fn configure_hyprland_bind(trigger: &str) -> Result<(), String> {
+    if !std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .any(|desktop| desktop.eq_ignore_ascii_case("hyprland"))
+    {
+        return Ok(());
+    }
+    let Some(bind) = hyprland_bind_argument(trigger) else {
+        return Err(format!("Unsupported global shortcut trigger: {trigger}"));
+    };
+    let output = Command::new("hyprctl")
+        .args(["keyword", "bind", &bind])
+        .output()
+        .map_err(|error| format!("Could not configure Hyprland global shortcut: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if detail.is_empty() {
+            "Hyprland rejected the global shortcut bind".to_owned()
+        } else {
+            format!("Hyprland rejected the global shortcut bind: {detail}")
+        })
+    }
+}
+
+fn hyprland_bind_argument(trigger: &str) -> Option<String> {
+    let mut parts = trigger.split('+').filter(|part| !part.is_empty());
+    let key = parts.next_back()?.to_ascii_uppercase();
+    let modifiers = parts.map(str::to_ascii_uppercase).collect::<Vec<_>>();
+    let modifier_text = modifiers.join("_");
+    Some(format!("{modifier_text},{key},global,{APPLICATION_ID}:capture"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hyprland_bind_argument;
+
+    #[test]
+    fn converts_portal_trigger_to_hyprland_global_bind() {
+        assert_eq!(
+            hyprland_bind_argument("CTRL+SHIFT+C"),
+            Some("CTRL_SHIFT,C,global,com.nightlyshelf.captee:capture".to_owned())
+        );
+    }
+
+    #[test]
+    fn accepts_single_key_portal_trigger() {
+        assert_eq!(
+            hyprland_bind_argument("Print"),
+            Some(",PRINT,global,com.nightlyshelf.captee:capture".to_owned())
+        );
+    }
 }

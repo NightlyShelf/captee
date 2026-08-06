@@ -291,6 +291,10 @@ launches the application identity required by the portal. For a host-launched
 development binary, it also installs the checked-in desktop entry into the
 user application-data directory when absent, because the portal requires the
 registered ID to match a desktop-entry basename.
+On Hyprland, the worker additionally installs the runtime `global` keybind
+that maps the requested trigger to `com.nightlyshelf.captee:capture`; XDPH
+exposes the registered shortcut but does not create that compositor keybind
+itself.
 
 GTK result polling releases the operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results
