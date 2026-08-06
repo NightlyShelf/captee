@@ -1492,13 +1492,15 @@ fn start_capture(project_ui: &ProjectUi) {
     };
     project_ui.status.set_text("Choose a screen, window, or region to capture…");
     let cancellation = task.cancellation();
+    let capture_monitor_name =
+        project_ui.capture_origin.borrow().as_ref().map(|origin| origin.monitor.clone());
     let _ = thread::Builder::new().name("captee-capture".to_owned()).spawn(move || {
-        let selector = CaptureSelector::new(
-            XdgPortalCapture::new(),
-            GrimSlurpCapture::new(Duration::from_secs(120)),
-            settings,
-        )
-        .with_fallback_first(current_desktop_prefers_fallback_capture());
+        let mut fallback = GrimSlurpCapture::new(Duration::from_secs(120));
+        if let Some(monitor) = capture_monitor_name {
+            fallback = fallback.with_output(monitor);
+        }
+        let selector = CaptureSelector::new(XdgPortalCapture::new(), fallback, settings)
+            .with_fallback_first(current_desktop_prefers_fallback_capture());
         let result =
             if cancellation.is_cancelled() { CaptureResult::Cancelled } else { selector.capture() };
         let outcome = match result {
@@ -1757,6 +1759,17 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     capture_surface.add_css_class("capture-review-surface");
     capture_surface.set_hexpand(true);
     capture_surface.set_vexpand(true);
+    let background_picture = gtk::Picture::new();
+    background_picture.set_hexpand(true);
+    background_picture.set_vexpand(true);
+    background_picture.set_can_shrink(true);
+    background_picture.set_keep_aspect_ratio(false);
+    if let Some(background) = image.background_bytes() {
+        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from(background)) {
+            background_picture.set_paintable(Some(&texture));
+        }
+    }
+    capture_surface.set_child(Some(&background_picture));
     let review_window = Window::builder()
         .application(&application)
         .decorated(false)

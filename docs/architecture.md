@@ -303,7 +303,10 @@ itself.
 The review surface selects the recorded GDK monitor when available, requests a
 monitor-sized surface without compositor fullscreen state, and converts the
 selected rectangle into the review surface's local coordinates after
-allocation. Portal
+allocation. The Hyprland fallback takes one monitor snapshot before opening
+`slurp`; that snapshot is displayed only as the dimmed desktop continuity
+surface, while the selected PNG remains a separate staged asset and is not
+rendered as the background. Portal
 captures without geometry use the active application monitor as a fallback and
 show the unavailable-geometry status. GTK result polling releases the
 operation coordinator's dynamic borrow before

@@ -7,6 +7,7 @@ use std::fmt;
 pub struct CapturedImage {
     bytes: Vec<u8>,
     selection: Option<SelectionGeometry>,
+    background: Option<Vec<u8>>,
 }
 
 /// Screen-space region selected by an interactive capture backend.
@@ -20,11 +21,23 @@ pub struct SelectionGeometry {
 
 impl CapturedImage {
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
-        Self { bytes: bytes.into(), selection: None }
+        Self { bytes: bytes.into(), selection: None, background: None }
     }
 
     pub fn with_selection(bytes: impl Into<Vec<u8>>, selection: SelectionGeometry) -> Self {
-        Self { bytes: bytes.into(), selection: Some(selection) }
+        Self { bytes: bytes.into(), selection: Some(selection), background: None }
+    }
+
+    pub fn with_selection_and_background(
+        bytes: impl Into<Vec<u8>>,
+        selection: SelectionGeometry,
+        background: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            bytes: bytes.into(),
+            selection: Some(selection),
+            background: Some(background.into()),
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -37,6 +50,10 @@ impl CapturedImage {
 
     pub fn selection(&self) -> Option<SelectionGeometry> {
         self.selection
+    }
+
+    pub fn background_bytes(&self) -> Option<&[u8]> {
+        self.background.as_deref()
     }
 }
 
