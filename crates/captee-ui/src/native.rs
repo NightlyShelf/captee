@@ -8,28 +8,32 @@ use crate::{UiCommand, UiShell};
 use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
-    DiagnosticSeverity, InsertionResult, KeybindingSettings, Operation, OperationKind,
-    ProjectConfig, ProjectSession, ProjectSettings, RenderState, SourceDocument,
+    DiagnosticSeverity, EditorInserter, InsertionResult, KeybindingSettings, Operation,
+    OperationKind, ProjectConfig, ProjectSession, ProjectSettings, RenderState, SourceDocument,
 };
 use captee_platform::{
-    create_project, current_desktop_prefers_fallback_capture, export_pdf, insert_saved_asset,
-    open_project, save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot,
-    AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture, PngAnnotationBackend,
-    PreviewOutcome, ProjectDocumentPersistence, RecentProjectStore, SavedAsset,
-    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture,
-    AUTOSAVE_FILE,
+    confirm_and_trash, create_project, create_project_item,
+    current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
+    open_project, rename_project_item, save_project_settings, AssetStore, AsyncPreviewCompiler,
+    AutosaveSnapshot, AutosaveStore, CaptureSelector, FormattedSource, GrimSlurpCapture,
+    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry,
+    RecentProjectStore, SavedAsset, TrashBackend, TrashError, TypstCompletionProvider,
+    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
+use glib::value::ToValue;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, Entry,
-    Label, MenuButton, Orientation, Paned, ResponseType, ScrolledWindow, Spinner, Stack,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, DragSource,
+    DropTarget, Entry, GestureClick, Label, ListBox, ListBoxRow, MenuButton, Orientation, Paned,
+    Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
 use sourceview5 as sourceview;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -48,7 +52,7 @@ enum WorkspaceOperationResult {
     Preview(PreviewOutcome),
     Exported(PathBuf),
     Captured(CapturedImage),
-    CaptureStored(SavedAsset),
+    CaptureStored { asset: SavedAsset, annotation: String, before_image: bool },
     SettingsSaved(ProjectSettings),
 }
 
@@ -76,6 +80,11 @@ fn build_ui(application: &Application) {
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let pending_capture = Rc::new(RefCell::new(None));
     let pending_annotation = Rc::new(RefCell::new(None));
+    let project_tree = ListBox::new();
+    project_tree.set_selection_mode(gtk::SelectionMode::None);
+    project_tree.set_hexpand(true);
+    project_tree.set_vexpand(true);
+    let project_tree_title = Label::new(Some("Project"));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -83,8 +92,22 @@ fn build_ui(application: &Application) {
         .default_width(1280)
         .default_height(800)
         .build();
+    let style = gtk::CssProvider::new();
+    style.load_from_data(
+        ".capture-backdrop { background-color: rgba(0, 0, 0, 0.72); }\
+         .capture-review-panel { background-color: @theme_base_color; border-radius: 4px; }\
+         .capture-context { color: alpha(@theme_fg_color, 0.45); }",
+    );
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &style,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 
     let source_buffer = sourceview::Buffer::builder().highlight_matching_brackets(true).build();
+    configure_typst_buffer(&source_buffer);
     let source_view = sourceview::View::with_buffer(&source_buffer);
     source_view.set_show_line_numbers(true);
     source_view.set_monospace(true);
@@ -139,6 +162,8 @@ fn build_ui(application: &Application) {
             &preview_status,
             &diagnostics_label,
             &menus,
+            &project_tree,
+            &project_tree_title,
         ),
         Some("workspace"),
     );
@@ -153,6 +178,11 @@ fn build_ui(application: &Application) {
         source_buffer: source_buffer.clone(),
         source_view: source_view.clone(),
         project_label: project_label.clone(),
+        project_tree: project_tree.clone(),
+        project_tree_title: project_tree_title.clone(),
+        workspace_overlay: gtk::Overlay::new(),
+        expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
+        tree_initialized: Rc::new(Cell::new(false)),
         diagnostics_label,
         preview_picture,
         preview_status,
@@ -184,12 +214,14 @@ fn build_ui(application: &Application) {
     root.append(&header);
     root.append(&stack);
     root.append(&status_row);
-    window.set_child(Some(&root));
+    project_ui.workspace_overlay.set_child(Some(&root));
+    window.set_child(Some(&project_ui.workspace_overlay));
 
     connect_ui_actions(&project_ui, application);
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
+    connect_project_tree(&project_ui);
     connect_runtime_results(&project_ui);
     connect_cancel_button(&cancel_button, &project_ui);
     sync_operation_feedback(&project_ui);
@@ -237,16 +269,30 @@ fn build_workspace(
     preview_status: &Label,
     diagnostics_label: &Label,
     menus: &WorkspaceMenus,
+    project_tree: &ListBox,
+    project_tree_title: &Label,
 ) -> GtkBox {
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(16);
     navigation.set_margin_bottom(16);
     navigation.set_margin_start(16);
     navigation.set_margin_end(16);
-    navigation.set_width_request(220);
-    navigation.append(&Label::new(Some("Project")));
-    navigation.append(&Label::new(Some("Entry document")));
-    navigation.append(&Label::new(Some("Images")));
+    navigation.set_width_request(212);
+    let tree_header = GtkBox::new(Orientation::Horizontal, 4);
+    let tree_title = project_tree_title.clone();
+    tree_title.set_xalign(0.0);
+    tree_title.set_hexpand(true);
+    let add_file = Button::from_icon_name("document-new-symbolic");
+    add_file.set_action_name(Some("app.new-file"));
+    add_file.set_tooltip_text(Some("Add file"));
+    let add_folder = Button::from_icon_name("folder-new-symbolic");
+    add_folder.set_action_name(Some("app.new-folder"));
+    add_folder.set_tooltip_text(Some("Add folder"));
+    tree_header.append(&tree_title);
+    tree_header.append(&add_file);
+    tree_header.append(&add_folder);
+    navigation.append(&tree_header);
+    navigation.append(project_tree);
 
     let editor_scroll =
         ScrolledWindow::builder().child(source_view).hexpand(true).vexpand(true).build();
@@ -283,7 +329,7 @@ fn build_workspace(
     workspace.set_end_child(Some(&editor_preview));
     workspace.set_resize_start_child(false);
     workspace.set_shrink_start_child(false);
-    workspace.set_position(220);
+    workspace.set_position(212);
 
     let menu_strip = GtkBox::new(Orientation::Horizontal, 4);
     menu_strip.set_halign(Align::Start);
@@ -306,7 +352,9 @@ fn build_workspace(
     }
 
     let root = GtkBox::new(Orientation::Vertical, 0);
+    let separator = gtk::Separator::new(Orientation::Horizontal);
     root.append(&menu_strip);
+    root.append(&separator);
     root.append(&workspace);
     root
 }
@@ -333,6 +381,8 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     for (name, accelerator) in [
         ("new-project", "<Primary>n"),
         ("open-project", "<Primary>o"),
+        ("new-file", ""),
+        ("new-folder", ""),
         ("close-project", "<Primary>w"),
         ("save", "<Primary>s"),
         ("format", "<Primary><Shift>f"),
@@ -362,6 +412,14 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
         let action = application.lookup_action(name).expect("installed project action");
         let action = action.downcast::<gio::SimpleAction>().expect("simple action");
         connect_project_action(&action, create, project_ui);
+    }
+    for (name, directory) in [("new-file", false), ("new-folder", true)] {
+        let action = application.lookup_action(name).expect("installed tree action");
+        let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+        let tree_ui = project_ui.clone();
+        action.connect_activate(move |_, _| {
+            show_create_project_item_dialog(&tree_ui, Path::new(""), directory);
+        });
     }
 
     let action = application.lookup_action("close-project").expect("installed close action");
@@ -438,6 +496,11 @@ struct ProjectUi {
     source_buffer: sourceview::Buffer,
     source_view: sourceview::View,
     project_label: Label,
+    project_tree: ListBox,
+    project_tree_title: Label,
+    workspace_overlay: gtk::Overlay,
+    expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
+    tree_initialized: Rc<Cell<bool>>,
     diagnostics_label: Label,
     preview_picture: gtk::Picture,
     preview_status: Label,
@@ -513,7 +576,7 @@ fn sync_operation_feedback(project_ui: &ProjectUi) {
     let Some(application) = project_ui.application() else {
         return;
     };
-    for name in ["new-project", "open-project"] {
+    for name in ["new-project", "open-project", "new-file", "new-folder"] {
         set_action_enabled(&application, name, interaction.project_actions_enabled);
     }
     for name in [
@@ -540,6 +603,463 @@ fn set_action_enabled(application: &Application, name: &str, enabled: bool) {
     {
         action.set_enabled(enabled);
     }
+}
+
+fn connect_project_tree(project_ui: &ProjectUi) {
+    let target = DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+    let project_ui_for_drop = project_ui.clone();
+    target.connect_drop(move |_, value, _, _| {
+        let Ok(source) = value.get::<String>() else {
+            return false;
+        };
+        let Some(project) = project_ui_for_drop.shell.borrow().snapshot().app.project else {
+            return false;
+        };
+        match move_project_item(&project.root, source, Path::new("")) {
+            Ok(_) => {
+                refresh_project_tree(&project_ui_for_drop);
+                project_ui_for_drop.status.set_text("Project item moved to the project root.");
+                true
+            }
+            Err(error) => {
+                project_ui_for_drop.status.set_text(&format!("Could not move item: {error}"));
+                false
+            }
+        }
+    });
+    project_ui.project_tree.add_controller(target);
+    refresh_project_tree(project_ui);
+}
+
+fn refresh_project_tree(project_ui: &ProjectUi) {
+    while let Some(child) = project_ui.project_tree.first_child() {
+        project_ui.project_tree.remove(&child);
+    }
+    let Some(project) = project_ui.shell.borrow().snapshot().app.project else {
+        return;
+    };
+    let entries = match list_project_tree(&project.root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            project_ui.status.set_text(&format!("Could not read project tree: {error}"));
+            return;
+        }
+    };
+    if !project_ui.tree_initialized.get() {
+        project_ui.expanded_tree.borrow_mut().extend(
+            entries
+                .iter()
+                .filter(|entry| entry.is_directory)
+                .map(|entry| entry.relative_path.clone()),
+        );
+        project_ui.tree_initialized.set(true);
+    }
+    for entry in entries {
+        if tree_entry_visible(&project_ui.expanded_tree.borrow(), &entry.relative_path) {
+            append_project_tree_row(project_ui, entry);
+        }
+    }
+}
+
+fn tree_entry_visible(expanded: &BTreeSet<PathBuf>, path: &Path) -> bool {
+    let mut ancestor = PathBuf::new();
+    let components = path.components().collect::<Vec<_>>();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        ancestor.push(component.as_os_str());
+        if !expanded.contains(&ancestor) {
+            return false;
+        }
+    }
+    true
+}
+
+fn toggle_tree_path(project_ui: &ProjectUi, path: &Path) {
+    let mut expanded = project_ui.expanded_tree.borrow_mut();
+    if !expanded.insert(path.to_path_buf()) {
+        expanded.remove(path);
+    }
+    drop(expanded);
+    refresh_project_tree(project_ui);
+}
+
+fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
+    let row = ListBoxRow::new();
+    row.set_activatable(true);
+    row.set_selectable(false);
+    let depth = entry.relative_path.components().count().saturating_sub(1);
+    let name = entry.relative_path.file_name().and_then(|name| name.to_str()).unwrap_or("item");
+    let expanded = project_ui.expanded_tree.borrow().contains(&entry.relative_path);
+    let icon_name = if entry.is_directory {
+        if expanded {
+            "folder-open-symbolic"
+        } else {
+            "folder-symbolic"
+        }
+    } else if Path::new(name).extension().is_some_and(|extension| extension == "typ") {
+        "text-x-generic-symbolic"
+    } else if Path::new(name).extension().is_some_and(|extension| {
+        matches!(extension.to_str(), Some("png" | "jpg" | "jpeg" | "svg" | "webp"))
+    }) {
+        "image-x-generic-symbolic"
+    } else {
+        "text-x-generic-symbolic"
+    };
+    let label = Label::new(Some(name));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_margin_start(4);
+    label.set_margin_top(3);
+    label.set_margin_bottom(3);
+    let content = GtkBox::new(Orientation::Horizontal, 6);
+    content.set_margin_start(8 + (depth as i32 * 16));
+    content.append(&gtk::Image::from_icon_name(icon_name));
+    content.append(&label);
+    row.set_child(Some(&content));
+
+    let is_directory = entry.is_directory;
+    let path_for_open = entry.relative_path.clone();
+    let project_ui_for_open = project_ui.clone();
+    row.connect_activate(move |_| {
+        if is_directory {
+            toggle_tree_path(&project_ui_for_open, &path_for_open);
+        } else {
+            open_project_tree_file(&project_ui_for_open, &path_for_open);
+        }
+    });
+
+    let rename_ui = project_ui.clone();
+    let rename_path = entry.relative_path.clone();
+    let click = GestureClick::new();
+    click.set_button(1);
+    click.connect_pressed(move |_, n_press, _, _| {
+        if n_press == 3 {
+            show_rename_project_item_dialog(&rename_ui, &rename_path);
+        }
+    });
+    row.add_controller(click);
+
+    let source_path = entry.relative_path.to_string_lossy().into_owned();
+    let drag = DragSource::new();
+    drag.set_actions(gtk::gdk::DragAction::MOVE);
+    drag.connect_prepare(move |_, _, _| {
+        Some(gtk::gdk::ContentProvider::for_value(&source_path.to_value()))
+    });
+    row.add_controller(drag);
+
+    if is_directory {
+        let destination = entry.relative_path.clone();
+        let project_ui_for_drop = project_ui.clone();
+        let target = DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+        target.connect_drop(move |_, value, _, _| {
+            let Ok(source) = value.get::<String>() else {
+                return false;
+            };
+            let Some(project) = project_ui_for_drop.shell.borrow().snapshot().app.project else {
+                return false;
+            };
+            match move_project_item(&project.root, source, &destination) {
+                Ok(_) => {
+                    refresh_project_tree(&project_ui_for_drop);
+                    project_ui_for_drop.status.set_text("Project item moved.");
+                    true
+                }
+                Err(error) => {
+                    project_ui_for_drop.status.set_text(&format!("Could not move item: {error}"));
+                    false
+                }
+            }
+        });
+        row.add_controller(target);
+    }
+
+    let context_path = entry.relative_path.clone();
+    let context_ui = project_ui.clone();
+    let row_for_context = row.clone();
+    let gesture = GestureClick::new();
+    gesture.set_button(3);
+    gesture.connect_pressed(move |_, _, _, _| {
+        show_project_tree_context_menu(&context_ui, &row_for_context, &context_path);
+    });
+    row.add_controller(gesture);
+    project_ui.project_tree.append(&row);
+}
+
+fn open_project_tree_file(project_ui: &ProjectUi, relative: &Path) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        return;
+    };
+    let path = PathBuf::from(&project.root).join(relative);
+    match fs::read_to_string(&path) {
+        Ok(source) => {
+            *project_ui.editor.borrow_mut() = Some(EditorBridge::new(relative, source.clone()));
+            project_ui.syncing_buffer.set(true);
+            project_ui.source_buffer.set_text(&source);
+            project_ui.syncing_buffer.set(false);
+            project_ui.status.set_text(&format!("Opened {}.", relative.display()));
+            if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
+                let _ = project_ui.coordinator.borrow_mut().set_source_revision(state.revision);
+                project_ui.render_state.borrow_mut().set_source_revision(state.revision);
+                schedule_preview(project_ui, &state);
+            }
+        }
+        Err(error) => project_ui.status.set_text(&format!("Could not open file: {error}")),
+    }
+}
+
+fn show_project_tree_context_menu(project_ui: &ProjectUi, row: &ListBoxRow, path: &Path) {
+    let popover = Popover::new();
+    popover.set_parent(row);
+    let actions = GtkBox::new(Orientation::Vertical, 2);
+    for (label, action) in
+        [("New file", 0_u8), ("New folder", 1), ("Rename", 2), ("Move", 3), ("Delete", 4)]
+    {
+        let button = Button::with_label(label);
+        button.set_halign(Align::Fill);
+        let project_ui = project_ui.clone();
+        let path = path.to_path_buf();
+        let popover_for_action = popover.clone();
+        button.connect_clicked(move |_| {
+            popover_for_action.popdown();
+            match action {
+                0 => show_create_project_item_dialog(&project_ui, &path, false),
+                1 => show_create_project_item_dialog(&project_ui, &path, true),
+                2 => show_rename_project_item_dialog(&project_ui, &path),
+                3 => show_move_project_item_dialog(&project_ui, &path),
+                _ => show_delete_project_item_dialog(&project_ui, &path),
+            }
+        });
+        actions.append(&button);
+    }
+    popover.set_child(Some(&actions));
+    popover.popup();
+}
+
+fn show_create_project_item_dialog(project_ui: &ProjectUi, selected: &Path, directory: bool) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title(if directory { "New folder" } else { "New file" })
+        .transient_for(&window)
+        .modal(true)
+        .default_width(360)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Create", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+    let form = GtkBox::new(Orientation::Vertical, 8);
+    form.set_margin_top(12);
+    form.set_margin_bottom(12);
+    form.set_margin_start(12);
+    form.set_margin_end(12);
+    let entry = Entry::new();
+    entry.set_placeholder_text(Some(if directory { "Folder name" } else { "File name" }));
+    entry.set_activates_default(true);
+    let error = Label::new(None);
+    error.add_css_class("error");
+    error.set_xalign(0.0);
+    form.append(&entry);
+    form.append(&error);
+    dialog.content_area().append(&form);
+    let project_ui = project_ui.clone();
+    let selected = selected.to_path_buf();
+    let entry_for_response = entry.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dialog.close();
+            return;
+        }
+        let snapshot = project_ui.shell.borrow().snapshot();
+        let Some(project) = snapshot.app.project else {
+            dialog.close();
+            return;
+        };
+        let selected_absolute = PathBuf::from(&project.root).join(&selected);
+        let parent = if selected_absolute.is_dir() {
+            selected.clone()
+        } else {
+            selected.parent().unwrap_or(Path::new("")).to_path_buf()
+        };
+        match create_project_item(
+            &project.root,
+            parent,
+            entry_for_response.text().trim(),
+            directory,
+        ) {
+            Ok(_) => {
+                refresh_project_tree(&project_ui);
+                project_ui.status.set_text("Project item created.");
+                dialog.close();
+            }
+            Err(item_error) => error.set_text(&item_error.to_string()),
+        }
+    });
+    dialog.present();
+    entry.grab_focus();
+}
+
+fn show_move_project_item_dialog(project_ui: &ProjectUi, source: &Path) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title("Move project item")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(420)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Move", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+    let form = GtkBox::new(Orientation::Vertical, 8);
+    form.set_margin_top(12);
+    form.set_margin_bottom(12);
+    form.set_margin_start(12);
+    form.set_margin_end(12);
+    let entry = Entry::new();
+    entry.set_placeholder_text(Some("Destination folder; empty = project root"));
+    entry.set_activates_default(true);
+    let error = Label::new(None);
+    error.add_css_class("error");
+    error.set_xalign(0.0);
+    form.append(&entry);
+    form.append(&error);
+    dialog.content_area().append(&form);
+    let project_ui = project_ui.clone();
+    let source = source.to_path_buf();
+    let entry_for_response = entry.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dialog.close();
+            return;
+        }
+        let snapshot = project_ui.shell.borrow().snapshot();
+        let Some(project) = snapshot.app.project else {
+            dialog.close();
+            return;
+        };
+        match move_project_item(&project.root, &source, entry_for_response.text().trim()) {
+            Ok(_) => {
+                refresh_project_tree(&project_ui);
+                project_ui.status.set_text("Project item moved.");
+                dialog.close();
+            }
+            Err(item_error) => error.set_text(&item_error.to_string()),
+        }
+    });
+    dialog.present();
+    entry.grab_focus();
+}
+
+fn show_rename_project_item_dialog(project_ui: &ProjectUi, source: &Path) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title("Rename project item")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(380)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Rename", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+    let form = GtkBox::new(Orientation::Vertical, 8);
+    form.set_margin_top(12);
+    form.set_margin_bottom(12);
+    form.set_margin_start(12);
+    form.set_margin_end(12);
+    let entry = Entry::new();
+    entry.set_text(source.file_name().and_then(|name| name.to_str()).unwrap_or_default());
+    entry.set_activates_default(true);
+    let error = Label::new(None);
+    error.add_css_class("error");
+    error.set_xalign(0.0);
+    form.append(&entry);
+    form.append(&error);
+    dialog.content_area().append(&form);
+    let project_ui = project_ui.clone();
+    let source = source.to_path_buf();
+    let entry_for_response = entry.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response != ResponseType::Accept {
+            dialog.close();
+            return;
+        }
+        let snapshot = project_ui.shell.borrow().snapshot();
+        let Some(project) = snapshot.app.project else {
+            dialog.close();
+            return;
+        };
+        match rename_project_item(&project.root, &source, entry_for_response.text().trim()) {
+            Ok(_) => {
+                refresh_project_tree(&project_ui);
+                project_ui.status.set_text("Project item renamed.");
+                dialog.close();
+            }
+            Err(item_error) => error.set_text(&item_error.to_string()),
+        }
+    });
+    dialog.present();
+    entry.grab_focus();
+    entry.select_region(0, -1);
+}
+
+struct GioTrashBackend;
+
+impl TrashBackend for GioTrashBackend {
+    fn move_to_trash(&self, path: &Path) -> Result<(), TrashError> {
+        gio::File::for_path(path)
+            .trash(gio::Cancellable::NONE)
+            .map_err(|error| TrashError::Backend(error.to_string()))
+    }
+}
+
+fn show_delete_project_item_dialog(project_ui: &ProjectUi, path: &Path) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title("Delete project item?")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(380)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Delete", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Cancel);
+    let message = Label::new(Some(&format!(
+        "Move {} to the project trash? This action removes it from the workspace.",
+        path.display()
+    )));
+    message.set_wrap(true);
+    message.set_margin_top(12);
+    message.set_margin_bottom(12);
+    message.set_margin_start(12);
+    message.set_margin_end(12);
+    dialog.content_area().append(&message);
+    let project_ui = project_ui.clone();
+    let path = path.to_path_buf();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Accept {
+            let snapshot = project_ui.shell.borrow().snapshot();
+            if let Some(project) = snapshot.app.project {
+                let absolute = PathBuf::from(&project.root).join(&path);
+                match confirm_and_trash(&GioTrashBackend, &absolute, true) {
+                    Ok(_) => {
+                        refresh_project_tree(&project_ui);
+                        project_ui.status.set_text("Project item moved to trash.");
+                    }
+                    Err(error) => {
+                        project_ui.status.set_text(&format!("Could not delete item: {error}"))
+                    }
+                }
+            }
+        }
+        dialog.close();
+    });
+    dialog.present();
 }
 
 fn connect_editor_buffer(project_ui: &ProjectUi) {
@@ -911,6 +1431,7 @@ fn start_capture(project_ui: &ProjectUi) {
     });
 }
 
+#[allow(dead_code)]
 fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
     let Some(window) = project_ui.window() else {
         return Err("The workspace window is no longer available.".to_owned());
@@ -1137,6 +1658,248 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
     Ok(())
 }
 
+fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
+    if project_ui.window().is_none() {
+        return Err("The workspace window is no longer available.".to_owned());
+    }
+    let backdrop = GtkBox::new(Orientation::Vertical, 0);
+    backdrop.set_hexpand(true);
+    backdrop.set_vexpand(true);
+    backdrop.set_can_target(true);
+    backdrop.add_css_class("capture-backdrop");
+
+    let panel = GtkBox::new(Orientation::Vertical, 8);
+    panel.set_width_request(640);
+    panel.set_height_request(360);
+    panel.set_halign(Align::Center);
+    panel.set_valign(Align::Center);
+    panel.set_margin_start(24);
+    panel.set_margin_end(24);
+    panel.set_margin_top(24);
+    panel.set_margin_bottom(24);
+    panel.add_css_class("capture-review-panel");
+
+    let source_context = project_ui
+        .editor
+        .borrow()
+        .as_ref()
+        .map(EditorBridge::state)
+        .map(|state| {
+            state
+                .text
+                .lines()
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_default();
+    let context_label = Label::new(Some(&source_context));
+    context_label.set_xalign(0.0);
+    context_label.set_wrap(true);
+    context_label.set_selectable(true);
+    context_label.set_max_width_chars(100);
+    context_label.add_css_class("capture-context");
+    panel.append(&context_label);
+
+    let placement = ToggleButton::with_label("Insert annotation before image");
+    placement.set_active(true);
+    placement.set_tooltip_text(Some(
+        "Toggle whether the annotation code is before or after the image block",
+    ));
+    let placement_for_toggle = placement.clone();
+    placement.connect_toggled(move |button| {
+        if button.is_active() {
+            placement_for_toggle.set_label("Insert annotation before image");
+        } else {
+            placement_for_toggle.set_label("Insert annotation after image");
+        }
+    });
+
+    let code_buffer = sourceview::Buffer::builder().highlight_matching_brackets(true).build();
+    configure_typst_buffer(&code_buffer);
+    code_buffer.set_text("#text(weight: \"bold\")[Annotation]\n");
+    let code_view = sourceview::View::with_buffer(&code_buffer);
+    code_view.set_show_line_numbers(true);
+    code_view.set_monospace(true);
+    code_view.set_hexpand(true);
+    code_view.set_vexpand(true);
+    code_view.set_tooltip_text(Some("Full Typst annotation code"));
+
+    panel.append(
+        &ScrolledWindow::builder()
+            .child(&code_view)
+            .hexpand(true)
+            .vexpand(true)
+            .min_content_height(220)
+            .build(),
+    );
+    let bottom = GtkBox::new(Orientation::Horizontal, 8);
+    bottom.set_margin_top(4);
+    bottom.append(&placement);
+    let spacer = GtkBox::new(Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bottom.append(&spacer);
+    let confirm = Button::with_label("Confirm");
+    confirm.add_css_class("suggested-action");
+    let cancel = Button::with_label("Cancel");
+    bottom.append(&confirm);
+    bottom.append(&cancel);
+    panel.append(&bottom);
+
+    let modify = Button::with_label("Modify");
+    modify.set_halign(Align::End);
+    modify.set_tooltip_text(Some("Discard this staged capture and select a new region"));
+    panel.prepend(&modify);
+
+    project_ui.workspace_overlay.add_overlay(&backdrop);
+    project_ui.workspace_overlay.add_overlay(&panel);
+    let completion_popover = Popover::new();
+    completion_popover.set_parent(&code_view);
+    let completion_list = GtkBox::new(Orientation::Vertical, 2);
+    for suggestion in ["#text()", "#image(\"img/example.png\")", "#line(length: 1em)", "#box()[ ]"]
+    {
+        let item = Button::with_label(suggestion);
+        let buffer = code_buffer.clone();
+        let popover = completion_popover.clone();
+        let suggestion = suggestion.to_owned();
+        item.connect_clicked(move |_| {
+            buffer.insert_at_cursor(&suggestion);
+            popover.popdown();
+        });
+        completion_list.append(&item);
+    }
+    completion_popover.set_child(Some(&completion_list));
+    let completion_key = gtk::EventControllerKey::new();
+    let completion_popover_for_key = completion_popover.clone();
+    completion_key.connect_key_pressed(move |_, key, _, state| {
+        if key == gtk::gdk::Key::space && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+            completion_popover_for_key.popup();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    code_view.add_controller(completion_key);
+    let editor_key = gtk::EventControllerKey::new();
+    let confirm_for_editor = confirm.clone();
+    let cancel_for_editor = cancel.clone();
+    editor_key.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            cancel_for_editor.emit_clicked();
+            return glib::Propagation::Stop;
+        }
+        if key == gtk::gdk::Key::Return {
+            confirm_for_editor.emit_clicked();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    code_view.add_controller(editor_key);
+    let key_controller = gtk::EventControllerKey::new();
+    let confirm_for_key = confirm.clone();
+    let cancel_for_key = cancel.clone();
+    key_controller.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            cancel_for_key.emit_clicked();
+            return glib::Propagation::Stop;
+        }
+        if key == gtk::gdk::Key::Return {
+            confirm_for_key.emit_clicked();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    panel.add_controller(key_controller);
+    code_view.grab_focus();
+
+    let modify_ui = project_ui.clone();
+    let modify_backdrop = backdrop.clone();
+    let modify_panel = panel.clone();
+    modify.connect_clicked(move |_| {
+        modify_ui.workspace_overlay.remove_overlay(&modify_backdrop);
+        modify_ui.workspace_overlay.remove_overlay(&modify_panel);
+        *modify_ui.pending_capture.borrow_mut() = None;
+        modify_ui.status.set_text("Select a new capture region.");
+        start_capture(&modify_ui);
+    });
+
+    let cancel_ui = project_ui.clone();
+    let cancel_backdrop = backdrop.clone();
+    let cancel_panel = panel.clone();
+    cancel.connect_clicked(move |_| {
+        cancel_ui.workspace_overlay.remove_overlay(&cancel_backdrop);
+        cancel_ui.workspace_overlay.remove_overlay(&cancel_panel);
+        *cancel_ui.pending_capture.borrow_mut() = None;
+        *cancel_ui.pending_annotation.borrow_mut() = None;
+        cancel_ui.status.set_text("Capture discarded; the project was not changed.");
+    });
+
+    let confirm_ui = project_ui.clone();
+    let confirm_backdrop = backdrop.clone();
+    let confirm_panel = panel.clone();
+    confirm.connect_clicked(move |_| {
+        let text =
+            code_buffer.text(&code_buffer.start_iter(), &code_buffer.end_iter(), true).to_string();
+        let annotation = text.trim().to_owned();
+        if annotation.is_empty() {
+            confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
+            return;
+        }
+        let before_image = placement.is_active();
+        confirm_ui.workspace_overlay.remove_overlay(&confirm_backdrop);
+        confirm_ui.workspace_overlay.remove_overlay(&confirm_panel);
+        *confirm_ui.pending_capture.borrow_mut() = None;
+        *confirm_ui.pending_annotation.borrow_mut() = None;
+        start_capture_storage_with_review(&confirm_ui, image.clone(), annotation, before_image);
+    });
+
+    Ok(())
+}
+
+fn start_capture_storage_with_review(
+    project_ui: &ProjectUi,
+    image: CapturedImage,
+    annotation: String,
+    before_image: bool,
+) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.status.set_text("The active project closed before the capture could be saved.");
+        return;
+    };
+    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::StoreCapture) {
+        project_ui.status.set_text(&format!("Error: {error}"));
+        return;
+    }
+    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Capture, false) {
+        Ok(task) => task,
+        Err(error) => {
+            project_ui.status.set_text(&format!("Error: {error}"));
+            return;
+        }
+    };
+    project_ui.status.set_text("Validating and saving capture…");
+    let root = PathBuf::from(project.root);
+    let _ = thread::Builder::new().name("captee-capture-store".to_owned()).spawn(move || {
+        let outcome = match AssetStore::new(root)
+            .and_then(|store| store.save_png(AnnotatedImage::new(image.bytes().to_vec())))
+        {
+            Ok(asset) => OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored {
+                asset,
+                annotation,
+                before_image,
+            }),
+            Err(error) => OperationOutcome::Failed(error.to_string()),
+        };
+        let _ = task.finish(outcome);
+    });
+}
+
+#[allow(dead_code)]
 fn start_capture_storage(project_ui: &ProjectUi, image: AnnotatedImage) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
@@ -1165,9 +1928,11 @@ fn start_capture_storage(project_ui: &ProjectUi, image: AnnotatedImage) {
     let root = PathBuf::from(project.root);
     let _ = thread::Builder::new().name("captee-capture-store".to_owned()).spawn(move || {
         let outcome = match AssetStore::new(root).and_then(|store| store.save_png(image)) {
-            Ok(asset) => {
-                OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored(asset))
-            }
+            Ok(asset) => OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored {
+                asset,
+                annotation: String::new(),
+                before_image: true,
+            }),
             Err(error) => OperationOutcome::Failed(error.to_string()),
         };
         let _ = task.finish(outcome);
@@ -1181,6 +1946,36 @@ fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32
     let size = (texture.width(), texture.height());
     picture.set_paintable(Some(&texture));
     Ok(size)
+}
+
+fn configure_typst_buffer(buffer: &sourceview::Buffer) {
+    let manager = sourceview::LanguageManager::default();
+    let asset_dir = format!("{}/assets", env!("CARGO_MANIFEST_DIR"));
+    let mut search_path =
+        manager.search_path().into_iter().map(|path| path.to_string()).collect::<Vec<_>>();
+    if !search_path.iter().any(|path| path == &asset_dir) {
+        search_path.insert(0, asset_dir);
+        let search_path = search_path.iter().map(String::as_str).collect::<Vec<_>>();
+        manager.set_search_path(&search_path);
+    }
+    let language = manager.language("typst").or_else(|| manager.language("markdown"));
+    buffer.set_language(language.as_ref());
+    buffer.set_highlight_syntax(language.is_some());
+}
+
+fn capture_insertion_expression(
+    image_expression: &str,
+    annotation: &str,
+    before_image: bool,
+) -> String {
+    if annotation.trim().is_empty() {
+        return format!("{image_expression}\n");
+    }
+    if before_image {
+        format!("{}\n{}\n", annotation.trim(), image_expression)
+    } else {
+        format!("{}\n{}\n", image_expression, annotation.trim())
+    }
 }
 
 fn show_settings_dialog(project_ui: &ProjectUi) {
@@ -1733,7 +2528,7 @@ fn apply_operation_result(
                 OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
                     *project_ui.pending_capture.borrow_mut() = Some(image.clone());
                     *project_ui.pending_annotation.borrow_mut() = None;
-                    match show_annotation_dialog(project_ui, image) {
+                    match show_capture_review_dialog(project_ui, image) {
                         Ok(()) => {
                             let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
                                 message: "Capture ready".to_owned(),
@@ -1750,7 +2545,11 @@ fn apply_operation_result(
                         }
                     }
                 }
-                OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored(asset)) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored {
+                    asset,
+                    annotation,
+                    before_image,
+                }) => {
                     let focused = project_ui.shell.borrow().snapshot().focused
                         == crate::FocusTarget::SourceEditor;
                     let character_offset =
@@ -1762,9 +2561,18 @@ fn apply_operation_result(
                         .map(|state| byte_offset_for_character(&state.text, character_offset))
                         .unwrap_or_default();
                     let target = if focused { editor.as_mut() } else { None };
+                    let expression = capture_insertion_expression(
+                        &asset.typst_image_expression(),
+                        &annotation,
+                        before_image,
+                    );
                     let insertion = {
                         let mut adapter = EditorInsertionBridge::new(target, cursor);
-                        insert_saved_asset(&asset, Some(&mut adapter))
+                        if focused {
+                            adapter.insert_image_expression(&expression)
+                        } else {
+                            InsertionResult::NoFocusedEditor
+                        }
                     };
                     let state = editor.as_ref().map(EditorBridge::state);
                     drop(editor);
@@ -1998,10 +2806,12 @@ fn refresh_project_label(project_ui: &ProjectUi) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
         project_ui.project_label.set_text("No project open");
+        project_ui.project_tree_title.set_text("Project");
         return;
     };
     let modified = if snapshot.app.dirty { " • Modified" } else { "" };
     project_ui.project_label.set_text(&format!("{} · {}{modified}", project.name, project.root));
+    project_ui.project_tree_title.set_text(&project.name);
 }
 
 fn choose_project_action(create: bool, project_ui: &ProjectUi) {
@@ -2272,12 +3082,15 @@ fn open_loaded_project(
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            project_ui.expanded_tree.borrow_mut().clear();
+            project_ui.tree_initialized.set(false);
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_status.set_text("Preview has not been rendered yet.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &project.settings.keybindings);
             }
             refresh_project_label(project_ui);
+            refresh_project_tree(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
             project_ui.status.set_text(if created {
                 "Project created. Ready to edit."
@@ -2379,6 +3192,8 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            project_ui.expanded_tree.borrow_mut().clear();
+            project_ui.tree_initialized.set(false);
             project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
             project_ui.preview_picture.set_size_request(-1, -1);
             project_ui.preview_status.set_text("Render a document to see its preview.");
@@ -2386,6 +3201,7 @@ fn close_project(project_ui: &ProjectUi) {
                 apply_project_accelerators(&application, &KeybindingSettings::default());
             }
             refresh_project_label(project_ui);
+            refresh_project_tree(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }
         Err(error) => project_ui.status.set_text(&format!("Error: {error}")),
@@ -2394,7 +3210,10 @@ fn close_project(project_ui: &ProjectUi) {
 
 #[cfg(test)]
 mod tests {
-    use super::{byte_offset_for_character, recovery_draft, validate_project_name};
+    use super::{
+        byte_offset_for_character, capture_insertion_expression, recovery_draft,
+        validate_project_name,
+    };
     use captee_platform::AutosaveSnapshot;
 
     #[test]
@@ -2429,5 +3248,21 @@ mod tests {
         assert_eq!(byte_offset_for_character("aéz", 1), 1);
         assert_eq!(byte_offset_for_character("aéz", 2), 3);
         assert_eq!(byte_offset_for_character("aéz", 99), 4);
+    }
+
+    #[test]
+    fn capture_annotation_can_be_inserted_before_or_after_image() {
+        assert_eq!(
+            capture_insertion_expression("#image(\"img/capture.png\")", "#line(length: 1em)", true),
+            "#line(length: 1em)\n#image(\"img/capture.png\")\n"
+        );
+        assert_eq!(
+            capture_insertion_expression(
+                "#image(\"img/capture.png\")",
+                "#line(length: 1em)",
+                false
+            ),
+            "#image(\"img/capture.png\")\n#line(length: 1em)\n"
+        );
     }
 }

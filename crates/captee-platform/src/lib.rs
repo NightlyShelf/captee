@@ -32,8 +32,10 @@ pub use typst::{
     PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,
 };
 pub use workspace::{
-    confirm_and_trash, create_project, open_project, save_project_settings, ProjectWorkspace,
-    TrashBackend, TrashError, TrashOutcome, WorkspaceError, CONFIG_FILE, IMAGE_DIRECTORY,
+    confirm_and_trash, create_project, create_project_item, delete_project_item, list_project_tree,
+    move_project_item, open_project, rename_project_item, save_project_settings, ProjectTreeEntry,
+    ProjectWorkspace, TrashBackend, TrashError, TrashOutcome, WorkspaceError, CONFIG_FILE,
+    IMAGE_DIRECTORY,
 };
 
 /// Identifies the role of this crate for architecture checks and diagnostics.

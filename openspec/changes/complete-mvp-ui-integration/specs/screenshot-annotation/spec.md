@@ -30,22 +30,22 @@ The UI MUST provide controls for pointer, rectangle, and text annotations while 
 
 ### Requirement: Document-aware capture review
 
-After region selection succeeds, the application SHALL retain the selected region and present a staged review surface at the place where the user ended dragging. The review surface SHALL visibly darken the surrounding window and show a few preceding Typst lines, the proposed insertion location, an annotation code editor, and the image block as a document composition. The surrounding or unaffected Typst content and the image block SHALL be visually dimmed to distinguish staged context from editable annotation content. The annotation editor SHALL support full Typst syntax, and the default insertion order SHALL place annotation code before the image block.
+After region selection succeeds, the application SHALL retain the selected region and draw a staged review surface inside the existing workspace window, anchored at the capture interaction location rather than opening a second window or modal capture dialog. The review surface SHALL visibly darken the surrounding workspace and contain only the preceding Typst context, an annotation code editor, and the three bottom controls Before/After, Confirm, and Cancel. The preceding Typst lines SHALL be rendered as dimmed context, while the annotation editor SHALL support full Typst syntax. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
 
 #### Scenario: Region selection becomes a staged review
 
 - **WHEN** the user completes a region drag
-- **THEN** the selected image remains visible, the background around the review surface is darkened, and the review shows the prior Typst context, annotation editor, and image block without changing the project source or writing an asset
+- **THEN** the selected image remains staged, the existing workspace is darkened around the in-place review surface, and the review shows only the dimmed prior Typst context and annotation editor without changing the project source or writing an asset
 
 #### Scenario: Default annotation placement
 
 - **WHEN** the staged review opens
-- **THEN** the annotation code position is before the image block and the image block is shown dimmed as the downstream staged document content
+- **THEN** the annotation code position is before the staged image block and the review retains the default Before state
 
 #### Scenario: Move annotation after the image
 
 - **WHEN** the user activates the Before/After control
-- **THEN** the staged document order changes to place the annotation code after the image block, and the dimmed context updates to match
+- **THEN** the staged insertion order changes to place the annotation code after the image block
 
 #### Scenario: Confirm with keyboard
 

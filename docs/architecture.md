@@ -254,12 +254,33 @@ results cannot mutate the UI. Non-cancellable atomic writes keep project and
 editor actions disabled until their single terminal result, preventing close,
 project replacement, or source edits from racing committed state.
 
+The workspace navigation boundary now exposes a project-relative tree model to
+GTK. The tree renders files and folders in parent-before-child order with
+indentation and type icons, starts at roughly one sixth of the default window
+width, and leaves the remaining paned area to the editor and preview. Clicks
+open files, folder clicks toggle expansion, triple-click opens rename, and drag
+sources/drop targets support validated moves including the project root.
+Context actions route create, rename, move, and delete through the platform
+workspace boundary after small confirmation dialogs. Tree refresh currently
+scans synchronously and skips symlinks; lazy expansion and worker-backed
+enumeration remain follow-up work for very large projects.
+
+Capture confirmation is a staged document-composition surface drawn as an
+overlay inside the existing workspace, not a second window. It keeps the
+selected image staged and shows a short dimmed source context while the user
+edits Typst annotation code, chooses before/after placement, invokes keyboard
+command suggestions, modifies the selection, or confirms/discards with
+Enter/Escape. Only confirmation transfers image bytes and insertion metadata
+to the existing bounded storage worker. Both the main source editor and the
+capture editor load the checked-in Typst GtkSourceView language definition,
+with a Markdown fallback for runtimes that do not package the definition.
+
 GTK result polling releases the operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results
-that trigger follow-up label, settings, or project-lifetime reads. Modal capture
-confirmation takes ownership of its staged image before hiding the dialog, so
-response handling cannot re-enter through window closure and clear data that is
-about to cross the storage boundary.
+that trigger follow-up label, settings, or project-lifetime reads. In-place
+capture confirmation removes its overlay children before handing the staged
+image to storage, so cancellation, modification, and confirmation cannot leave
+a stale review surface or re-enter through a second window.
 
 Project creation writes a minimal valid Typst heading (`= Captee`) through the
 same atomic workspace boundary as the config. This guarantees a new workspace

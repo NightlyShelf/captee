@@ -59,6 +59,21 @@ The application SHALL provide a project home for creating/opening projects and a
 - **WHEN** the user drags a file or folder onto a valid destination folder within the active project
 - **THEN** the item is moved through the safe project operation boundary and the tree refreshes to show the new hierarchy
 
+#### Scenario: Show a stable file hierarchy
+
+- **WHEN** the project tree is rendered
+- **THEN** entries are shown in recursive parent-before-child order with visible indentation, folder expand/collapse state, and an icon appropriate to each file or folder type
+
+#### Scenario: Move an item to the project root
+
+- **WHEN** the user drags an item onto the project tree root or chooses an empty destination in the Move action
+- **THEN** the item is moved to the project root and the refreshed hierarchy shows it at the top level
+
+#### Scenario: Rename an item by triple click
+
+- **WHEN** the user triple-clicks a file or folder row, enters a safe single-component name, and confirms
+- **THEN** the item is renamed in place and the tree refreshes without changing its parent
+
 #### Scenario: Workspace menu placement
 
 - **WHEN** a project is active

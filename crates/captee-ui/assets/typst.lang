@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<language id="typst" _name="Typst" version="2.0" _section="Sources">
+  <metadata>
+    <property name="mimetypes">text/x-typst</property>
+    <property name="globs">*.typ</property>
+    <property name="line-comment-start">//</property>
+  </metadata>
+  <styles>
+    <style id="comment" _name="Comment" map-to="def:comment" />
+    <style id="command" _name="Command" map-to="def:function" />
+    <style id="heading" _name="Heading" map-to="def:statement" />
+    <style id="string" _name="String" map-to="def:string" />
+    <style id="number" _name="Number" map-to="def:number" />
+    <style id="boolean" _name="Boolean" map-to="def:boolean" />
+  </styles>
+  <definitions>
+    <context id="typst">
+      <include>
+        <context id="comments" style-ref="comment">
+          <match>//.*$</match>
+        </context>
+        <context id="block-comment" style-ref="comment">
+          <match>/\*.*\*/</match>
+        </context>
+        <context id="commands" style-ref="command">
+          <match>#[A-Za-z_][A-Za-z0-9_-]*</match>
+        </context>
+        <context id="headings" style-ref="heading">
+          <match>^\s*=+\s+.*$</match>
+        </context>
+        <context id="strings" style-ref="string">
+          <match>&quot;([^&quot;\\]|\\.)*&quot;</match>
+        </context>
+        <context id="numbers" style-ref="number">
+          <match>\b[0-9]+(\.[0-9]+)?([a-zA-Z%]+)?\b</match>
+        </context>
+        <context id="booleans" style-ref="boolean">
+          <keyword>true</keyword>
+          <keyword>false</keyword>
+        </context>
+      </include>
+    </context>
+  </definitions>
+</language>

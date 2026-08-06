@@ -35,6 +35,16 @@ Project tree create, move, and delete actions SHALL operate only on validated pr
 - **WHEN** the user confirms moving an item to a valid destination folder in the active project
 - **THEN** the item and its descendants are moved atomically where supported, and no path outside the project root is accessed
 
+#### Scenario: Rename a project item
+
+- **WHEN** the user triple-clicks a tree item or chooses Rename, enters a safe new name, and confirms
+- **THEN** the item is renamed in its existing parent and the tree reflects the new name
+
+#### Scenario: Move an item to the project root
+
+- **WHEN** the user chooses the project root as the destination
+- **THEN** the item is moved to the root without escaping the active project boundary
+
 #### Scenario: Reject an unsafe move
 
 - **WHEN** the requested move escapes the project root, targets the item itself, or targets a descendant of a moved folder
