@@ -29,7 +29,7 @@ use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, DragSource,
     DropTarget, Entry, Frame, GestureClick, Label, ListBox, ListBoxRow, MenuButton, Orientation,
-    Paned, Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton,
+    Paned, Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton, Window,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
@@ -97,7 +97,8 @@ fn build_ui(application: &Application) {
         .build();
     let style = gtk::CssProvider::new();
     style.load_from_data(
-        ".capture-backdrop { background-color: rgba(0, 0, 0, 0.72); }\
+        ".capture-review-window, .capture-review-surface { background-color: transparent; }\
+         .capture-backdrop { background-color: rgba(0, 0, 0, 0.72); }\
          .capture-review-panel { background-color: #202124; border-radius: 4px; }\
          .capture-context { color: #9aa0a6; }\
          .capture-selection { border: 3px solid #ffcc66; }\
@@ -1732,10 +1733,26 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
 }
 
 fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
-    let Some(window) = project_ui.window() else {
+    let Some(application) = project_ui.application() else {
         return Err("The workspace window is no longer available.".to_owned());
     };
-    window.present();
+    let selection = image.selection();
+    let monitor = capture_monitor(&application, selection);
+    let capture_surface = gtk::Overlay::new();
+    capture_surface.add_css_class("capture-review-surface");
+    capture_surface.set_hexpand(true);
+    capture_surface.set_vexpand(true);
+    let review_window = Window::builder()
+        .application(&application)
+        .decorated(false)
+        .deletable(false)
+        .focusable(true)
+        .modal(true)
+        .resizable(false)
+        .child(&capture_surface)
+        .build();
+    review_window.add_css_class("capture-review-window");
+
     let backdrop = GtkBox::new(Orientation::Vertical, 0);
     backdrop.set_hexpand(true);
     backdrop.set_vexpand(true);
@@ -1745,15 +1762,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let selected_frame = Frame::new(None);
     selected_frame.set_halign(Align::Start);
     selected_frame.set_valign(Align::Start);
-    if let Some(selection) = image.selection() {
-        let frame_width = selection.width.min(720) as i32;
-        let frame_height = selection.height.min(480) as i32;
-        selected_frame.set_size_request(frame_width, frame_height);
-        let max_x = project_ui.workspace_overlay.width().saturating_sub(frame_width);
-        let max_y = project_ui.workspace_overlay.height().saturating_sub(frame_height);
-        selected_frame.set_margin_start(selection.x.clamp(0, max_x));
-        selected_frame.set_margin_top(selection.y.clamp(0, max_y));
-    } else {
+    if selection.is_none() {
         selected_frame.set_visible(false);
     }
     selected_frame.add_css_class("capture-selection");
@@ -1768,15 +1777,6 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.set_margin_top(24);
     panel.set_margin_bottom(24);
     panel.add_css_class("capture-review-panel");
-    if let Some(selection) = image.selection() {
-        panel.set_halign(Align::Start);
-        panel.set_valign(Align::Start);
-        let requested_x = selection.x.saturating_add(selection.width as i32).saturating_add(16);
-        let max_x = project_ui.workspace_overlay.width().saturating_sub(680).max(16);
-        panel.set_margin_start(requested_x.clamp(16, max_x));
-        let max_y = project_ui.workspace_overlay.height().saturating_sub(400).max(16);
-        panel.set_margin_top(selection.y.clamp(16, max_y));
-    }
 
     let source_context = project_ui
         .editor
@@ -1877,9 +1877,9 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     modify.set_tooltip_text(Some("Discard this staged capture and select a new region"));
     panel.prepend(&modify);
 
-    project_ui.workspace_overlay.add_overlay(&backdrop);
-    project_ui.workspace_overlay.add_overlay(&selected_frame);
-    project_ui.workspace_overlay.add_overlay(&panel);
+    capture_surface.add_overlay(&backdrop);
+    capture_surface.add_overlay(&selected_frame);
+    capture_surface.add_overlay(&panel);
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
     let completion_list = GtkBox::new(Orientation::Vertical, 2);
@@ -1939,32 +1939,40 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     code_view.grab_focus();
 
     let modify_ui = project_ui.clone();
+    let modify_window = review_window.clone();
+    let modify_surface = capture_surface.clone();
     let modify_backdrop = backdrop.clone();
     let modify_selection = selected_frame.clone();
     let modify_panel = panel.clone();
     modify.connect_clicked(move |_| {
-        modify_ui.workspace_overlay.remove_overlay(&modify_backdrop);
-        modify_ui.workspace_overlay.remove_overlay(&modify_selection);
-        modify_ui.workspace_overlay.remove_overlay(&modify_panel);
+        modify_surface.remove_overlay(&modify_backdrop);
+        modify_surface.remove_overlay(&modify_selection);
+        modify_surface.remove_overlay(&modify_panel);
+        modify_window.close();
         *modify_ui.pending_capture.borrow_mut() = None;
         modify_ui.status.set_text("Select a new capture region.");
         start_capture(&modify_ui);
     });
 
     let cancel_ui = project_ui.clone();
+    let cancel_window = review_window.clone();
+    let cancel_surface = capture_surface.clone();
     let cancel_backdrop = backdrop.clone();
     let cancel_selection = selected_frame.clone();
     let cancel_panel = panel.clone();
     cancel.connect_clicked(move |_| {
-        cancel_ui.workspace_overlay.remove_overlay(&cancel_backdrop);
-        cancel_ui.workspace_overlay.remove_overlay(&cancel_selection);
-        cancel_ui.workspace_overlay.remove_overlay(&cancel_panel);
+        cancel_surface.remove_overlay(&cancel_backdrop);
+        cancel_surface.remove_overlay(&cancel_selection);
+        cancel_surface.remove_overlay(&cancel_panel);
+        cancel_window.close();
         *cancel_ui.pending_capture.borrow_mut() = None;
         *cancel_ui.pending_annotation.borrow_mut() = None;
         cancel_ui.status.set_text("Capture discarded; the project was not changed.");
     });
 
     let confirm_ui = project_ui.clone();
+    let confirm_window = review_window.clone();
+    let confirm_surface = capture_surface.clone();
     let confirm_backdrop = backdrop.clone();
     let confirm_selection = selected_frame.clone();
     let confirm_panel = panel.clone();
@@ -1977,15 +1985,140 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
             return;
         }
         let before_image = placement.is_active();
-        confirm_ui.workspace_overlay.remove_overlay(&confirm_backdrop);
-        confirm_ui.workspace_overlay.remove_overlay(&confirm_selection);
-        confirm_ui.workspace_overlay.remove_overlay(&confirm_panel);
+        confirm_surface.remove_overlay(&confirm_backdrop);
+        confirm_surface.remove_overlay(&confirm_selection);
+        confirm_surface.remove_overlay(&confirm_panel);
+        confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
         start_capture_storage_with_review(&confirm_ui, image.clone(), annotation, before_image);
     });
 
+    review_window.present();
+    if let Some(monitor) = monitor {
+        review_window.fullscreen_on_monitor(&monitor);
+    } else {
+        review_window.fullscreen();
+    }
+
+    let position_surface = capture_surface.clone();
+    let position_frame = selected_frame.clone();
+    let position_panel = panel.clone();
+    glib::source::idle_add_local(move || {
+        if position_surface.width() <= 0 || position_surface.height() <= 0 {
+            return glib::ControlFlow::Continue;
+        }
+        position_capture_review(&position_surface, &position_frame, &position_panel, selection);
+        glib::ControlFlow::Break
+    });
+
     Ok(())
+}
+
+fn capture_monitor(
+    application: &Application,
+    selection: Option<SelectionGeometry>,
+) -> Option<gtk::gdk::Monitor> {
+    let display = gtk::gdk::Display::default()?;
+    let monitors = display.monitors();
+    let fallback = application.active_window().and_then(|window| {
+        window.surface().and_then(|surface| display.monitor_at_surface(&surface))
+    });
+    let Some(selection) = selection else {
+        return fallback.or_else(|| {
+            monitors.item(0).and_then(|item| item.downcast::<gtk::gdk::Monitor>().ok())
+        });
+    };
+
+    let center_x = selection.x as f64 + f64::from(selection.width) / 2.0;
+    let center_y = selection.y as f64 + f64::from(selection.height) / 2.0;
+    let mut logical_match = None;
+    let mut raw_match = None;
+    for index in 0..monitors.n_items() {
+        let Some(item) = monitors.item(index) else {
+            continue;
+        };
+        let Ok(monitor) = item.downcast::<gtk::gdk::Monitor>() else {
+            continue;
+        };
+        let geometry = monitor.geometry();
+        let scale = f64::from(monitor.scale_factor().max(1));
+        let logical_x = center_x / scale;
+        let logical_y = center_y / scale;
+        let in_geometry = |x: f64, y: f64| {
+            x >= f64::from(geometry.x())
+                && x < f64::from(geometry.x() + geometry.width())
+                && y >= f64::from(geometry.y())
+                && y < f64::from(geometry.y() + geometry.height())
+        };
+        if in_geometry(logical_x, logical_y) && logical_match.is_none() {
+            logical_match = Some(monitor.clone());
+        }
+        if in_geometry(center_x, center_y) && raw_match.is_none() {
+            raw_match = Some(monitor);
+        }
+    }
+    logical_match.or(raw_match).or(fallback)
+}
+
+fn position_capture_review(
+    surface: &gtk::Overlay,
+    selected_frame: &Frame,
+    panel: &GtkBox,
+    selection: Option<SelectionGeometry>,
+) {
+    let surface_width = surface.width().max(1);
+    let surface_height = surface.height().max(1);
+    let Some(selection) = selection else {
+        panel.set_halign(Align::Center);
+        panel.set_valign(Align::Center);
+        return;
+    };
+
+    let Some(surface_window) = surface.root().and_then(|root| root.downcast::<Window>().ok())
+    else {
+        return;
+    };
+    let Some(surface_handle) = surface_window.surface() else {
+        return;
+    };
+    let display = surface_handle.display();
+    let monitor = display.monitor_at_surface(&surface_handle);
+    let geometry = monitor.as_ref().map(|monitor| monitor.geometry());
+    let scale =
+        monitor.as_ref().map(|monitor| f64::from(monitor.scale_factor().max(1))).unwrap_or(1.0);
+    let surface_width_f = f64::from(surface_width);
+    let geometry_is_physical =
+        geometry.map(|rect| f64::from(rect.width()) > surface_width_f * 1.25).unwrap_or(false);
+    let raw_is_physical = f64::from(selection.width) > surface_width_f * 1.25;
+    let geometry_x = geometry.map(|rect| f64::from(rect.x())).unwrap_or(0.0);
+    let geometry_y = geometry.map(|rect| f64::from(rect.y())).unwrap_or(0.0);
+    let raw_scale = if raw_is_physical { scale } else { 1.0 };
+    let geometry_scale = if geometry_is_physical { scale } else { 1.0 };
+    let local_x = (f64::from(selection.x) / raw_scale - geometry_x / geometry_scale).round();
+    let local_y = (f64::from(selection.y) / raw_scale - geometry_y / geometry_scale).round();
+    let frame_width =
+        (f64::from(selection.width) / raw_scale).round().clamp(1.0, f64::from(surface_width));
+    let frame_height =
+        (f64::from(selection.height) / raw_scale).round().clamp(1.0, f64::from(surface_height));
+    let frame_width = frame_width as i32;
+    let frame_height = frame_height as i32;
+    let frame_x = (local_x as i32).clamp(0, surface_width.saturating_sub(frame_width));
+    let frame_y = (local_y as i32).clamp(0, surface_height.saturating_sub(frame_height));
+    selected_frame.set_size_request(frame_width, frame_height);
+    selected_frame.set_margin_start(frame_x);
+    selected_frame.set_margin_top(frame_y);
+    panel.set_halign(Align::Start);
+    panel.set_valign(Align::Start);
+    let panel_width = 640;
+    let panel_height = 400;
+    let right_x = frame_x.saturating_add(frame_width).saturating_add(16);
+    let left_x = frame_x.saturating_sub(panel_width).saturating_sub(16);
+    let panel_x =
+        if right_x.saturating_add(panel_width) <= surface_width { right_x } else { left_x.max(16) };
+    let panel_y = frame_y.min(surface_height.saturating_sub(panel_height)).max(16);
+    panel.set_margin_start(panel_x);
+    panel.set_margin_top(panel_y);
 }
 
 fn start_capture_storage_with_review(

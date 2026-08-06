@@ -267,11 +267,11 @@ worker-backed enumeration remain follow-up work for very large projects. The
 project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization.
 
-Capture confirmation is a staged document-composition surface drawn as an
-overlay inside the existing workspace, not a second window. It keeps the
-selected screen/workspace surface and selection stroke visible, carries
-fallback screen-space selection geometry, and shows a short dimmed source
-context while the user edits Typst
+Capture confirmation is a staged document-composition surface drawn as a
+borderless transparent fullscreen overlay on the monitor where the region was
+selected, not inside the main workspace window. It keeps the selected screen
+surface and selection stroke visible, carries fallback screen-space selection
+geometry, and shows a short dimmed source context while the user edits Typst
 annotation code, chooses before/after placement, invokes keyboard command
 suggestions, modifies the selection, or confirms/discards with Enter/Escape.
 The review does not add a duplicate captured-image background; only the
@@ -296,12 +296,18 @@ that maps the requested trigger to `com.nightlyshelf.captee:capture`; XDPH
 exposes the registered shortcut but does not create that compositor keybind
 itself.
 
-GTK result polling releases the operation coordinator's dynamic borrow before
+The review surface selects a GDK monitor from the fallback compositor
+coordinates, requests fullscreen on that monitor, and converts the selected
+rectangle into the review surface's local coordinates after allocation. Portal
+captures without geometry use the active application monitor as a fallback and
+show the unavailable-geometry status. GTK result polling releases the
+operation coordinator's dynamic borrow before
 calling any result handler. The same rule applies to shell dispatch results
 that trigger follow-up label, settings, or project-lifetime reads. In-place
-capture confirmation removes its overlay children before handing the staged
-image to storage, so cancellation, modification, and confirmation cannot leave
-a stale review surface or re-enter through a second window.
+capture confirmation removes its overlay children and closes the temporary
+review surface before handing the staged image to storage, so cancellation,
+modification, and confirmation cannot leave a stale review surface or re-enter
+through a duplicate review.
 
 Project creation writes a minimal valid Typst heading (`= Captee`) through the
 same atomic workspace boundary as the config. This guarantees a new workspace

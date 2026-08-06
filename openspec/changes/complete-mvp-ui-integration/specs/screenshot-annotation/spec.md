@@ -30,12 +30,12 @@ The UI MUST provide controls for pointer, rectangle, and text annotations while 
 
 ### Requirement: Document-aware capture review
 
-After region selection succeeds, the application SHALL retain the selected region and its available screen-space geometry, preserve the existing screen/workspace surface and selection stroke, and add a staged review surface inside the same screen rather than rerendering the captured region as a background image or opening a second capture window. The review surface SHALL visibly darken the surrounding workspace and contain only the preceding Typst context, an annotation code editor, and the three bottom controls Before/After, Confirm, and Cancel. The preceding Typst lines SHALL be rendered as dimmed context, while the annotation editor SHALL support full Typst syntax. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
+After region selection succeeds, the application SHALL retain the selected region and its available screen-space geometry, preserve the existing screen surface and selection stroke, and add a borderless transparent fullscreen review surface on that same capture monitor rather than rerendering the captured region as a background image or placing the review inside the main workspace window. The review surface SHALL visibly darken the surrounding screen and contain only the preceding Typst context, an annotation code editor, and the three bottom controls Before/After, Confirm, and Cancel. The preceding Typst lines SHALL be rendered as dimmed context, while the annotation editor SHALL support full Typst syntax. A separate Modify action SHALL reopen region selection without committing the staged capture. The default insertion order SHALL place annotation code before the image block.
 
 #### Scenario: Region selection becomes a staged review
 
 - **WHEN** the user completes a region drag
-- **THEN** the selected screen region and stroke remain visible under the dimmed workspace, the in-place review surface is added beside it, and no duplicate captured-image background is rendered, without changing the project source or writing an asset
+- **THEN** the selected screen region and stroke remain visible under the dimmed screen, the transparent review surface is added beside it on the capture monitor, and no duplicate captured-image background is rendered, without changing the project source or writing an asset
 
 #### Scenario: Default annotation placement
 
