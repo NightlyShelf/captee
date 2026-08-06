@@ -23,6 +23,10 @@ const MAX_CAPTURE_ERROR_BYTES: u64 = 1024 * 1024;
 pub struct CaptureOrigin {
     pub workspace: String,
     pub monitor: String,
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
 }
 
 /// Reads the active Hyprland placement before a global capture selector takes
@@ -40,9 +44,15 @@ pub fn current_capture_origin() -> Option<CaptureOrigin> {
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let monitor = value.get("monitor")?.as_str()?.to_owned();
+    let (x, y, width, height) = hyprland_monitor_rect(&monitor)?;
     Some(CaptureOrigin {
         workspace: value.get("name")?.as_str()?.to_owned(),
-        monitor: value.get("monitor")?.as_str()?.to_owned(),
+        monitor,
+        x,
+        y,
+        width,
+        height,
     })
 }
 
@@ -509,7 +519,6 @@ pub struct GrimSlurpCapture {
     slurp: PathBuf,
     grim: PathBuf,
     timeout: Duration,
-    output: Option<String>,
 }
 
 impl GrimSlurpCapture {
@@ -522,27 +531,12 @@ impl GrimSlurpCapture {
         grim: impl Into<PathBuf>,
         timeout: Duration,
     ) -> Self {
-        Self { slurp: slurp.into(), grim: grim.into(), timeout, output: None }
-    }
-
-    pub fn with_output(mut self, output: impl Into<String>) -> Self {
-        self.output = Some(output.into());
-        self
+        Self { slurp: slurp.into(), grim: grim.into(), timeout }
     }
 }
 
 impl CaptureBackend for GrimSlurpCapture {
     fn capture(&self) -> CaptureResult<CapturedImage> {
-        let background_args = self
-            .output
-            .as_ref()
-            .map(|output| vec!["-o".to_owned(), output.clone(), "-".to_owned()])
-            .unwrap_or_else(|| vec!["-".to_owned()]);
-        let background = run_bounded(&self.grim, &background_args, self.timeout)
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| output.stdout)
-            .filter(|bytes| is_png(bytes));
         let selection = match run_bounded(&self.slurp, &[], self.timeout) {
             Ok(output) => output,
             Err(error) => return CaptureResult::Failed(error),
@@ -573,18 +567,8 @@ impl CaptureBackend for GrimSlurpCapture {
         if !image.status.success() {
             return CaptureResult::Failed(command_failure("grim", &image));
         }
-        let captured = match background {
-            Some(background) => {
-                CapturedImage::with_selection_and_background(image.stdout, selection, background)
-            }
-            None => CapturedImage::with_selection(image.stdout, selection),
-        };
-        CaptureResult::Completed(captured)
+        CaptureResult::Completed(CapturedImage::with_selection(image.stdout, selection))
     }
-}
-
-fn is_png(bytes: &[u8]) -> bool {
-    png::Decoder::new(std::io::Cursor::new(bytes)).read_info().is_ok()
 }
 
 fn parse_selection_geometry(value: &str) -> Option<SelectionGeometry> {
