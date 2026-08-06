@@ -54,8 +54,8 @@ fn register_shortcut_worker(trigger: String, sender: Sender<GlobalShortcutEvent>
             .bind_shortcuts(&session, &[shortcut], None, BindShortcutsOptions::default())
             .await
             .map_err(|error| error.to_string())?;
-        request.response().map_err(|error| error.to_string())?;
         configure_hyprland_bind(&trigger)?;
+        request.response().map_err(|error| error.to_string())?;
         let mut activated = portal.receive_activated().await.map_err(|error| error.to_string())?;
         while let Some(event) = activated.next().await {
             if event.shortcut_id() == "capture"
