@@ -28,8 +28,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, Dialog, DragSource,
-    DropTarget, Entry, Frame, GestureClick, Label, ListBox, ListBoxRow, MenuButton, Orientation,
-    Paned, Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton, Window,
+    DropTarget, Entry, GestureClick, Label, ListBox, ListBoxRow, MenuButton, Orientation, Paned,
+    Popover, ResponseType, ScrolledWindow, Spinner, Stack, ToggleButton, Window,
 };
 use gtk4 as gtk;
 use sourceview::prelude::*;
@@ -105,7 +105,10 @@ fn build_ui(application: &Application) {
          .capture-backdrop { background-color: rgba(0, 0, 0, 0.42); }\
          .capture-review-panel { background-color: #202124; border-radius: 4px; }\
          .capture-context { color: #9aa0a6; }\
-         .capture-selection { border: 3px solid #ffcc66; }\
+         .capture-selection {\
+           border: 3px solid rgba(255, 204, 102, 0.95);\
+           background-color: transparent; background-image: none;\
+         }\
          .typst-editor, .typst-editor.view, .typst-editor text {\
            background-color: #202124; color: #e8eaed; caret-color: #ffffff;\
          }\
@@ -1779,7 +1782,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     backdrop.set_can_target(true);
     backdrop.add_css_class("capture-backdrop");
 
-    let selected_frame = Frame::new(None);
+    let selected_frame = GtkBox::new(Orientation::Vertical, 0);
     selected_frame.set_halign(Align::Start);
     selected_frame.set_valign(Align::Start);
     if selection.is_none() {
@@ -2107,7 +2110,7 @@ fn capture_monitor(
 
 fn position_capture_review(
     surface: &gtk::Overlay,
-    selected_frame: &Frame,
+    selected_frame: &GtkBox,
     panel: &GtkBox,
     selection: Option<SelectionGeometry>,
 ) {
