@@ -4,10 +4,14 @@ use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, Ne
 use ashpd::desktop::CreateSessionOptions;
 use ashpd::{register_host_app_with_connection, AppID};
 use futures_util::StreamExt;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 const APPLICATION_ID: &str = "com.nightlyshelf.Captee";
+const DESKTOP_ENTRY: &str =
+    include_str!("../../../packaging/appimage/com.nightlyshelf.Captee.desktop");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GlobalShortcutEvent {
@@ -29,6 +33,7 @@ pub fn register_capture_shortcut(trigger: impl Into<String>) -> Receiver<GlobalS
 fn register_shortcut_worker(trigger: String, sender: Sender<GlobalShortcutEvent>) {
     let sender_for_worker = sender.clone();
     let result = async_io::block_on(async move {
+        ensure_desktop_entry().map_err(|error| error.to_string())?;
         let connection =
             ashpd::zbus::Connection::session().await.map_err(|error| error.to_string())?;
         let app_id = AppID::try_from(APPLICATION_ID).map_err(|error| error.to_string())?;
@@ -62,4 +67,31 @@ fn register_shortcut_worker(trigger: String, sender: Sender<GlobalShortcutEvent>
     if let Err(error) = result {
         let _ = sender.send(GlobalShortcutEvent::Failed(error));
     }
+}
+
+/// Ensures that a host-launched development build has portal-visible app info.
+///
+/// Installed packages normally provide this desktop entry themselves. A
+/// `cargo run` binary does not, so the host portal cannot resolve its app ID
+/// until the user-level entry exists.
+fn ensure_desktop_entry() -> Result<(), std::io::Error> {
+    if ashpd::is_sandboxed() {
+        return Ok(());
+    }
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no user data directory")
+        })?;
+    let applications = data_home.join("applications");
+    fs::create_dir_all(&applications)?;
+    let destination = applications.join(format!("{APPLICATION_ID}.desktop"));
+    if destination.exists() {
+        return Ok(());
+    }
+    let temporary =
+        applications.join(format!(".{APPLICATION_ID}.desktop.{}.tmp", std::process::id()));
+    fs::write(&temporary, DESKTOP_ENTRY)?;
+    fs::rename(temporary, destination)
 }
