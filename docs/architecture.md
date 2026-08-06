@@ -97,11 +97,14 @@ when the selection dialog confirms insertion.
 
 Preview requests are debounced for 600 ms and use `AsyncPreviewCompiler` with
 the discovered Typst binary outside the GTK thread. A successful attempt
-produces the complete PDF plus a first-page PNG, both tagged with the active
-source revision. `RenderState` remains authoritative for stale rejection and
-last-valid PDF retention; GTK decodes the PNG only after both coordinator and
-render-state checks accept it. Failed renders update diagnostics and status but
-leave the last valid preview picture visible.
+produces the complete PDF plus one PNG per rendered page, both tagged with the
+active source revision. `RenderState` remains authoritative for stale
+rejection and last-valid PDF retention; GTK presents the accepted page images
+in document order inside one scrollable preview pane. Failed renders update
+diagnostics and status but leave the last valid preview pages visible. Preview
+busy state does not disable the source editor: a source edit cancels the
+superseded render, clears its progress state, and schedules the next debounced
+revision.
 
 PDF export is available only when `RenderState` holds a successful preview for
 the current source revision. A GTK native save chooser gathers a local
@@ -156,9 +159,10 @@ platform-side responsibilities for the preview scheduler.
 The platform preview adapter stages each in-memory source snapshot in a unique
 project-local temporary file so relative Typst assets resolve as they do for the
 entry document. It invokes the bundled Typst runner on a worker thread, reads
-the generated PDF into a revision-tagged outcome, and removes both temporary
-files on every completion path. Applying the outcome through core render state
-is the authoritative stale-result check.
+the generated PDF and page-numbered PNG files into a revision-tagged outcome,
+and removes the temporary source, PDF, and page files on every completion path.
+Applying the outcome through core render state is the authoritative stale-result
+check.
 
 PDF export reads only the preview whose revision matches the active source and
 rejects missing or stale previews before touching the destination. It validates

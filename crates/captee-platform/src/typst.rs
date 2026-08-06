@@ -2,6 +2,7 @@
 
 use crate::atomic_write;
 use captee_core::{parse_diagnostics, Diagnostic, DiagnosticSeverity, RenderState};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -59,13 +60,13 @@ impl TypstRunner {
         self.run(["compile".to_owned(), path_arg(source), path_arg(output)])
     }
 
-    pub fn compile_first_page_png(&self, source: &Path, output: &Path) -> io::Result<Output> {
+    pub fn compile_png_pages(&self, source: &Path, output_template: &Path) -> io::Result<Output> {
         self.run([
             "compile".to_owned(),
-            "--pages".to_owned(),
-            "1".to_owned(),
+            "--format".to_owned(),
+            "png".to_owned(),
             path_arg(source),
-            path_arg(output),
+            path_arg(output_template),
         ])
     }
 
@@ -83,7 +84,7 @@ impl TypstRunner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewArtifact {
     pub pdf: Vec<u8>,
-    pub first_page_png: Vec<u8>,
+    pub page_pngs: Vec<Vec<u8>>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -122,7 +123,7 @@ impl PreviewCompiler for TypstPreviewCompiler {
         let prefix = format!(".captee-preview-{}-{stamp}-{id}", std::process::id());
         let source_path = self.project_root.join(format!("{prefix}.typ"));
         let output_path = self.project_root.join(format!("{prefix}.pdf"));
-        let png_path = self.project_root.join(format!("{prefix}.png"));
+        let png_template = self.project_root.join(format!("{prefix}-page-{{p}}-of-{{t}}.png"));
 
         let result = (|| {
             atomic_write(&source_path, source.as_bytes()).map_err(|error| PreviewError {
@@ -146,7 +147,7 @@ impl PreviewCompiler for TypstPreviewCompiler {
                 diagnostics: diagnostics.clone(),
             })?;
             let png_output =
-                self.runner.compile_first_page_png(&source_path, &png_path).map_err(|error| {
+                self.runner.compile_png_pages(&source_path, &png_template).map_err(|error| {
                     PreviewError {
                         message: format!("could not run Typst preview image compiler: {error}"),
                         diagnostics: diagnostics.clone(),
@@ -159,19 +160,75 @@ impl PreviewCompiler for TypstPreviewCompiler {
                     diagnostics: image_diagnostics,
                 });
             }
-            let first_page_png = std::fs::read(&png_path).map_err(|error| PreviewError {
-                message: format!("could not read rendered preview image: {error}"),
-                diagnostics: image_diagnostics.clone(),
-            })?;
+            let page_paths = preview_page_paths(&self.project_root, &prefix)?;
+            let mut page_pngs = Vec::with_capacity(page_paths.len());
+            for page_path in page_paths {
+                page_pngs.push(std::fs::read(&page_path).map_err(|error| PreviewError {
+                    message: format!("could not read rendered preview image: {error}"),
+                    diagnostics: image_diagnostics.clone(),
+                })?);
+            }
             let mut diagnostics = diagnostics;
             diagnostics.append(&mut image_diagnostics);
-            Ok(PreviewArtifact { pdf, first_page_png, diagnostics })
+            Ok(PreviewArtifact { pdf, page_pngs, diagnostics })
         })();
 
         let _ = std::fs::remove_file(&source_path);
         let _ = std::fs::remove_file(&output_path);
-        let _ = std::fs::remove_file(&png_path);
+        remove_preview_pages(&self.project_root, &prefix);
         result
+    }
+}
+
+fn preview_page_paths(root: &Path, prefix: &str) -> Result<Vec<PathBuf>, PreviewError> {
+    let mut pages = BTreeMap::new();
+    let entries = std::fs::read_dir(root).map_err(|error| PreviewError {
+        message: format!("could not enumerate rendered preview images: {error}"),
+        diagnostics: Vec::new(),
+    })?;
+    let marker = format!("{prefix}-page-");
+    for entry in entries {
+        let path = entry
+            .map_err(|error| PreviewError {
+                message: format!("could not enumerate rendered preview images: {error}"),
+                diagnostics: Vec::new(),
+            })?
+            .path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(page) = name
+            .strip_prefix(&marker)
+            .and_then(|page| page.split('-').next())
+            .and_then(|page| page.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        pages.insert(page, path);
+    }
+    if pages.is_empty() {
+        return Err(PreviewError {
+            message: "Typst produced no preview pages".to_owned(),
+            diagnostics: Vec::new(),
+        });
+    }
+    Ok(pages.into_values().collect())
+}
+
+fn remove_preview_pages(root: &Path, prefix: &str) {
+    let marker = format!("{prefix}-page-");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_preview_page = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&marker) && name.ends_with(".png"));
+        if is_preview_page {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -186,13 +243,24 @@ pub struct PreviewOutcome {
 impl PreviewOutcome {
     /// Applies this result only when it belongs to the current source revision.
     pub fn apply_to(self, state: &mut RenderState) -> bool {
+        self.apply_to_with_pages(state).0
+    }
+
+    /// Applies this result and transfers page images only when it is current.
+    /// Keeping the page buffers in the outcome avoids cloning every page while
+    /// the core render state records only the PDF and diagnostics.
+    pub fn apply_to_with_pages(self, state: &mut RenderState) -> (bool, Option<Vec<Vec<u8>>>) {
         match self.result {
-            Ok(artifact) => state.apply_success(
-                self.revision,
-                artifact.pdf,
-                artifact.diagnostics,
-                self.rendered_at,
-            ),
+            Ok(artifact) => {
+                let page_pngs = artifact.page_pngs;
+                let accepted = state.apply_success(
+                    self.revision,
+                    artifact.pdf,
+                    artifact.diagnostics,
+                    self.rendered_at,
+                );
+                (accepted, accepted.then_some(page_pngs))
+            }
             Err(error) => {
                 let diagnostics = if error.diagnostics.is_empty() {
                     vec![Diagnostic {
@@ -203,7 +271,7 @@ impl PreviewOutcome {
                 } else {
                     error.diagnostics
                 };
-                state.apply_failure(self.revision, diagnostics, self.rendered_at)
+                (state.apply_failure(self.revision, diagnostics, self.rendered_at), None)
             }
         }
     }
@@ -306,7 +374,7 @@ mod tests {
             self.sources.lock().expect("sources lock").push(source.to_owned());
             Ok(PreviewArtifact {
                 pdf: source.as_bytes().to_vec(),
-                first_page_png: b"png".to_vec(),
+                page_pngs: vec![b"png".to_vec()],
                 diagnostics: Vec::new(),
             })
         }
@@ -321,7 +389,7 @@ mod tests {
         assert_eq!(outcome.revision, 7);
         let artifact = outcome.result.expect("successful preview");
         assert_eq!(artifact.pdf, b"#let answer = 42");
-        assert_eq!(artifact.first_page_png, b"png");
+        assert_eq!(artifact.page_pngs, vec![b"png".to_vec()]);
     }
 
     #[test]
@@ -354,5 +422,33 @@ mod tests {
         assert!(outcome.apply_to(&mut state));
         assert_eq!(state.last_successful_preview().expect("preview").pdf, b"previous");
         assert_eq!(state.diagnostics()[0].severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn preview_page_paths_are_returned_in_document_order() {
+        let root = std::env::temp_dir().join(format!(
+            "captee-preview-pages-{}",
+            NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create preview test directory");
+        std::fs::write(root.join(".preview-page-10-of-10.png"), b"10").expect("page 10");
+        std::fs::write(root.join(".preview-page-2-of-10.png"), b"2").expect("page 2");
+        std::fs::write(root.join(".preview-page-1-of-10.png"), b"1").expect("page 1");
+
+        let paths = preview_page_paths(&root, ".preview").expect("preview pages");
+        let names = paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                ".preview-page-1-of-10.png",
+                ".preview-page-2-of-10.png",
+                ".preview-page-10-of-10.png"
+            ]
+        );
+        remove_preview_pages(&root, ".preview");
+        std::fs::remove_dir(&root).expect("remove preview test directory");
     }
 }

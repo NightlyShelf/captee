@@ -156,10 +156,10 @@ fn build_ui(application: &Application) {
     diagnostics_label.set_xalign(0.0);
     diagnostics_label.set_wrap(true);
     diagnostics_label.set_selectable(true);
-    let preview_picture = gtk::Picture::new();
-    preview_picture.set_hexpand(true);
-    preview_picture.set_vexpand(true);
-    preview_picture.set_can_shrink(true);
+    let preview_pages = GtkBox::new(Orientation::Vertical, 16);
+    preview_pages.set_hexpand(true);
+    preview_pages.set_vexpand(true);
+    preview_pages.set_halign(Align::Center);
     let preview_status = Label::new(Some("Render a document to see its preview."));
     preview_status.set_xalign(0.0);
     preview_status.set_wrap(true);
@@ -173,7 +173,7 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
-            &preview_picture,
+            &preview_pages,
             &preview_status,
             &diagnostics_label,
             &menus,
@@ -199,7 +199,7 @@ fn build_ui(application: &Application) {
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
         tree_initialized: Rc::new(Cell::new(false)),
         diagnostics_label,
-        preview_picture,
+        preview_pages,
         preview_status,
         progress_spinner,
         cancel_button: cancel_button.clone(),
@@ -283,7 +283,7 @@ struct WorkspaceMenus {
 
 fn build_workspace(
     source_view: &sourceview::View,
-    preview_picture: &gtk::Picture,
+    preview_pages: &GtkBox,
     preview_status: &Label,
     diagnostics_label: &Label,
     menus: &WorkspaceMenus,
@@ -324,7 +324,7 @@ fn build_workspace(
     preview.append(preview_status);
     preview.append(
         &ScrolledWindow::builder()
-            .child(preview_picture)
+            .child(preview_pages)
             .hexpand(true)
             .vexpand(true)
             .min_content_height(240)
@@ -541,7 +541,7 @@ struct ProjectUi {
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
     tree_initialized: Rc<Cell<bool>>,
     diagnostics_label: Label,
-    preview_picture: gtk::Picture,
+    preview_pages: GtkBox,
     preview_status: Label,
     progress_spinner: Spinner,
     cancel_button: Button,
@@ -1186,6 +1186,16 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
     if let Err(error) = project_ui.coordinator.borrow_mut().set_source_revision(state.revision) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
+    }
+    let preview_was_cancelled = project_ui
+        .shell
+        .borrow()
+        .snapshot()
+        .progress
+        .as_ref()
+        .is_some_and(|progress| progress.operation == OperationKind::Preview);
+    if preview_was_cancelled {
+        let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
     }
     project_ui.render_state.borrow_mut().set_source_revision(state.revision);
     project_ui.preview_status.set_text("Preview is out of date.");
@@ -2347,14 +2357,43 @@ fn apply_project_accelerators(application: &Application, keybindings: &Keybindin
     }
 }
 
+fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<(), String> {
+    let mut pictures = Vec::with_capacity(pages.len());
+    for png in pages {
+        let bytes = glib::Bytes::from_owned(png);
+        let texture = gtk::gdk::Texture::from_bytes(&bytes)
+            .map_err(|error| format!("could not decode preview page: {error}"))?;
+        let picture = gtk::Picture::for_paintable(&texture);
+        picture.set_can_shrink(true);
+        picture.set_hexpand(true);
+        picture.set_halign(Align::Center);
+        pictures.push(picture);
+    }
+    while let Some(child) = project_ui.preview_pages.first_child() {
+        project_ui.preview_pages.remove(&child);
+    }
+    for picture in pictures {
+        project_ui.preview_pages.append(&picture);
+    }
+    apply_preview_zoom(project_ui);
+    Ok(())
+}
+
 fn apply_preview_zoom(project_ui: &ProjectUi) {
     let zoom = i64::from(project_ui.shell.borrow().snapshot().app.settings.preview.zoom_percent);
-    let Some(paintable) = project_ui.preview_picture.paintable() else {
-        return;
-    };
-    let width = (i64::from(paintable.intrinsic_width()).max(1) * zoom / 100).clamp(1, 8192);
-    let height = (i64::from(paintable.intrinsic_height()).max(1) * zoom / 100).clamp(1, 8192);
-    project_ui.preview_picture.set_size_request(width as i32, height as i32);
+    let mut child = project_ui.preview_pages.first_child();
+    while let Some(widget) = child {
+        if let Ok(picture) = widget.clone().downcast::<gtk::Picture>() {
+            if let Some(paintable) = picture.paintable() {
+                let width =
+                    (i64::from(paintable.intrinsic_width()).max(1) * zoom / 100).clamp(1, 8192);
+                let height =
+                    (i64::from(paintable.intrinsic_height()).max(1) * zoom / 100).clamp(1, 8192);
+                picture.set_size_request(width as i32, height as i32);
+            }
+        }
+        child = widget.next_sibling();
+    }
 }
 
 #[allow(deprecated)]
@@ -2615,15 +2654,15 @@ fn apply_operation_result(
                     show_completion_dialog(project_ui, source_identity, items, cursor);
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)) => {
-                    let preview = outcome.result.as_ref().ok().map(|artifact| {
-                        (artifact.first_page_png.clone(), artifact.diagnostics.clone())
-                    });
+                    let preview_diagnostics =
+                        outcome.result.as_ref().ok().map(|artifact| artifact.diagnostics.clone());
                     let failure = outcome
                         .result
                         .as_ref()
                         .err()
                         .map(|error| (error.message.clone(), error.diagnostics.clone()));
-                    let accepted = outcome.apply_to(&mut project_ui.render_state.borrow_mut());
+                    let (accepted, pages) =
+                        outcome.apply_to_with_pages(&mut project_ui.render_state.borrow_mut());
                     if !accepted {
                         let message = "Preview result ignored because its revision is stale.";
                         let _ = project_ui
@@ -2631,13 +2670,12 @@ fn apply_operation_result(
                             .borrow_mut()
                             .dispatch(UiCommand::Warn { message: message.to_owned() });
                         project_ui.status.set_text(message);
-                    } else if let Some((png, diagnostics)) = preview {
-                        show_diagnostics(project_ui, &diagnostics);
-                        let bytes = glib::Bytes::from_owned(png);
-                        match gtk::gdk::Texture::from_bytes(&bytes) {
-                            Ok(texture) => {
-                                project_ui.preview_picture.set_paintable(Some(&texture));
-                                apply_preview_zoom(project_ui);
+                    } else if let Some(pages) = pages {
+                        if let Some(diagnostics) = preview_diagnostics.as_deref() {
+                            show_diagnostics(project_ui, diagnostics);
+                        }
+                        match display_preview_pages(project_ui, pages) {
+                            Ok(()) => {
                                 project_ui.preview_status.set_text("Showing current preview.");
                                 let _ =
                                     project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
@@ -3236,7 +3274,7 @@ fn open_loaded_project(
             *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
-            project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
+            clear_preview_pages(project_ui);
             project_ui.preview_status.set_text("Preview has not been rendered yet.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &project.settings.keybindings);
@@ -3266,6 +3304,12 @@ fn open_loaded_project(
             project_ui.status.set_text(&format!("Error: {error}"));
             false
         }
+    }
+}
+
+fn clear_preview_pages(project_ui: &ProjectUi) {
+    while let Some(child) = project_ui.preview_pages.first_child() {
+        project_ui.preview_pages.remove(&child);
     }
 }
 
@@ -3346,8 +3390,7 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.pending_annotation.borrow_mut() = None;
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
-            project_ui.preview_picture.set_paintable(Option::<&gtk::gdk::Texture>::None);
-            project_ui.preview_picture.set_size_request(-1, -1);
+            clear_preview_pages(project_ui);
             project_ui.preview_status.set_text("Render a document to see its preview.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &KeybindingSettings::default());

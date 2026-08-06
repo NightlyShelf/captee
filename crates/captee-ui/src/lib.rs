@@ -93,12 +93,18 @@ pub struct InteractionState {
 
 pub fn interaction_state(snapshot: &UiSnapshot) -> InteractionState {
     let busy = snapshot.progress.is_some();
+    let editor_enabled = snapshot.app.project.is_some()
+        && (!busy
+            || snapshot
+                .progress
+                .as_ref()
+                .is_some_and(|progress| progress.operation == OperationKind::Preview));
     InteractionState {
         busy,
         cancellable: snapshot.progress.as_ref().is_some_and(|progress| progress.cancellable),
         project_actions_enabled: !busy,
         workspace_actions_enabled: snapshot.app.project.is_some() && !busy,
-        editor_enabled: snapshot.app.project.is_some() && !busy,
+        editor_enabled,
     }
 }
 
@@ -528,6 +534,24 @@ mod tests {
         );
         shell.dispatch(UiCommand::Cancel).expect("capture cancels");
         assert!(interaction_state(&shell.snapshot()).workspace_actions_enabled);
+    }
+
+    #[test]
+    fn preview_keeps_the_source_editor_editable_while_disabling_conflicting_actions() {
+        let mut shell = UiShell::new();
+        shell
+            .dispatch(UiCommand::OpenProject {
+                session: session(),
+                settings: ProjectSettings::default(),
+            })
+            .expect("project opens");
+        shell.dispatch(UiCommand::Preview).expect("preview starts");
+
+        let interaction = interaction_state(&shell.snapshot());
+        assert!(interaction.busy);
+        assert!(interaction.editor_enabled);
+        assert!(!interaction.workspace_actions_enabled);
+        assert!(interaction.cancellable);
     }
 
     #[test]

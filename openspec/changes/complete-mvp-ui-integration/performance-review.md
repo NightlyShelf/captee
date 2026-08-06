@@ -41,10 +41,10 @@
 
 ## Task 3.1: Connected Typst preview
 
-- Finding: One debounced preview request copies the active source, starts the asynchronous compiler, and asks bundled Typst for both the complete PDF and a first-page PNG. `RenderState` retains one PDF while GTK retains one decoded preview texture.
-- Impact: Typst process startup and dual compilation dominate CPU and I/O; memory peaks include source, PDF, PNG, and decoded texture. The 600 ms sequence debounce prevents compilation on every keystroke, and only one UI operation is accepted at a time.
-- Concurrency and lifetime: Compilation runs outside GTK, results carry project/source identity, `RenderState` independently rejects stale revisions, and a failed current render retains the last valid PDF and picture. Window teardown stops polling and late results cannot reach widgets.
-- Mitigation: Preview staging files use collision-resistant project-local names and are removed after each attempt. The UI displays only the first page, caps diagnostics, and drops superseded results before texture decoding.
+- Finding: One debounced preview request copies the active source, starts the asynchronous compiler, and asks bundled Typst for both the complete PDF and one PNG per rendered page. `RenderState` retains one PDF while GTK retains the accepted page textures in a scrollable list.
+- Impact: Typst process startup and dual compilation dominate CPU and I/O; memory peaks include source, PDF, all page PNGs, and decoded textures. The 600 ms sequence debounce prevents compilation on every keystroke, and page count now scales preview memory linearly with the document.
+- Concurrency and lifetime: Compilation runs outside GTK, results carry project/source identity, `RenderState` independently rejects stale revisions, and a failed current render retains the last valid PDF and page list. Source edits keep the editor interactive, cancel the superseded preview, clear UI progress, and allow the next debounced request. Window teardown stops polling and late results cannot reach widgets.
+- Mitigation: Preview staging files use collision-resistant project-local names and are removed after each attempt. The UI appends pages only after all page bytes decode successfully, preserves document order, caps diagnostics, and drops superseded results before widget updates.
 - Follow-up: Large multi-page documents currently compile twice to produce PDF and PNG. A future renderer integrated as a library could rasterize the retained PDF once and avoid the second Typst process.
 
 ## Task 3.2: Current-preview PDF export
