@@ -12,7 +12,7 @@ The workspace MUST invoke asynchronous Typst preview compilation from the active
 #### Scenario: Fit preview pages by default
 
 - **WHEN** a workspace opens or a new preview is displayed
-- **THEN** the scale control below the preview defaults to Fit page and each page fits the available preview width
+- **THEN** the scale control below the preview defaults to Fit page and each page fits within the available preview viewport
 
 #### Scenario: Change preview scale
 

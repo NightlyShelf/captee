@@ -174,6 +174,12 @@ fn build_ui(application: &Application) {
     ]);
     preview_scale.set_selected(0);
     preview_scale.set_tooltip_text(Some("Choose how preview pages are scaled"));
+    let preview_scroller = ScrolledWindow::builder()
+        .child(&preview_pages)
+        .hexpand(true)
+        .vexpand(true)
+        .min_content_height(240)
+        .build();
 
     let home_new_button = Button::with_label("New project");
     home_new_button.add_css_class("suggested-action");
@@ -184,8 +190,8 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
-            &preview_pages,
             &preview_status,
+            &preview_scroller,
             &preview_scale,
             &diagnostics_label,
             &menus,
@@ -213,6 +219,7 @@ fn build_ui(application: &Application) {
         diagnostics_label,
         preview_pages,
         preview_status,
+        preview_scroller,
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
         progress_spinner,
@@ -298,8 +305,8 @@ struct WorkspaceMenus {
 
 fn build_workspace(
     source_view: &sourceview::View,
-    preview_pages: &GtkBox,
     preview_status: &Label,
+    preview_scroller: &ScrolledWindow,
     preview_scale: &gtk::DropDown,
     diagnostics_label: &Label,
     menus: &WorkspaceMenus,
@@ -338,14 +345,7 @@ fn build_workspace(
     preview.set_margin_end(16);
     preview.append(&Label::new(Some("Preview")));
     preview.append(preview_status);
-    preview.append(
-        &ScrolledWindow::builder()
-            .child(preview_pages)
-            .hexpand(true)
-            .vexpand(true)
-            .min_content_height(240)
-            .build(),
-    );
+    preview.append(preview_scroller);
     let scale_row = GtkBox::new(Orientation::Horizontal, 8);
     let scale_label = Label::new(Some("Scale"));
     scale_label.set_xalign(0.0);
@@ -565,6 +565,7 @@ struct ProjectUi {
     diagnostics_label: Label,
     preview_pages: GtkBox,
     preview_status: Label,
+    preview_scroller: ScrolledWindow,
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
     progress_spinner: Spinner,
@@ -2421,7 +2422,14 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     });
 
     let resize_ui = project_ui.clone();
-    project_ui.preview_pages.connect_notify_local(Some("width"), move |_, _| {
+    project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
+        if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
+            apply_preview_zoom(&resize_ui);
+        }
+    });
+
+    let resize_ui = project_ui.clone();
+    project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
         if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
             apply_preview_zoom(&resize_ui);
         }
@@ -2430,12 +2438,11 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 
 fn apply_preview_zoom(project_ui: &ProjectUi) {
     let mode = project_ui.preview_scale_mode.get();
-    let available_width = project_ui
-        .preview_pages
-        .parent()
-        .and_then(|parent| parent.downcast::<ScrolledWindow>().ok())
-        .map(|scroller| i64::from(scroller.width().saturating_sub(24)))
-        .filter(|width| *width > 0);
+    let available_size = Some((
+        i64::from(project_ui.preview_scroller.width().saturating_sub(24)),
+        i64::from(project_ui.preview_scroller.height().saturating_sub(24)),
+    ))
+    .filter(|(width, height)| *width > 0 && *height > 0);
     let mut child = project_ui.preview_pages.first_child();
     while let Some(widget) = child {
         if let Ok(picture) = widget.clone().downcast::<gtk::Picture>() {
@@ -2443,7 +2450,13 @@ fn apply_preview_zoom(project_ui: &ProjectUi) {
                 let intrinsic_width = i64::from(paintable.intrinsic_width()).max(1);
                 let intrinsic_height = i64::from(paintable.intrinsic_height()).max(1);
                 let width = match mode {
-                    PreviewScale::FitPage => available_width.unwrap_or(intrinsic_width),
+                    PreviewScale::FitPage => available_size
+                        .map(|(available_width, available_height)| {
+                            let width_fit = available_width;
+                            let height_fit = intrinsic_width * available_height / intrinsic_height;
+                            width_fit.min(height_fit)
+                        })
+                        .unwrap_or(intrinsic_width),
                     PreviewScale::Percent(percent) => intrinsic_width * i64::from(percent) / 100,
                 }
                 .clamp(1, 8192);
