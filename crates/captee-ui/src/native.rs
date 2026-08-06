@@ -58,6 +58,12 @@ enum WorkspaceOperationResult {
     SettingsSaved(ProjectSettings),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewScale {
+    FitPage,
+    Percent(u16),
+}
+
 #[derive(Debug)]
 enum BackgroundResult {
     Autosave { source: SourceIdentity, result: Result<(), String> },
@@ -163,6 +169,11 @@ fn build_ui(application: &Application) {
     let preview_status = Label::new(Some("Render a document to see its preview."));
     preview_status.set_xalign(0.0);
     preview_status.set_wrap(true);
+    let preview_scale = gtk::DropDown::from_strings(&[
+        "Fit page", "50%", "75%", "100%", "125%", "150%", "200%", "300%",
+    ]);
+    preview_scale.set_selected(0);
+    preview_scale.set_tooltip_text(Some("Choose how preview pages are scaled"));
 
     let home_new_button = Button::with_label("New project");
     home_new_button.add_css_class("suggested-action");
@@ -175,6 +186,7 @@ fn build_ui(application: &Application) {
             &source_view,
             &preview_pages,
             &preview_status,
+            &preview_scale,
             &diagnostics_label,
             &menus,
             &project_tree,
@@ -201,6 +213,8 @@ fn build_ui(application: &Application) {
         diagnostics_label,
         preview_pages,
         preview_status,
+        preview_scale,
+        preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
         progress_spinner,
         cancel_button: cancel_button.clone(),
         editor,
@@ -238,6 +252,7 @@ fn build_ui(application: &Application) {
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
+    connect_preview_scale(&project_ui);
     connect_project_tree(&project_ui);
     connect_runtime_results(&project_ui);
     connect_global_capture_shortcut(&project_ui);
@@ -285,6 +300,7 @@ fn build_workspace(
     source_view: &sourceview::View,
     preview_pages: &GtkBox,
     preview_status: &Label,
+    preview_scale: &gtk::DropDown,
     diagnostics_label: &Label,
     menus: &WorkspaceMenus,
     project_tree: &ListBox,
@@ -330,6 +346,12 @@ fn build_workspace(
             .min_content_height(240)
             .build(),
     );
+    let scale_row = GtkBox::new(Orientation::Horizontal, 8);
+    let scale_label = Label::new(Some("Scale"));
+    scale_label.set_xalign(0.0);
+    scale_row.append(&scale_label);
+    scale_row.append(preview_scale);
+    preview.append(&scale_row);
     let diagnostics_title = Label::new(Some("Diagnostics"));
     diagnostics_title.set_xalign(0.0);
     diagnostics_title.add_css_class("heading");
@@ -543,6 +565,8 @@ struct ProjectUi {
     diagnostics_label: Label,
     preview_pages: GtkBox,
     preview_status: Label,
+    preview_scale: gtk::DropDown,
+    preview_scale_mode: Rc<Cell<PreviewScale>>,
     progress_spinner: Spinner,
     cancel_button: Button,
     editor: Rc<RefCell<Option<EditorBridge>>>,
@@ -2379,16 +2403,51 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
     Ok(())
 }
 
+fn connect_preview_scale(project_ui: &ProjectUi) {
+    let scale_ui = project_ui.clone();
+    project_ui.preview_scale.connect_selected_notify(move |dropdown| {
+        let mode = match dropdown.selected() {
+            0 => PreviewScale::FitPage,
+            1 => PreviewScale::Percent(50),
+            2 => PreviewScale::Percent(75),
+            3 => PreviewScale::Percent(100),
+            4 => PreviewScale::Percent(125),
+            5 => PreviewScale::Percent(150),
+            6 => PreviewScale::Percent(200),
+            _ => PreviewScale::Percent(300),
+        };
+        scale_ui.preview_scale_mode.set(mode);
+        apply_preview_zoom(&scale_ui);
+    });
+
+    let resize_ui = project_ui.clone();
+    project_ui.preview_pages.connect_notify_local(Some("width"), move |_, _| {
+        if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
+            apply_preview_zoom(&resize_ui);
+        }
+    });
+}
+
 fn apply_preview_zoom(project_ui: &ProjectUi) {
-    let zoom = i64::from(project_ui.shell.borrow().snapshot().app.settings.preview.zoom_percent);
+    let mode = project_ui.preview_scale_mode.get();
+    let available_width = project_ui
+        .preview_pages
+        .parent()
+        .and_then(|parent| parent.downcast::<ScrolledWindow>().ok())
+        .map(|scroller| i64::from(scroller.width().saturating_sub(24)))
+        .filter(|width| *width > 0);
     let mut child = project_ui.preview_pages.first_child();
     while let Some(widget) = child {
         if let Ok(picture) = widget.clone().downcast::<gtk::Picture>() {
             if let Some(paintable) = picture.paintable() {
-                let width =
-                    (i64::from(paintable.intrinsic_width()).max(1) * zoom / 100).clamp(1, 8192);
-                let height =
-                    (i64::from(paintable.intrinsic_height()).max(1) * zoom / 100).clamp(1, 8192);
+                let intrinsic_width = i64::from(paintable.intrinsic_width()).max(1);
+                let intrinsic_height = i64::from(paintable.intrinsic_height()).max(1);
+                let width = match mode {
+                    PreviewScale::FitPage => available_width.unwrap_or(intrinsic_width),
+                    PreviewScale::Percent(percent) => intrinsic_width * i64::from(percent) / 100,
+                }
+                .clamp(1, 8192);
+                let height = (intrinsic_height * width / intrinsic_width).clamp(1, 8192);
                 picture.set_size_request(width as i32, height as i32);
             }
         }
@@ -3272,6 +3331,7 @@ fn open_loaded_project(
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
@@ -3311,6 +3371,11 @@ fn clear_preview_pages(project_ui: &ProjectUi) {
     while let Some(child) = project_ui.preview_pages.first_child() {
         project_ui.preview_pages.remove(&child);
     }
+}
+
+fn reset_preview_scale(project_ui: &ProjectUi) {
+    project_ui.preview_scale_mode.set(PreviewScale::FitPage);
+    project_ui.preview_scale.set_selected(0);
 }
 
 fn record_recent_project(project_ui: &ProjectUi, project: ProjectIdentity) {
@@ -3388,6 +3453,7 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);

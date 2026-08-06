@@ -9,6 +9,16 @@ The workspace MUST invoke asynchronous Typst preview compilation from the active
 - **WHEN** compilation succeeds for the current source revision
 - **THEN** the preview pane displays every rendered page in document order and render status
 
+#### Scenario: Fit preview pages by default
+
+- **WHEN** a workspace opens or a new preview is displayed
+- **THEN** the scale control below the preview defaults to Fit page and each page fits the available preview width
+
+#### Scenario: Change preview scale
+
+- **WHEN** the user selects a percentage in the preview scale control
+- **THEN** all rendered pages use that scale without triggering a new Typst compilation
+
 #### Scenario: Edit during rendering
 
 - **WHEN** the user edits the source while a preview compilation is running

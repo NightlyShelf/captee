@@ -104,7 +104,9 @@ in document order inside one scrollable preview pane. Failed renders update
 diagnostics and status but leave the last valid preview pages visible. Preview
 busy state does not disable the source editor: a source edit cancels the
 superseded render, clears its progress state, and schedules the next debounced
-revision.
+revision. A scale dropdown below the preview defaults to Fit page, computes the
+page width from the allocated preview viewport, and also offers fixed percentage
+scales without changing the rendered document.
 
 PDF export is available only when `RenderState` holds a successful preview for
 the current source revision. A GTK native save chooser gathers a local
