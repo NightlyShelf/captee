@@ -6,6 +6,7 @@ use captee_platform::{
     insert_saved_asset, AssetStore, CaptureSelector, PngAnnotationBackend, SavedAsset,
 };
 use captee_ui::annotation_bridge::AnnotationDraft;
+use captee_ui::capture_review::{CaptureReview, CaptureReviewError};
 use captee_ui::editor_bridge::{EditorBridge, EditorInsertionBridge};
 use captee_ui::operation::{OperationCoordinator, OperationOutcome, ResultDisposition};
 use std::fs;
@@ -157,4 +158,23 @@ fn malformed_capture_fails_annotation_without_creating_an_asset() {
     assert!(AssetStore::new(&root).expect("store").save_png(draft.into_confirmed()).is_err());
     assert_eq!(fs::read_dir(root.join("img")).expect("images").count(), 0);
     fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn capture_review_confirm_discard_and_modify_are_project_no_ops_until_confirmed() {
+    let captured = CapturedImage::with_selection(
+        fixture_png(),
+        captee_core::SelectionGeometry { x: 20, y: 30, width: 80, height: 60 },
+    );
+    let mut review = CaptureReview::new(captured.clone());
+    assert_eq!(review.confirm(), Err(CaptureReviewError::EmptyAnnotation));
+
+    review.set_annotation("#line(length: 1em)");
+    review.toggle_placement();
+    let confirmed = review.confirm().expect("confirm review");
+    assert!(!confirmed.before_image);
+    assert_eq!(confirmed.image.bytes(), captured.bytes());
+    assert_eq!(confirmed.annotation, "#line(length: 1em)");
+    assert_eq!(CaptureReview::new(captured.clone()).modify(), captured);
+    CaptureReview::new(captured).discard();
 }

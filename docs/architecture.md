@@ -323,7 +323,10 @@ can produce its first preview immediately instead of entering an error state
 before the first user edit.
 
 Authoring services are trait boundaries so formatting and completion can run in
-platform workers rather than the UI thread. Literal find/replace creates a new
+platform workers rather than the UI thread. Both Typst editors share a small
+headless completion-assistance boundary that derives suggestions from the
+current cursor context and replaces the typed command prefix instead of
+appending a duplicate command. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a
 replacement is cancelled; large replacements may still create temporary peak
 memory proportional to the document and replacement size.

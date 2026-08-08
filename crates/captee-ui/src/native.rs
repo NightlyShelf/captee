@@ -1,10 +1,15 @@
 use crate::annotation_bridge::AnnotationDraft;
+use crate::capture_review::CaptureReview;
+use crate::editor_assistance::{completion_edit, typst_completions};
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
     drain_ready_results, OperationCoordinator, OperationOutcome, ProjectIdentity,
     ResultDisposition, SourceIdentity,
 };
-use crate::{UiCommand, UiShell};
+use crate::{
+    initial_editor_preview_position, initial_navigation_position, UiCommand, UiShell,
+    INITIAL_NAVIGATION_WIDTH,
+};
 use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
@@ -330,7 +335,7 @@ fn build_workspace(
     navigation.set_margin_bottom(16);
     navigation.set_margin_start(16);
     navigation.set_margin_end(16);
-    navigation.set_width_request(212);
+    navigation.set_width_request(INITIAL_NAVIGATION_WIDTH);
     let tree_header = GtkBox::new(Orientation::Horizontal, 4);
     let tree_title = project_tree_title.clone();
     tree_title.set_xalign(0.0);
@@ -382,7 +387,7 @@ fn build_workspace(
         glib::idle_add_local_once(move || {
             let width = paned.width();
             if width > 0 {
-                paned.set_position(width / 2);
+                paned.set_position(initial_editor_preview_position(width));
             }
         });
     });
@@ -399,7 +404,7 @@ fn build_workspace(
         glib::idle_add_local_once(move || {
             let width = paned.width();
             if width > 0 {
-                paned.set_position(width / 6);
+                paned.set_position(initial_navigation_position(width));
             }
         });
     });
@@ -1790,6 +1795,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     };
     let selection = image.selection();
     let origin = project_ui.capture_origin.borrow().clone();
+    let review = Rc::new(RefCell::new(CaptureReview::new(image.clone())));
     let capture_surface = gtk::Overlay::new();
     capture_surface.add_css_class("capture-review-surface");
     capture_surface.set_hexpand(true);
@@ -1856,7 +1862,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         "Toggle whether the annotation code is before or after the image block",
     ));
     let placement_for_toggle = placement.clone();
+    let review_for_toggle = Rc::clone(&review);
     placement.connect_toggled(move |button| {
+        let mut review = review_for_toggle.borrow_mut();
+        if review.before_image() == button.is_active() {
+            review.toggle_placement();
+        }
         if button.is_active() {
             placement_for_toggle.set_label("Insert annotation before image");
         } else {
@@ -1918,24 +1929,53 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
     let completion_list = GtkBox::new(Orientation::Vertical, 2);
-    for suggestion in ["#text()", "#image(\"img/example.png\")", "#line(length: 1em)", "#box()[ ]"]
-    {
-        let item = Button::with_label(suggestion);
-        let buffer = code_buffer.clone();
-        let popover = completion_popover.clone();
-        let suggestion = suggestion.to_owned();
-        item.connect_clicked(move |_| {
-            buffer.insert_at_cursor(&suggestion);
-            popover.popdown();
-        });
-        completion_list.append(&item);
-    }
     completion_popover.set_child(Some(&completion_list));
     let completion_key = gtk::EventControllerKey::new();
     let completion_popover_for_key = completion_popover.clone();
+    let completion_list_for_key = completion_list.clone();
+    let code_buffer_for_key = code_buffer.clone();
     completion_key.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::space && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-            completion_popover_for_key.popup();
+            while let Some(child) = completion_list_for_key.first_child() {
+                completion_list_for_key.remove(&child);
+            }
+            let text = code_buffer_for_key
+                .text(&code_buffer_for_key.start_iter(), &code_buffer_for_key.end_iter(), true)
+                .to_string();
+            let cursor_chars =
+                code_buffer_for_key.iter_at_mark(&code_buffer_for_key.get_insert()).offset().max(0)
+                    as usize;
+            let cursor = byte_offset_for_character(&text, cursor_chars);
+            for suggestion in typst_completions(&text, cursor) {
+                let item = Button::with_label(&suggestion.label);
+                let buffer = code_buffer_for_key.clone();
+                let popover = completion_popover_for_key.clone();
+                item.connect_clicked(move |_| {
+                    let text =
+                        buffer.text(&buffer.start_iter(), &buffer.end_iter(), true).to_string();
+                    let cursor_chars =
+                        buffer.iter_at_mark(&buffer.get_insert()).offset().max(0) as usize;
+                    let cursor = byte_offset_for_character(&text, cursor_chars);
+                    if let Some(edit) = typst_completions(&text, cursor)
+                        .into_iter()
+                        .find(|candidate| candidate.label == suggestion.label)
+                        .and_then(|candidate| completion_edit(&text, cursor, &candidate))
+                    {
+                        let start_chars = text[..edit.range.start].chars().count() as i32;
+                        let end_chars = text[..edit.range.end].chars().count() as i32;
+                        let mut start = buffer.iter_at_offset(start_chars);
+                        let mut end = buffer.iter_at_offset(end_chars);
+                        buffer.delete(&mut start, &mut end);
+                        let mut insert = buffer.iter_at_offset(start_chars);
+                        buffer.insert(&mut insert, &edit.replacement);
+                    }
+                    popover.popdown();
+                });
+                completion_list_for_key.append(&item);
+            }
+            if completion_list_for_key.first_child().is_some() {
+                completion_popover_for_key.popup();
+            }
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -1993,6 +2033,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let confirm_ui = project_ui.clone();
     let confirm_window = review_window.clone();
+    let review_for_confirm = Rc::clone(&review);
     confirm.connect_clicked(move |_| {
         let text =
             code_buffer.text(&code_buffer.start_iter(), &code_buffer.end_iter(), true).to_string();
@@ -2001,11 +2042,24 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
             confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
             return;
         }
-        let before_image = placement.is_active();
+        let mut review = review_for_confirm.borrow_mut();
+        review.set_annotation(annotation);
+        let confirmed = match review.confirm() {
+            Ok(confirmed) => confirmed,
+            Err(_) => {
+                confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
+                return;
+            }
+        };
         confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
-        start_capture_storage_with_review(&confirm_ui, image.clone(), annotation, before_image);
+        start_capture_storage_with_review(
+            &confirm_ui,
+            confirmed.image,
+            confirmed.annotation,
+            confirmed.before_image,
+        );
     });
 
     review_window.present();
@@ -3006,7 +3060,9 @@ fn show_completion_dialog(
             let selected = choices.selected() as usize;
             if let Some(item) = items.get(selected) {
                 let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
-                    editor.replace_range(cursor..cursor, &item.insert_text).ok()
+                    let current = editor.state();
+                    let edit = completion_edit(&current.text, cursor, item)?;
+                    editor.replace_range(edit.range, &edit.replacement).ok()
                 });
                 if let Some(state) = state {
                     apply_editor_state(&project_ui, &state, true);

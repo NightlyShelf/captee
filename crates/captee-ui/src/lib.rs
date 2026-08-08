@@ -5,6 +5,8 @@ use captee_core::{
 use std::fmt;
 
 pub mod annotation_bridge;
+pub mod capture_review;
+pub mod editor_assistance;
 pub mod editor_bridge;
 pub mod native;
 pub mod operation;
@@ -57,6 +59,16 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { accelerator: "<Primary>r", action: ShortcutAction::Preview },
     Shortcut { accelerator: "<Primary><Shift>e", action: ShortcutAction::Export },
 ];
+
+pub const INITIAL_NAVIGATION_WIDTH: i32 = 212;
+
+pub fn initial_navigation_position(width: i32) -> i32 {
+    width.max(0) / 6
+}
+
+pub fn initial_editor_preview_position(width: i32) -> i32 {
+    width.max(0) / 2
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
@@ -369,6 +381,14 @@ mod tests {
 
     fn session() -> ProjectSession {
         ProjectSession::new("/tmp/notes", "Notes", "main.typ")
+    }
+
+    #[test]
+    fn workspace_layout_starts_with_one_sixth_navigation_and_equal_remaining_panes() {
+        assert_eq!(INITIAL_NAVIGATION_WIDTH, 212);
+        assert_eq!(initial_navigation_position(1280), 213);
+        assert_eq!(initial_editor_preview_position(1067), 533);
+        assert_eq!(initial_navigation_position(-1), 0);
     }
 
     #[test]

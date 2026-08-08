@@ -151,6 +151,27 @@
 - Mitigation: Symlink entries are skipped during tree enumeration, unsafe names and path escapes are rejected, collisions fail before mutation, and all rows are rebuilt from the project root after a successful operation.
 - Follow-up: Add a bounded worker-backed tree model for very large projects and persist selection/expanded folders across project reloads.
 
+## Tasks 7.6, 8.4, and 9.4: Focused regression coverage
+
+- Finding: Added headless capture-review, shared Typst completion, project-tree, context-action, confirmation, path-validation, deletion, and layout coverage. Completion replacement scans only the command prefix at the captured cursor; tree tests use isolated temporary roots and bounded fixtures.
+- Impact: Production cost is unchanged except for one bounded prefix scan and one small completion-list rebuild when capture-editor suggestions are opened. Test CPU, memory, and filesystem I/O remain proportional to fixture source and tree size.
+- Mitigation: Completion results are rejected when the operation source revision is stale, dismiss/cancel paths perform no edit, tree mutations pass through project-root validation, and every temporary test root is removed synchronously.
+- Follow-up: Keep compositor-driven interaction checks in the visual smoke workflow; headless tests intentionally do not emulate GTK pointer focus or native dialogs.
+
+## Tasks 7.6, 8.4, and 9.6: Native smoke readiness
+
+- Finding: The GTK application starts and maps on the available Hyprland session with the expected Captee window class and initial editor/preview surface. Full pointer-driven capture, annotation, and project-tree interaction remains compositor/input dependent.
+- Impact: Startup adds no new worker or persistent resource. Capture suggestions rebuild a small popover synchronously on Ctrl+Space; no subprocess or filesystem work runs on the GTK thread.
+- Mitigation: Capture review state is headless and immutable until confirmation, completion edits replace only the current prefix, and stale/cancelled coordinator results remain ignored.
+- Follow-up: Run the full pointer-driven confirm/discard/placement/modify and tree drag/drop smoke path in a session with a Wayland input injector or manually before release.
+
+## Tasks 10.1 and 10.2: Final local verification
+
+- Finding: Formatting, strict OpenSpec validation, workspace tests, and warning-denied Clippy are explicit final gates. One pre-existing large-pipe capture regression test was transiently flaky during the first parallel workspace run and passed on focused rerun.
+- Impact: Verification has no production runtime impact. The large-pipe test exercises bounded subprocess output draining and can be sensitive to host scheduling.
+- Mitigation: Re-run the complete suite after focused failures; retain the existing bounded reader threads, child timeout, and process reaping behavior.
+- Follow-up: CI remains required for the final branch because local compositor workflow coverage cannot be fully automated here.
+
 ## Global capture shortcut
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.
