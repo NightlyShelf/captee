@@ -172,6 +172,13 @@
 - Mitigation: Re-run the complete suite after focused failures; retain the existing bounded reader threads, child timeout, and process reaping behavior.
 - Follow-up: CI remains required for the final branch because local compositor workflow coverage cannot be fully automated here.
 
+## Preview panel refinement
+
+- Finding: Preview presentation now removes the diagnostics block and redundant Preview heading, adds a Fit page width mode, and hides the status bar until enabled from View. Missing Typst executables now report their resolved path and setup command instead of only `No such file or directory`.
+- Impact: Fit page width performs one bounded width calculation per rendered page and status-bar toggling changes only widget visibility. Removing diagnostics widgets lowers preview layout and widget-update work. Compiler discovery adds no process or filesystem work beyond the existing failed launch.
+- Mitigation: Fit page retains two-dimensional bounds, fixed scales remain unchanged, status defaults off through a named constant, and render diagnostics remain revision-safe in core state even though preview UI no longer displays them.
+- Follow-up: Keep compiler bundling in packaging and make `tools/fetch-typst.sh` part of developer setup when no PATH compiler or `CAPTEE_TYPST_BINARY` exists.
+
 ## Global capture shortcut
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.

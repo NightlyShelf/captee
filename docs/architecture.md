@@ -101,12 +101,17 @@ produces the complete PDF plus one PNG per rendered page, both tagged with the
 active source revision. `RenderState` remains authoritative for stale
 rejection and last-valid PDF retention; GTK presents the accepted page images
 in document order inside one scrollable preview pane. Failed renders update
-diagnostics and status but leave the last valid preview pages visible. Preview
-busy state does not disable the source editor: a source edit cancels the
+status but leave the last valid preview pages visible; compiler diagnostics
+remain in headless render state and are not rendered as a preview-pane block.
+Preview busy state does not disable the source editor: a source edit cancels the
 superseded render, clears its progress state, and schedules the next debounced
-revision. A scale dropdown below the preview defaults to Fit page, computes a
-page size that fits both dimensions of the allocated preview viewport, and also
-offers fixed percentage scales without changing the rendered document.
+revision. A scale dropdown below the preview defaults to Fit page, also offers
+Fit page width and fixed percentage scales, and changes only GTK size requests
+without recompiling the document. The bottom status bar is hidden by default
+and can be toggled from View.
+
+Typst runner process-not-found errors include the selected executable path and
+setup instructions for the pinned local bundle or `CAPTEE_TYPST_BINARY`.
 
 PDF export is available only when `RenderState` holds a successful preview for
 the current source revision. A GTK native save chooser gathers a local

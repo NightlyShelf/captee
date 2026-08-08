@@ -30,6 +30,7 @@ Install Rust 1.97.1 and the GTK development libraries before building the UI:
 
 ```sh
 sudo apt-get install libgtk-4-dev libgtksourceview-5-dev
+./tools/fetch-typst.sh
 ```
 
 Run the complete local gates:

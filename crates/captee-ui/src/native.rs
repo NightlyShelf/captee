@@ -12,10 +12,9 @@ use crate::{
 };
 use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
-    AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
-    DiagnosticSeverity, EditorInserter, InsertionResult, KeybindingSettings, Operation,
-    OperationKind, ProjectConfig, ProjectSession, ProjectSettings, RenderState, SelectionGeometry,
-    SourceDocument,
+    AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, EditorInserter,
+    InsertionResult, KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession,
+    ProjectSettings, RenderState, SelectionGeometry, SourceDocument,
 };
 use captee_platform::{
     confirm_and_trash, create_project, create_project_item, current_capture_origin,
@@ -52,10 +51,10 @@ const APPLICATION_ID: &str = "com.nightlyshelf.captee";
 
 #[derive(Debug)]
 enum WorkspaceOperationResult {
-    Saved { document: SourceDocument, diagnostics: Vec<Diagnostic>, formatted: bool },
+    Saved { document: SourceDocument, formatted: bool },
     Formatted(FormattedSource),
     Completions { items: Vec<CompletionItem>, cursor: usize },
-    AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
+    AuthoringFailure { message: String },
     Preview(PreviewOutcome),
     Exported(PathBuf),
     Captured(CapturedImage),
@@ -66,8 +65,11 @@ enum WorkspaceOperationResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewScale {
     FitPage,
+    FitPageWidth,
     Percent(u16),
 }
+
+const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
 
 #[derive(Debug)]
 enum BackgroundResult {
@@ -163,10 +165,6 @@ fn build_ui(application: &Application) {
     let project_label = Label::new(Some("No project open"));
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
-    let diagnostics_label = Label::new(Some("No diagnostics."));
-    diagnostics_label.set_xalign(0.0);
-    diagnostics_label.set_wrap(true);
-    diagnostics_label.set_selectable(true);
     let preview_pages = GtkBox::new(Orientation::Vertical, 16);
     preview_pages.set_hexpand(true);
     preview_pages.set_vexpand(true);
@@ -175,7 +173,15 @@ fn build_ui(application: &Application) {
     preview_status.set_xalign(0.0);
     preview_status.set_wrap(true);
     let preview_scale = gtk::DropDown::from_strings(&[
-        "Fit page", "50%", "75%", "100%", "125%", "150%", "200%", "300%",
+        "Fit page",
+        "Fit page width",
+        "50%",
+        "75%",
+        "100%",
+        "125%",
+        "150%",
+        "200%",
+        "300%",
     ]);
     preview_scale.set_selected(0);
     preview_scale.set_tooltip_text(Some("Choose how preview pages are scaled"));
@@ -199,7 +205,6 @@ fn build_ui(application: &Application) {
                 status: &preview_status,
                 scroller: &preview_scroller,
                 scale: &preview_scale,
-                diagnostics: &diagnostics_label,
             },
             &menus,
             &project_tree,
@@ -223,7 +228,7 @@ fn build_ui(application: &Application) {
         workspace_overlay: gtk::Overlay::new(),
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
         tree_initialized: Rc::new(Cell::new(false)),
-        diagnostics_label,
+        status_row: status_row.clone(),
         preview_pages,
         preview_status,
         preview_scroller,
@@ -258,6 +263,7 @@ fn build_ui(application: &Application) {
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&header);
     root.append(&stack);
+    status_row.set_visible(STATUS_BAR_VISIBLE_BY_DEFAULT);
     root.append(&status_row);
     project_ui.workspace_overlay.set_child(Some(&root));
     window.set_child(Some(&project_ui.workspace_overlay));
@@ -314,7 +320,6 @@ struct PreviewWidgets<'a> {
     status: &'a Label,
     scroller: &'a ScrolledWindow,
     scale: &'a gtk::DropDown,
-    diagnostics: &'a Label,
 }
 
 fn build_workspace(
@@ -324,12 +329,8 @@ fn build_workspace(
     project_tree: &ListBox,
     project_tree_title: &Label,
 ) -> GtkBox {
-    let PreviewWidgets {
-        status: preview_status,
-        scroller: preview_scroller,
-        scale: preview_scale,
-        diagnostics: diagnostics_label,
-    } = preview_widgets;
+    let PreviewWidgets { status: preview_status, scroller: preview_scroller, scale: preview_scale } =
+        preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(16);
     navigation.set_margin_bottom(16);
@@ -360,7 +361,6 @@ fn build_workspace(
     preview.set_margin_bottom(16);
     preview.set_margin_start(16);
     preview.set_margin_end(16);
-    preview.append(&Label::new(Some("Preview")));
     preview.append(preview_status);
     preview.append(preview_scroller);
     let scale_row = GtkBox::new(Orientation::Horizontal, 8);
@@ -369,12 +369,6 @@ fn build_workspace(
     scale_row.append(&scale_label);
     scale_row.append(preview_scale);
     preview.append(&scale_row);
-    let diagnostics_title = Label::new(Some("Diagnostics"));
-    diagnostics_title.set_xalign(0.0);
-    diagnostics_title.add_css_class("heading");
-    preview.append(&diagnostics_title);
-    preview.append(diagnostics_label);
-
     let editor_preview = Paned::new(Orientation::Horizontal);
     editor_preview.set_start_child(Some(&editor_scroll));
     editor_preview.set_end_child(Some(&preview));
@@ -454,6 +448,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     let view = gio::Menu::new();
     view.append(Some("Preview"), Some("app.preview"));
     view.append(Some("Export PDF"), Some("app.export"));
+    view.append(Some("Show status bar"), Some("app.status-bar"));
     view.append(Some("Settings"), Some("app.settings"));
 
     for (name, accelerator) in [
@@ -471,6 +466,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("capture", "<Primary><Shift>c"),
         ("preview", "<Primary>r"),
         ("export", "<Primary><Shift>e"),
+        ("status-bar", ""),
         ("settings", "<Primary>comma"),
     ] {
         let action = gio::SimpleAction::new(name, None);
@@ -548,6 +544,13 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let settings_ui = project_ui.clone();
     action.connect_activate(move |_, _| show_settings_dialog(&settings_ui));
+
+    let action = application.lookup_action("status-bar").expect("installed status action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let status_ui = project_ui.clone();
+    action.connect_activate(move |_, _| {
+        status_ui.status_row.set_visible(!status_ui.status_row.is_visible());
+    });
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -579,7 +582,7 @@ struct ProjectUi {
     workspace_overlay: gtk::Overlay,
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
     tree_initialized: Rc<Cell<bool>>,
-    diagnostics_label: Label,
+    status_row: GtkBox,
     preview_pages: GtkBox,
     preview_status: Label,
     preview_scroller: ScrolledWindow,
@@ -1347,13 +1350,11 @@ fn start_save(project_ui: &ProjectUi) {
     let mut document = editor.document_snapshot();
     let format_on_save = snapshot.app.settings.formatting.format_on_save;
     let _ = thread::Builder::new().name("captee-save".to_owned()).spawn(move || {
-        let result: Result<(SourceDocument, Vec<Diagnostic>), String> = (|| {
-            let mut diagnostics = Vec::new();
+        let result: Result<SourceDocument, String> = (|| {
             if format_on_save {
                 let formatted = TypstFormatter::new(TypstRunner::discover(), &root)
                     .format_with_diagnostics(document.text())
                     .map_err(|error| error.to_string())?;
-                diagnostics = formatted.diagnostics;
                 if formatted.source != document.text() {
                     let previous_len = document.text().len();
                     document.replace(0..previous_len, &formatted.source).map_err(|error| {
@@ -1365,16 +1366,13 @@ fn start_save(project_ui: &ProjectUi) {
                 ProjectDocumentPersistence::open(root, entry).map_err(|error| error.to_string())?;
             document.save(&persistence).map_err(|error| error.to_string())?;
             persistence.clear_autosave().map_err(|error| error.to_string())?;
-            Ok((document, diagnostics))
+            Ok(document)
         })();
         let outcome = match result {
-            Ok((document, diagnostics)) => {
-                OperationOutcome::Completed(WorkspaceOperationResult::Saved {
-                    document,
-                    diagnostics,
-                    formatted: format_on_save,
-                })
-            }
+            Ok(document) => OperationOutcome::Completed(WorkspaceOperationResult::Saved {
+                document,
+                formatted: format_on_save,
+            }),
             Err(error) => OperationOutcome::Failed(error.to_string()),
         };
         let _ = task.finish(outcome);
@@ -1422,7 +1420,6 @@ fn start_format(project_ui: &ProjectUi) {
                 Err(error) => {
                     OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                         message: error.message,
-                        diagnostics: error.diagnostics,
                     })
                 }
             }
@@ -2475,12 +2472,13 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     project_ui.preview_scale.connect_selected_notify(move |dropdown| {
         let mode = match dropdown.selected() {
             0 => PreviewScale::FitPage,
-            1 => PreviewScale::Percent(50),
-            2 => PreviewScale::Percent(75),
-            3 => PreviewScale::Percent(100),
-            4 => PreviewScale::Percent(125),
-            5 => PreviewScale::Percent(150),
-            6 => PreviewScale::Percent(200),
+            1 => PreviewScale::FitPageWidth,
+            2 => PreviewScale::Percent(50),
+            3 => PreviewScale::Percent(75),
+            4 => PreviewScale::Percent(100),
+            5 => PreviewScale::Percent(125),
+            6 => PreviewScale::Percent(150),
+            7 => PreviewScale::Percent(200),
             _ => PreviewScale::Percent(300),
         };
         scale_ui.preview_scale_mode.set(mode);
@@ -2489,14 +2487,20 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 
     let resize_ui = project_ui.clone();
     project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
-        if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
+        if matches!(
+            resize_ui.preview_scale_mode.get(),
+            PreviewScale::FitPage | PreviewScale::FitPageWidth
+        ) {
             apply_preview_zoom(&resize_ui);
         }
     });
 
     let resize_ui = project_ui.clone();
     project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
-        if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
+        if matches!(
+            resize_ui.preview_scale_mode.get(),
+            PreviewScale::FitPage | PreviewScale::FitPageWidth
+        ) {
             apply_preview_zoom(&resize_ui);
         }
     });
@@ -2515,22 +2519,37 @@ fn apply_preview_zoom(project_ui: &ProjectUi) {
             if let Some(paintable) = picture.paintable() {
                 let intrinsic_width = i64::from(paintable.intrinsic_width()).max(1);
                 let intrinsic_height = i64::from(paintable.intrinsic_height()).max(1);
-                let width = match mode {
-                    PreviewScale::FitPage => available_size
-                        .map(|(available_width, available_height)| {
-                            let width_fit = available_width;
-                            let height_fit = intrinsic_width * available_height / intrinsic_height;
-                            width_fit.min(height_fit)
-                        })
-                        .unwrap_or(intrinsic_width),
-                    PreviewScale::Percent(percent) => intrinsic_width * i64::from(percent) / 100,
-                }
-                .clamp(1, 8192);
+                let width = preview_width(mode, intrinsic_width, intrinsic_height, available_size);
                 let height = (intrinsic_height * width / intrinsic_width).clamp(1, 8192);
                 picture.set_size_request(width as i32, height as i32);
             }
         }
         child = widget.next_sibling();
+    }
+}
+
+fn preview_width(
+    mode: PreviewScale,
+    intrinsic_width: i64,
+    intrinsic_height: i64,
+    available_size: Option<(i64, i64)>,
+) -> i64 {
+    match mode {
+        PreviewScale::FitPage => available_size
+            .map(|(available_width, available_height)| {
+                let width_fit = available_width;
+                let height_fit = intrinsic_width * available_height / intrinsic_height.max(1);
+                width_fit.min(height_fit)
+            })
+            .unwrap_or(intrinsic_width)
+            .clamp(1, 8192),
+        PreviewScale::FitPageWidth => available_size
+            .map(|(available_width, _)| available_width)
+            .unwrap_or(intrinsic_width)
+            .clamp(1, 8192),
+        PreviewScale::Percent(percent) => {
+            (intrinsic_width * i64::from(percent) / 100).clamp(1, 8192)
+        }
     }
 }
 
@@ -2725,10 +2744,8 @@ fn apply_operation_result(
             match result.outcome {
                 OperationOutcome::Completed(WorkspaceOperationResult::Saved {
                     document,
-                    diagnostics,
                     formatted,
                 }) => {
-                    show_diagnostics(project_ui, &diagnostics);
                     let mut editor = project_ui.editor.borrow_mut();
                     if formatted
                         && editor
@@ -2769,7 +2786,6 @@ fn apply_operation_result(
                     }
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted)) => {
-                    show_diagnostics(project_ui, &formatted.diagnostics);
                     let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
                         editor.update_from_buffer(&formatted.source).ok().flatten()
                     });
@@ -2792,13 +2808,7 @@ fn apply_operation_result(
                     show_completion_dialog(project_ui, source_identity, items, cursor);
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)) => {
-                    let preview_diagnostics =
-                        outcome.result.as_ref().ok().map(|artifact| artifact.diagnostics.clone());
-                    let failure = outcome
-                        .result
-                        .as_ref()
-                        .err()
-                        .map(|error| (error.message.clone(), error.diagnostics.clone()));
+                    let failure = outcome.result.as_ref().err().map(|error| error.message.clone());
                     let (accepted, pages) =
                         outcome.apply_to_with_pages(&mut project_ui.render_state.borrow_mut());
                     if !accepted {
@@ -2809,9 +2819,6 @@ fn apply_operation_result(
                             .dispatch(UiCommand::Warn { message: message.to_owned() });
                         project_ui.status.set_text(message);
                     } else if let Some(pages) = pages {
-                        if let Some(diagnostics) = preview_diagnostics.as_deref() {
-                            show_diagnostics(project_ui, diagnostics);
-                        }
                         match display_preview_pages(project_ui, pages) {
                             Ok(()) => {
                                 project_ui.preview_status.set_text("Showing current preview.");
@@ -2833,8 +2840,7 @@ fn apply_operation_result(
                                 project_ui.status.set_text(&format!("Error: {message}"));
                             }
                         }
-                    } else if let Some((message, diagnostics)) = failure {
-                        show_diagnostics(project_ui, &diagnostics);
+                    } else if let Some(message) = failure {
                         let _ = project_ui
                             .shell
                             .borrow_mut()
@@ -2985,9 +2991,7 @@ fn apply_operation_result(
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                     message,
-                    diagnostics,
                 }) => {
-                    show_diagnostics(project_ui, &diagnostics);
                     let _ = project_ui
                         .shell
                         .borrow_mut()
@@ -3075,33 +3079,6 @@ fn show_completion_dialog(
         dialog.close();
     });
     dialog.present();
-}
-
-fn show_diagnostics(project_ui: &ProjectUi, diagnostics: &[Diagnostic]) {
-    if diagnostics.is_empty() {
-        project_ui.diagnostics_label.set_text("No diagnostics.");
-        return;
-    }
-    let text = diagnostics
-        .iter()
-        .take(20)
-        .map(|diagnostic| {
-            let severity = match diagnostic.severity {
-                DiagnosticSeverity::Error => "Error",
-                DiagnosticSeverity::Warning => "Warning",
-                DiagnosticSeverity::Info => "Info",
-            };
-            match &diagnostic.span {
-                Some(span) => format!(
-                    "{severity}: {}:{}:{}: {}",
-                    span.path, span.line, span.column, diagnostic.message
-                ),
-                None => format!("{severity}: {}", diagnostic.message),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    project_ui.diagnostics_label.set_text(&text);
 }
 
 fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult) {
@@ -3408,7 +3385,6 @@ fn open_loaded_project(
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
-            project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -3530,7 +3506,6 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text("");
             project_ui.syncing_buffer.set(false);
-            project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -3553,8 +3528,8 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, recovery_draft,
-        validate_project_name,
+        byte_offset_for_character, capture_insertion_expression, preview_width, recovery_draft,
+        validate_project_name, PreviewScale,
     };
     use captee_platform::AutosaveSnapshot;
 
@@ -3606,5 +3581,11 @@ mod tests {
             ),
             "#image(\"img/capture.png\")\n#line(length: 1em)\n"
         );
+    }
+
+    #[test]
+    fn preview_fit_page_width_uses_viewport_width_without_height_constraint() {
+        assert_eq!(preview_width(PreviewScale::FitPageWidth, 800, 1000, Some((420, 120))), 420);
+        assert_eq!(preview_width(PreviewScale::FitPage, 800, 1000, Some((420, 120))), 96);
     }
 }
