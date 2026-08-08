@@ -113,7 +113,9 @@ without recompiling the document. The bottom status bar is hidden by default
 and can be toggled from View.
 
 Typst runner process-not-found errors include the selected executable path and
-setup instructions for the pinned local bundle or `CAPTEE_TYPST_BINARY`.
+setup instructions for the pinned local bundle or `CAPTEE_TYPST_BINARY`. The
+Open project chooser starts in the parent folder of the most recently opened
+valid project when that folder still exists.
 
 PDF export is available only when `RenderState` holds a successful preview for
 the current source revision. A GTK native save chooser gathers a local
@@ -282,9 +284,10 @@ project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization. Compact File, Edit,
 Capture, and View menu buttons share the top header with the project name,
 project path, and Captee label; menu accelerators remain active but are not
-rendered into menu item text. The header is hidden on the Home surface and
-shown only for an active workspace. Both workspace dividers use the narrow GTK
-handle style without double-line borders.
+rendered into menu item text. The project name also remains visible in the
+navigation header. The header is hidden on the Home surface and shown only for
+an active workspace. Both workspace dividers use the narrow GTK handle style
+without double-line borders.
 
 Capture confirmation is a staged document-composition popup drawn as a small
 borderless floating window on the workspace that was active when capture

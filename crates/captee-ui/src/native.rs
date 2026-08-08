@@ -102,6 +102,7 @@ fn build_ui(application: &Application) {
     project_tree.set_hexpand(true);
     project_tree.set_vexpand(true);
     let project_name_label = Label::new(Some("Project"));
+    let project_panel_title = Label::new(Some("Project"));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -127,8 +128,9 @@ fn build_ui(application: &Application) {
          .typst-editor border { background-color: #3c4043; }\
          .workspace-header { background-color: #0a0705; }\
          .compact-menu-button, .compact-menu-button > button {\
-           padding: 0 4px; min-height: 0; min-width: 0;\
+           padding: 0 4px; min-height: 0; min-width: 0; font-size: 12px;\
          }\
+         .compact-menu-text { font-size: 12px; }\
          .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
@@ -207,6 +209,7 @@ fn build_ui(application: &Application) {
             PreviewWidgets { scroller: &preview_scroller, scale: &preview_scale },
             &project_tree,
             &project_name_label,
+            &project_panel_title,
         ),
         Some("workspace"),
     );
@@ -223,6 +226,7 @@ fn build_ui(application: &Application) {
         project_label: project_label.clone(),
         project_tree: project_tree.clone(),
         project_name_label: project_name_label.clone(),
+        project_panel_title: project_panel_title.clone(),
         workspace_overlay: gtk::Overlay::new(),
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
         tree_initialized: Rc::new(Cell::new(false)),
@@ -365,6 +369,7 @@ fn build_workspace(
     preview_widgets: PreviewWidgets<'_>,
     project_tree: &ListBox,
     project_name_label: &Label,
+    project_panel_title: &Label,
 ) -> GtkBox {
     let PreviewWidgets { scroller: preview_scroller, scale: preview_scale } = preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
@@ -382,6 +387,13 @@ fn build_workspace(
     project_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
     project_name.set_max_width_chars(16);
     project_name.set_valign(Align::Center);
+    project_name.add_css_class("compact-menu-text");
+    project_panel_title.set_xalign(0.0);
+    project_panel_title.set_hexpand(true);
+    project_panel_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    project_panel_title.set_max_width_chars(16);
+    project_panel_title.set_valign(Align::Center);
+    project_panel_title.add_css_class("compact-menu-text");
     let add_file = Button::from_icon_name("document-new-symbolic");
     add_file.set_action_name(Some("app.new-file"));
     add_file.add_css_class("flat");
@@ -396,6 +408,7 @@ fn build_workspace(
     add_folder.set_size_request(22, 22);
     add_folder.set_valign(Align::Center);
     add_folder.set_tooltip_text(Some("Add folder"));
+    tree_header.append(project_panel_title);
     let tree_spacer = GtkBox::new(Orientation::Horizontal, 0);
     tree_spacer.set_hexpand(true);
     tree_header.append(&tree_spacer);
@@ -617,6 +630,7 @@ struct ProjectUi {
     project_label: Label,
     project_tree: ListBox,
     project_name_label: Label,
+    project_panel_title: Label,
     workspace_overlay: gtk::Overlay,
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
     tree_initialized: Rc<Cell<bool>>,
@@ -3143,11 +3157,13 @@ fn refresh_project_label(project_ui: &ProjectUi) {
     let Some(project) = snapshot.app.project else {
         project_ui.project_label.set_text("Captee");
         project_ui.project_name_label.set_text("Project");
+        project_ui.project_panel_title.set_text("Project");
         return;
     };
     let modified = if snapshot.app.dirty { " • Modified" } else { "" };
     project_ui.project_label.set_text(&format!("{} · Captee{modified}", project.root));
     project_ui.project_name_label.set_text(&project.name);
+    project_ui.project_panel_title.set_text(&project.name);
 }
 
 fn choose_project_action(create: bool, project_ui: &ProjectUi) {
@@ -3280,6 +3296,10 @@ fn show_open_project_dialog(project_ui: &ProjectUi) {
         .transient_for(&window)
         .modal(true)
         .build();
+    if let Some(folder) = last_open_project_folder() {
+        let folder = gio::File::for_path(folder);
+        let _ = dialog.set_current_folder(Some(&folder));
+    }
     let project_ui = project_ui.clone();
     dialog.run_async(move |dialog, response| {
         if response != gtk::ResponseType::Accept {
@@ -3303,6 +3323,21 @@ fn show_open_project_dialog(project_ui: &ProjectUi) {
         }
         dialog.destroy();
     });
+}
+
+fn last_open_project_folder() -> Option<PathBuf> {
+    let store_path = glib::user_data_dir().join("captee/recent-projects.json");
+    RecentProjectStore::new(store_path)
+        .load()
+        .ok()?
+        .paths
+        .into_iter()
+        .filter_map(|path| project_parent_folder(Path::new(&path)))
+        .find(|path| path.is_dir())
+}
+
+fn project_parent_folder(path: &Path) -> Option<PathBuf> {
+    path.parent().map(Path::to_path_buf)
 }
 
 struct LoadedProject {
@@ -3555,10 +3590,11 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, preview_width, recovery_draft,
-        validate_project_name, PreviewScale,
+        byte_offset_for_character, capture_insertion_expression, preview_width,
+        project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
     use captee_platform::AutosaveSnapshot;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn project_name_accepts_a_single_directory_name() {
@@ -3570,6 +3606,14 @@ mod tests {
         assert!(validate_project_name("").is_err());
         assert!(validate_project_name("nested/project").is_err());
         assert!(validate_project_name("..").is_err());
+    }
+
+    #[test]
+    fn remembered_open_folder_uses_project_parent() {
+        assert_eq!(
+            project_parent_folder(Path::new("Documents/TestProject")),
+            Some(PathBuf::from("Documents"))
+        );
     }
 
     #[test]
