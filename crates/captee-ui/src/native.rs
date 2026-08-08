@@ -125,7 +125,9 @@ fn build_ui(application: &Application) {
            background-color: #292a2d; color: #9aa0a6;\
          }\
          .typst-editor border { background-color: #3c4043; }\
-         .compact-menu-button { padding: 1px 4px; min-height: 0; min-width: 0; }\
+         .compact-menu-button, .compact-menu-button > button {\
+           padding: 0 4px; min-height: 0; min-width: 0;\
+         }\
          .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
@@ -172,9 +174,6 @@ fn build_ui(application: &Application) {
     preview_pages.set_hexpand(true);
     preview_pages.set_vexpand(true);
     preview_pages.set_halign(Align::Center);
-    let preview_status = Label::new(Some("Render a document to see its preview."));
-    preview_status.set_xalign(0.0);
-    preview_status.set_wrap(true);
     let preview_scale = gtk::DropDown::from_strings(&[
         "Fit page",
         "Fit page width",
@@ -204,11 +203,7 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
-            PreviewWidgets {
-                status: &preview_status,
-                scroller: &preview_scroller,
-                scale: &preview_scale,
-            },
+            PreviewWidgets { scroller: &preview_scroller, scale: &preview_scale },
             &project_tree,
             &project_tree_title,
         ),
@@ -233,7 +228,6 @@ fn build_ui(application: &Application) {
         status_row: status_row.clone(),
         status_bar_item: menus.status_bar_item.clone(),
         preview_pages,
-        preview_status,
         preview_scroller,
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
@@ -254,6 +248,12 @@ fn build_ui(application: &Application) {
     };
 
     let header = build_menu_header(&menus, &project_label);
+    header.set_visible(false);
+    let header_visibility = header.clone();
+    stack.connect_visible_child_name_notify(move |stack| {
+        let visible = stack.visible_child_name().is_some_and(|name| name == "workspace");
+        header_visibility.set_visible(visible);
+    });
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&header);
@@ -313,7 +313,6 @@ struct WorkspaceMenus {
 }
 
 struct PreviewWidgets<'a> {
-    status: &'a Label,
     scroller: &'a ScrolledWindow,
     scale: &'a gtk::DropDown,
 }
@@ -321,9 +320,10 @@ struct PreviewWidgets<'a> {
 fn build_menu_header(menus: &WorkspaceMenus, project_label: &Label) -> GtkBox {
     let header = GtkBox::new(Orientation::Horizontal, 2);
     header.set_margin_top(2);
-    header.set_margin_bottom(2);
+    header.set_margin_bottom(10);
     header.set_margin_start(4);
     header.set_margin_end(4);
+    header.set_valign(Align::Start);
     for (label, menu, tooltip) in [
         ("File", &menus.file, "Project and document actions"),
         ("Edit", &menus.edit, "Editing actions"),
@@ -336,11 +336,14 @@ fn build_menu_header(menus: &WorkspaceMenus, project_label: &Label) -> GtkBox {
         button.add_css_class("flat");
         button.add_css_class("compact-menu-button");
         button.set_tooltip_text(Some(tooltip));
+        button.set_size_request(-1, 20);
+        button.set_valign(Align::Start);
         header.append(&button);
     }
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
     project_label.set_margin_start(4);
+    project_label.set_valign(Align::Center);
     header.append(project_label);
     header
 }
@@ -351,8 +354,7 @@ fn build_workspace(
     project_tree: &ListBox,
     project_tree_title: &Label,
 ) -> GtkBox {
-    let PreviewWidgets { status: preview_status, scroller: preview_scroller, scale: preview_scale } =
-        preview_widgets;
+    let PreviewWidgets { scroller: preview_scroller, scale: preview_scale } = preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(4);
     navigation.set_margin_bottom(4);
@@ -361,22 +363,26 @@ fn build_workspace(
     navigation.set_spacing(4);
     navigation.set_width_request(0);
     let tree_header = GtkBox::new(Orientation::Horizontal, 2);
+    tree_header.set_valign(Align::Center);
     let tree_title = project_tree_title.clone();
     tree_title.set_xalign(0.0);
     tree_title.set_hexpand(true);
     tree_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     tree_title.set_max_width_chars(16);
+    tree_title.set_valign(Align::Center);
     let add_file = Button::from_icon_name("document-new-symbolic");
     add_file.set_action_name(Some("app.new-file"));
     add_file.add_css_class("flat");
     add_file.add_css_class("project-tree-action");
     add_file.set_size_request(22, 22);
+    add_file.set_valign(Align::Center);
     add_file.set_tooltip_text(Some("Add file"));
     let add_folder = Button::from_icon_name("folder-new-symbolic");
     add_folder.set_action_name(Some("app.new-folder"));
     add_folder.add_css_class("flat");
     add_folder.add_css_class("project-tree-action");
     add_folder.set_size_request(22, 22);
+    add_folder.set_valign(Align::Center);
     add_folder.set_tooltip_text(Some("Add folder"));
     tree_header.append(&tree_title);
     tree_header.append(&add_file);
@@ -392,7 +398,6 @@ fn build_workspace(
     preview.set_margin_bottom(16);
     preview.set_margin_start(16);
     preview.set_margin_end(16);
-    preview.append(preview_status);
     preview.append(preview_scroller);
     let scale_row = GtkBox::new(Orientation::Horizontal, 8);
     let scale_label = Label::new(Some("Scale"));
@@ -406,7 +411,7 @@ fn build_workspace(
     editor_preview.set_resize_start_child(true);
     editor_preview.set_shrink_start_child(false);
     editor_preview.set_resize_end_child(true);
-    editor_preview.set_wide_handle(true);
+    editor_preview.set_wide_handle(false);
     editor_preview.connect_map(|paned| {
         let paned = paned.clone();
         glib::idle_add_local_once(move || {
@@ -423,7 +428,7 @@ fn build_workspace(
     workspace.set_resize_start_child(true);
     workspace.set_shrink_start_child(true);
     workspace.set_resize_end_child(true);
-    workspace.set_wide_handle(true);
+    workspace.set_wide_handle(false);
     workspace.connect_map(|paned| {
         let paned = paned.clone();
         glib::idle_add_local_once(move || {
@@ -604,7 +609,6 @@ struct ProjectUi {
     status_row: GtkBox,
     status_bar_item: gio::MenuItem,
     preview_pages: GtkBox,
-    preview_status: Label,
     preview_scroller: ScrolledWindow,
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
@@ -1263,7 +1267,6 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
         let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
     }
     project_ui.render_state.borrow_mut().set_source_revision(state.revision);
-    project_ui.preview_status.set_text("Preview is out of date.");
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty)) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
@@ -1515,7 +1518,6 @@ fn start_preview(project_ui: &ProjectUi) {
         }
     };
     project_ui.status.set_text("Rendering preview…");
-    project_ui.preview_status.set_text("Rendering current source…");
     let root = PathBuf::from(project.root);
     let cancellation = task.cancellation();
     let _ = thread::Builder::new().name("captee-preview-result".to_owned()).spawn(move || {
@@ -2841,7 +2843,6 @@ fn apply_operation_result(
                     } else if let Some(pages) = pages {
                         match display_preview_pages(project_ui, pages) {
                             Ok(()) => {
-                                project_ui.preview_status.set_text("Showing current preview.");
                                 let _ =
                                     project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
                                         message: "Preview rendered".to_owned(),
@@ -2854,9 +2855,6 @@ fn apply_operation_result(
                                     .shell
                                     .borrow_mut()
                                     .dispatch(UiCommand::Fail { message: message.clone() });
-                                project_ui.preview_status.set_text(
-                                    "Preview compiled, but its image could not be displayed.",
-                                );
                                 project_ui.status.set_text(&format!("Error: {message}"));
                             }
                         }
@@ -2865,9 +2863,6 @@ fn apply_operation_result(
                             .shell
                             .borrow_mut()
                             .dispatch(UiCommand::Fail { message: message.clone() });
-                        project_ui
-                            .preview_status
-                            .set_text("Preview failed; the last valid preview is retained.");
                         project_ui.status.set_text(&format!("Preview error: {message}"));
                     }
                 }
@@ -3412,7 +3407,6 @@ fn open_loaded_project(
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
-            project_ui.preview_status.set_text("Preview has not been rendered yet.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &project.settings.keybindings);
             }
@@ -3533,7 +3527,6 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
-            project_ui.preview_status.set_text("Render a document to see its preview.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &KeybindingSettings::default());
             }

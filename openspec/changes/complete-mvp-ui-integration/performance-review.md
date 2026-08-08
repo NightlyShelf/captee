@@ -186,6 +186,13 @@
 - Mitigation: Menu action accelerators remain registered independently of visible menu labels, tree actions retain accessible tooltips, and `set_shrink_start_child(true)` removes the previous hard minimum imposed by the navigation pane.
 - Follow-up: Recheck typography and minimum readable tree width on displays below 1024 pixels.
 
+## Workspace chrome refinement
+
+- Finding: Reduced menu button height while adding header breathing room, aligned the project title and tree actions, removed wide paned handles, removed the preview status label from the rendered pane, and hid workspace chrome on Home.
+- Impact: The GTK header and divider chrome use fewer visible pixels; preview updates no longer perform label text layout or widget updates. No new I/O, worker, or process lifetime is introduced.
+- Mitigation: Render failures and progress remain available through the global status channel, while page display and scale controls retain their existing revision checks and scroll behavior.
+- Follow-up: Recheck the compact header and narrow divider handles on small displays.
+
 ## Global capture shortcut
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.

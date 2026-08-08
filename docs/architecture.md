@@ -102,7 +102,9 @@ active source revision. `RenderState` remains authoritative for stale
 rejection and last-valid PDF retention; GTK presents the accepted page images
 in document order inside one scrollable preview pane. Failed renders update
 status but leave the last valid preview pages visible; compiler diagnostics
-remain in headless render state and are not rendered as a preview-pane block.
+remain in headless render state and are not rendered in the preview pane. The
+preview pane contains only rendered pages and the scale control; transient
+render text is reported through the global status channel.
 Preview busy state does not disable the source editor: a source edit cancels the
 superseded render, clears its progress state, and schedules the next debounced
 revision. A scale dropdown below the preview defaults to Fit page, also offers
@@ -280,7 +282,9 @@ project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization. Compact File, Edit,
 Capture, and View menu buttons share the top header with the project path and
 Captee label; menu accelerators remain active but are not rendered into menu
-item text.
+item text. The header is hidden on the Home surface and shown only for an
+active workspace. Both workspace dividers use the narrow GTK handle style
+without double-line borders.
 
 Capture confirmation is a staged document-composition popup drawn as a small
 borderless floating window on the workspace that was active when capture
