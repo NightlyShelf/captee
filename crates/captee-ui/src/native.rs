@@ -128,7 +128,7 @@ fn build_ui(application: &Application) {
          .typst-editor border { background-color: #3c4043; }\
          .workspace-header { background-color: #0a0705; }\
          .compact-menu-button, .compact-menu-button > button {\
-           padding: 0 4px; min-height: 0; min-width: 0; font-size: 12px;\
+           padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
          }\
          .compact-menu-text { font-size: 12px; }\
          .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
@@ -326,14 +326,15 @@ fn build_menu_header(
     menus: &WorkspaceMenus,
     project_name: &Label,
     project_label: &Label,
-) -> GtkBox {
-    let header = GtkBox::new(Orientation::Horizontal, 0);
+) -> gtk::CenterBox {
+    let header = gtk::CenterBox::new();
     header.add_css_class("workspace-header");
     header.set_margin_top(4);
     header.set_margin_bottom(4);
     header.set_margin_start(4);
     header.set_margin_end(4);
     header.set_valign(Align::Start);
+    let menu_box = GtkBox::new(Orientation::Horizontal, 0);
     for (label, menu, tooltip) in [
         ("File", &menus.file, "Project and document actions"),
         ("Edit", &menus.edit, "Editing actions"),
@@ -348,7 +349,7 @@ fn build_menu_header(
         button.set_tooltip_text(Some(tooltip));
         button.set_size_request(-1, 20);
         button.set_valign(Align::Start);
-        header.append(&button);
+        menu_box.append(&button);
     }
     let metadata = GtkBox::new(Orientation::Horizontal, 4);
     metadata.set_halign(Align::Center);
@@ -364,7 +365,8 @@ fn build_menu_header(
     project_label.set_margin_start(4);
     project_label.set_valign(Align::Center);
     metadata.append(project_label);
-    header.append(&metadata);
+    header.set_start_widget(Some(&menu_box));
+    header.set_center_widget(Some(&metadata));
     header
 }
 

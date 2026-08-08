@@ -188,7 +188,7 @@
 
 ## Workspace chrome refinement
 
-- Finding: Reduced menu typography without changing menu geometry, tightened menu gaps, centered the project name/path/Captee metadata, restored and indented the project title to the tree content, removed wide paned handles, removed the preview status label from the rendered pane, hid workspace chrome on Home, and seeded the Open chooser from recent-project state.
+- Finding: Reduced menu typography without changing menu geometry, tightened menu gaps and button padding, centered the project name/path/Captee metadata against the full window, restored and indented the project title to the tree content, removed wide paned handles, removed the preview status label from the rendered pane, hid workspace chrome on Home, and seeded the Open chooser from recent-project state.
 - Impact: The GTK header and divider chrome use fewer visible pixels; preview updates no longer perform label text layout or widget updates. No new I/O, worker, or process lifetime is introduced.
 - Mitigation: Render failures and progress remain available through the global status channel, while page display and scale controls retain their existing revision checks and scroll behavior.
 - Follow-up: Recheck the compact header and narrow divider handles on small displays.
