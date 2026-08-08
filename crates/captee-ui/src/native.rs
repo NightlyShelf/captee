@@ -396,7 +396,7 @@ fn build_workspace(
     project_name.add_css_class("compact-menu-text");
     project_panel_title.set_xalign(0.0);
     project_panel_title.set_hexpand(true);
-    project_panel_title.set_margin_start(27);
+    project_panel_title.set_margin_start(8);
     project_panel_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     project_panel_title.set_max_width_chars(16);
     project_panel_title.set_valign(Align::Center);
