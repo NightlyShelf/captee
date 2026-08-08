@@ -327,7 +327,7 @@ fn build_menu_header(
     project_name: &Label,
     project_label: &Label,
 ) -> GtkBox {
-    let header = GtkBox::new(Orientation::Horizontal, 2);
+    let header = GtkBox::new(Orientation::Horizontal, 0);
     header.add_css_class("workspace-header");
     header.set_margin_top(4);
     header.set_margin_bottom(4);
@@ -350,17 +350,21 @@ fn build_menu_header(
         button.set_valign(Align::Start);
         header.append(&button);
     }
+    let metadata = GtkBox::new(Orientation::Horizontal, 4);
+    metadata.set_halign(Align::Center);
+    metadata.set_hexpand(true);
     project_name.set_xalign(0.0);
     project_name.set_hexpand(false);
     project_name.set_margin_start(8);
     project_name.set_margin_end(4);
     project_name.set_valign(Align::Center);
-    header.append(project_name);
+    metadata.append(project_name);
     project_label.set_xalign(0.0);
-    project_label.set_hexpand(true);
+    project_label.set_hexpand(false);
     project_label.set_margin_start(4);
     project_label.set_valign(Align::Center);
-    header.append(project_label);
+    metadata.append(project_label);
+    header.append(&metadata);
     header
 }
 
@@ -390,6 +394,7 @@ fn build_workspace(
     project_name.add_css_class("compact-menu-text");
     project_panel_title.set_xalign(0.0);
     project_panel_title.set_hexpand(true);
+    project_panel_title.set_margin_start(30);
     project_panel_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     project_panel_title.set_max_width_chars(16);
     project_panel_title.set_valign(Align::Center);

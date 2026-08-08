@@ -284,10 +284,11 @@ project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization. Compact File, Edit,
 Capture, and View menu buttons share the top header with the project name,
 project path, and Captee label; menu accelerators remain active but are not
-rendered into menu item text. The project name also remains visible in the
-navigation header. The header is hidden on the Home surface and shown only for
-an active workspace. Both workspace dividers use the narrow GTK handle style
-without double-line borders.
+rendered into menu item text. Project name/path/Captee metadata is centered in
+the remaining header space, and the project name also remains visible in the
+navigation header aligned to tree content. The header is hidden on the Home
+surface and shown only for an active workspace. Both workspace dividers use
+the narrow GTK handle style without double-line borders.
 
 Capture confirmation is a staged document-composition popup drawn as a small
 borderless floating window on the workspace that was active when capture
