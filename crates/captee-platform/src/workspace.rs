@@ -407,6 +407,46 @@ mod tests {
     }
 
     #[test]
+    fn project_tree_is_parent_first_and_delete_stays_inside_root() {
+        let root = test_root("tree-order-delete");
+        create_project_item(&root, "", "notes", true).expect("folder");
+        create_project_item(&root, "notes", "draft.typ", false).expect("file");
+        create_project_item(&root, "", "readme.md", false).expect("file");
+
+        let entries = list_project_tree(&root).expect("tree");
+        assert_eq!(
+            entries.iter().map(|entry| entry.relative_path.clone()).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("notes"),
+                PathBuf::from("notes/draft.typ"),
+                PathBuf::from("readme.md")
+            ]
+        );
+
+        delete_project_item(&root, "notes/draft.typ").expect("delete file");
+        assert!(!root.join("notes/draft.typ").exists());
+        assert!(matches!(delete_project_item(&root, ""), Err(WorkspaceError::InvalidItemName)));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn context_action_names_reject_path_components_and_collisions() {
+        let root = test_root("tree-validation");
+        for name in ["", ".", "..", "nested/file", "../escape"] {
+            assert!(matches!(
+                create_project_item(&root, "", name, false),
+                Err(WorkspaceError::InvalidItemName)
+            ));
+        }
+        create_project_item(&root, "", "draft.typ", false).expect("file");
+        assert!(matches!(
+            create_project_item(&root, "", "draft.typ", false),
+            Err(WorkspaceError::ItemExists(_))
+        ));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn project_tree_supports_rename() {
         let root = test_root("rename");
         create_project_item(&root, "", "draft.typ", false).expect("file");

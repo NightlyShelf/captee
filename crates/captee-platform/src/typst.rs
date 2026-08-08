@@ -76,7 +76,19 @@ impl TypstRunner {
     }
 
     fn run<const N: usize>(&self, args: [String; N]) -> io::Result<Output> {
-        Command::new(&self.executable).args(args).output()
+        Command::new(&self.executable).args(args).output().map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "Typst compiler not found at '{}'; run tools/fetch-typst.sh or set CAPTEE_TYPST_BINARY",
+                        self.executable.display()
+                    ),
+                )
+            } else {
+                error
+            }
+        })
     }
 }
 
@@ -390,6 +402,14 @@ mod tests {
         let artifact = outcome.result.expect("successful preview");
         assert_eq!(artifact.pdf, b"#let answer = 42");
         assert_eq!(artifact.page_pngs, vec![b"png".to_vec()]);
+    }
+
+    #[test]
+    fn missing_compiler_reports_setup_instructions() {
+        let runner = TypstRunner::new("/captee/test/missing-typst");
+        let error = runner.version().expect_err("compiler should be missing");
+        assert!(error.to_string().contains("tools/fetch-typst.sh"));
+        assert!(error.to_string().contains("CAPTEE_TYPST_BINARY"));
     }
 
     #[test]

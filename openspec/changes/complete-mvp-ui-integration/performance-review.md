@@ -151,6 +151,48 @@
 - Mitigation: Symlink entries are skipped during tree enumeration, unsafe names and path escapes are rejected, collisions fail before mutation, and all rows are rebuilt from the project root after a successful operation.
 - Follow-up: Add a bounded worker-backed tree model for very large projects and persist selection/expanded folders across project reloads.
 
+## Tasks 7.6, 8.4, and 9.4: Focused regression coverage
+
+- Finding: Added headless capture-review, shared Typst completion, project-tree, context-action, confirmation, path-validation, deletion, and layout coverage. Completion replacement scans only the command prefix at the captured cursor; tree tests use isolated temporary roots and bounded fixtures.
+- Impact: Production cost is unchanged except for one bounded prefix scan and one small completion-list rebuild when capture-editor suggestions are opened. Test CPU, memory, and filesystem I/O remain proportional to fixture source and tree size.
+- Mitigation: Completion results are rejected when the operation source revision is stale, dismiss/cancel paths perform no edit, tree mutations pass through project-root validation, and every temporary test root is removed synchronously.
+- Follow-up: Keep compositor-driven interaction checks in the visual smoke workflow; headless tests intentionally do not emulate GTK pointer focus or native dialogs.
+
+## Tasks 7.6, 8.4, and 9.6: Native smoke readiness
+
+- Finding: The GTK application starts and maps on the available Hyprland session with the expected Captee window class and initial editor/preview surface. Full pointer-driven capture, annotation, and project-tree interaction remains compositor/input dependent.
+- Impact: Startup adds no new worker or persistent resource. Capture suggestions rebuild a small popover synchronously on Ctrl+Space; no subprocess or filesystem work runs on the GTK thread.
+- Mitigation: Capture review state is headless and immutable until confirmation, completion edits replace only the current prefix, and stale/cancelled coordinator results remain ignored.
+- Follow-up: Run the full pointer-driven confirm/discard/placement/modify and tree drag/drop smoke path in a session with a Wayland input injector or manually before release.
+
+## Tasks 10.1 and 10.2: Final local verification
+
+- Finding: Formatting, strict OpenSpec validation, workspace tests, and warning-denied Clippy are explicit final gates. One pre-existing large-pipe capture regression test was transiently flaky during the first parallel workspace run and passed on focused rerun.
+- Impact: Verification has no production runtime impact. The large-pipe test exercises bounded subprocess output draining and can be sensitive to host scheduling.
+- Mitigation: Re-run the complete suite after focused failures; retain the existing bounded reader threads, child timeout, and process reaping behavior.
+- Follow-up: CI remains required for the final branch because local compositor workflow coverage cannot be fully automated here.
+
+## Preview panel refinement
+
+- Finding: Preview presentation now removes the diagnostics block and redundant Preview heading, adds a Fit page width mode, and hides the status bar until enabled from View. Missing Typst executables now report their resolved path and setup command instead of only `No such file or directory`.
+- Impact: Fit page width performs one bounded width calculation per rendered page and status-bar toggling changes only widget visibility. Removing diagnostics widgets lowers preview layout and widget-update work. Compiler discovery adds no process or filesystem work beyond the existing failed launch.
+- Mitigation: Fit page retains two-dimensional bounds, fixed scales remain unchanged, status defaults off through a named constant, and render diagnostics remain revision-safe in core state even though preview UI no longer displays them.
+- Follow-up: Keep compiler bundling in packaging and make `tools/fetch-typst.sh` part of developer setup when no PATH compiler or `CAPTEE_TYPST_BINARY` exists.
+
+## Workspace header and navigation refinement
+
+- Finding: Moved compact menu buttons into the top header, removed the duplicate Captee title, placed project path plus Captee text after the menus, hid rendered accelerator hints from menu item labels, reduced project-tree controls, and changed initial navigation sizing from one sixth to one eighth while allowing shrink below the initial width.
+- Impact: Header and tree layout now use fewer pixels and less widget spacing. Paned resizing remains constant-time; no new I/O, process, or worker lifetime is introduced.
+- Mitigation: Menu action accelerators remain registered independently of visible menu labels, tree actions retain accessible tooltips, and `set_shrink_start_child(true)` removes the previous hard minimum imposed by the navigation pane.
+- Follow-up: Recheck typography and minimum readable tree width on displays below 1024 pixels.
+
+## Workspace chrome refinement
+
+- Finding: Reduced menu typography without changing menu geometry, tightened menu gaps, button padding, and button margins, centered the project name/path/Captee metadata against the full window, aligned the project title to the first root-level tree icon, removed wide paned handles, removed the preview status label from the rendered pane, hid workspace chrome on Home, and seeded the Open chooser from recent-project state.
+- Impact: The GTK header and divider chrome use fewer visible pixels; preview updates no longer perform label text layout or widget updates. No new I/O, worker, or process lifetime is introduced.
+- Mitigation: Render failures and progress remain available through the global status channel, while page display and scale controls retain their existing revision checks and scroll behavior.
+- Follow-up: Recheck the compact header and narrow divider handles on small displays.
+
 ## Global capture shortcut
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.

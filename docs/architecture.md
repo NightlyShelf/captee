@@ -101,12 +101,21 @@ produces the complete PDF plus one PNG per rendered page, both tagged with the
 active source revision. `RenderState` remains authoritative for stale
 rejection and last-valid PDF retention; GTK presents the accepted page images
 in document order inside one scrollable preview pane. Failed renders update
-diagnostics and status but leave the last valid preview pages visible. Preview
-busy state does not disable the source editor: a source edit cancels the
+status but leave the last valid preview pages visible; compiler diagnostics
+remain in headless render state and are not rendered in the preview pane. The
+preview pane contains only rendered pages and the scale control; transient
+render text is reported through the global status channel.
+Preview busy state does not disable the source editor: a source edit cancels the
 superseded render, clears its progress state, and schedules the next debounced
-revision. A scale dropdown below the preview defaults to Fit page, computes a
-page size that fits both dimensions of the allocated preview viewport, and also
-offers fixed percentage scales without changing the rendered document.
+revision. A scale dropdown below the preview defaults to Fit page, also offers
+Fit page width and fixed percentage scales, and changes only GTK size requests
+without recompiling the document. The bottom status bar is hidden by default
+and can be toggled from View.
+
+Typst runner process-not-found errors include the selected executable path and
+setup instructions for the pinned local bundle or `CAPTEE_TYPST_BINARY`. The
+Open project chooser starts in the parent folder of the most recently opened
+valid project when that folder still exists.
 
 PDF export is available only when `RenderState` holds a successful preview for
 the current source revision. A GTK native save chooser gathers a local
@@ -262,16 +271,24 @@ project replacement, or source edits from racing committed state.
 
 The workspace navigation boundary now exposes a project-relative tree model to
 GTK. The tree renders files and folders in parent-before-child order with
-indentation and type icons, starts at roughly one sixth of the default window
-width, and leaves the remaining paned area to the editor and preview. Clicks
-open files, folder clicks toggle expansion, triple-click opens rename, and drag
-sources/drop targets support validated moves including the project root.
+indentation and type icons, starts at roughly one eighth of the default window
+width, and leaves the remaining paned area to the editor and preview. The
+navigation pane can shrink below its initial width. Clicks open files, folder
+clicks toggle expansion, triple-click opens rename, and drag sources/drop
+targets support validated moves including the project root.
 Context actions route create, inline rename, move, and delete through the
 platform workspace boundary after small confirmation dialogs. Tree refresh
 currently scans synchronously and skips symlinks; lazy expansion and
 worker-backed enumeration remain follow-up work for very large projects. The
 project divider is user-resizable, the initial editor/preview divider is set to
-an equal split, and long labels use GTK ellipsization.
+an equal split, and long labels use GTK ellipsization. Compact File, Edit,
+Capture, and View menu buttons share the top header with the project name,
+project path, and Captee label; menu accelerators remain active but are not
+rendered into menu item text. Project name/path/Captee metadata is centered
+against the full window width, and the project name also remains visible in the
+navigation header aligned to tree content. The header is hidden on the Home
+surface and shown only for an active workspace. Both workspace dividers use
+the narrow GTK handle style without double-line borders.
 
 Capture confirmation is a staged document-composition popup drawn as a small
 borderless floating window on the workspace that was active when capture
@@ -323,7 +340,10 @@ can produce its first preview immediately instead of entering an error state
 before the first user edit.
 
 Authoring services are trait boundaries so formatting and completion can run in
-platform workers rather than the UI thread. Literal find/replace creates a new
+platform workers rather than the UI thread. Both Typst editors share a small
+headless completion-assistance boundary that derives suggestions from the
+current cursor context and replaces the typed command prefix instead of
+appending a duplicate command. Literal find/replace creates a new
 result string on confirmation and intentionally performs no allocation when a
 replacement is cancelled; large replacements may still create temporary peak
 memory proportional to the document and replacement size.

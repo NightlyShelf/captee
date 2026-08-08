@@ -1,16 +1,20 @@
 use crate::annotation_bridge::AnnotationDraft;
+use crate::capture_review::CaptureReview;
+use crate::editor_assistance::{completion_edit, typst_completions};
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
     drain_ready_results, OperationCoordinator, OperationOutcome, ProjectIdentity,
     ResultDisposition, SourceIdentity,
 };
-use crate::{UiCommand, UiShell};
+use crate::{
+    initial_editor_preview_position, initial_navigation_position, status_bar_action_label,
+    UiCommand, UiShell,
+};
 use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
-    AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, Diagnostic,
-    DiagnosticSeverity, EditorInserter, InsertionResult, KeybindingSettings, Operation,
-    OperationKind, ProjectConfig, ProjectSession, ProjectSettings, RenderState, SelectionGeometry,
-    SourceDocument,
+    AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, EditorInserter,
+    InsertionResult, KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession,
+    ProjectSettings, RenderState, SelectionGeometry, SourceDocument,
 };
 use captee_platform::{
     confirm_and_trash, create_project, create_project_item, current_capture_origin,
@@ -23,6 +27,7 @@ use captee_platform::{
     TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
+use glib::variant::ToVariant;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -47,10 +52,10 @@ const APPLICATION_ID: &str = "com.nightlyshelf.captee";
 
 #[derive(Debug)]
 enum WorkspaceOperationResult {
-    Saved { document: SourceDocument, diagnostics: Vec<Diagnostic>, formatted: bool },
+    Saved { document: SourceDocument, formatted: bool },
     Formatted(FormattedSource),
     Completions { items: Vec<CompletionItem>, cursor: usize },
-    AuthoringFailure { message: String, diagnostics: Vec<Diagnostic> },
+    AuthoringFailure { message: String },
     Preview(PreviewOutcome),
     Exported(PathBuf),
     Captured(CapturedImage),
@@ -61,8 +66,11 @@ enum WorkspaceOperationResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewScale {
     FitPage,
+    FitPageWidth,
     Percent(u16),
 }
+
+const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
 
 #[derive(Debug)]
 enum BackgroundResult {
@@ -93,7 +101,8 @@ fn build_ui(application: &Application) {
     project_tree.set_selection_mode(gtk::SelectionMode::None);
     project_tree.set_hexpand(true);
     project_tree.set_vexpand(true);
-    let project_tree_title = Label::new(Some("Project"));
+    let project_name_label = Label::new(Some("Project"));
+    let project_panel_title = Label::new(Some("Project"));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -116,7 +125,13 @@ fn build_ui(application: &Application) {
          .typst-editor gutter, .typst-editor gutter.left {\
            background-color: #292a2d; color: #9aa0a6;\
          }\
-         .typst-editor border { background-color: #3c4043; }",
+         .typst-editor border { background-color: #3c4043; }\
+         .workspace-header { background-color: #0a0705; }\
+         .compact-menu-button, .compact-menu-button > button {\
+           margin: 0; padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
+         }\
+         .compact-menu-text { font-size: 12px; }\
+         .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -155,22 +170,23 @@ fn build_ui(application: &Application) {
     status_row.append(&status);
     status_row.append(&cancel_button);
 
-    let project_label = Label::new(Some("No project open"));
+    let project_label = Label::new(Some("Captee"));
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
-    let diagnostics_label = Label::new(Some("No diagnostics."));
-    diagnostics_label.set_xalign(0.0);
-    diagnostics_label.set_wrap(true);
-    diagnostics_label.set_selectable(true);
     let preview_pages = GtkBox::new(Orientation::Vertical, 16);
     preview_pages.set_hexpand(true);
     preview_pages.set_vexpand(true);
     preview_pages.set_halign(Align::Center);
-    let preview_status = Label::new(Some("Render a document to see its preview."));
-    preview_status.set_xalign(0.0);
-    preview_status.set_wrap(true);
     let preview_scale = gtk::DropDown::from_strings(&[
-        "Fit page", "50%", "75%", "100%", "125%", "150%", "200%", "300%",
+        "Fit page",
+        "Fit page width",
+        "50%",
+        "75%",
+        "100%",
+        "125%",
+        "150%",
+        "200%",
+        "300%",
     ]);
     preview_scale.set_selected(0);
     preview_scale.set_tooltip_text(Some("Choose how preview pages are scaled"));
@@ -190,15 +206,10 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
-            PreviewWidgets {
-                status: &preview_status,
-                scroller: &preview_scroller,
-                scale: &preview_scale,
-                diagnostics: &diagnostics_label,
-            },
-            &menus,
+            PreviewWidgets { scroller: &preview_scroller, scale: &preview_scale },
             &project_tree,
-            &project_tree_title,
+            &project_name_label,
+            &project_panel_title,
         ),
         Some("workspace"),
     );
@@ -214,13 +225,14 @@ fn build_ui(application: &Application) {
         source_view: source_view.clone(),
         project_label: project_label.clone(),
         project_tree: project_tree.clone(),
-        project_tree_title: project_tree_title.clone(),
+        project_name_label: project_name_label.clone(),
+        project_panel_title: project_panel_title.clone(),
         workspace_overlay: gtk::Overlay::new(),
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
         tree_initialized: Rc::new(Cell::new(false)),
-        diagnostics_label,
+        status_row: status_row.clone(),
+        status_bar_item: menus.status_bar_item.clone(),
         preview_pages,
-        preview_status,
         preview_scroller,
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
@@ -240,19 +252,18 @@ fn build_ui(application: &Application) {
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
 
-    let header = GtkBox::new(Orientation::Horizontal, 8);
-    header.set_margin_top(8);
-    header.set_margin_bottom(8);
-    header.set_margin_start(12);
-    header.set_margin_end(12);
-    let title = Label::new(Some("Captee"));
-    title.add_css_class("title-3");
-    header.append(&title);
-    header.append(&project_label);
+    let header = build_menu_header(&menus, &project_name_label, &project_label);
+    header.set_visible(false);
+    let header_visibility = header.clone();
+    stack.connect_visible_child_name_notify(move |stack| {
+        let visible = stack.visible_child_name().is_some_and(|name| name == "workspace");
+        header_visibility.set_visible(visible);
+    });
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&header);
     root.append(&stack);
+    status_row.set_visible(STATUS_BAR_VISIBLE_BY_DEFAULT);
     root.append(&status_row);
     project_ui.workspace_overlay.set_child(Some(&root));
     window.set_child(Some(&project_ui.workspace_overlay));
@@ -303,45 +314,111 @@ struct WorkspaceMenus {
     edit: gio::Menu,
     capture: gio::Menu,
     view: gio::Menu,
+    status_bar_item: gio::MenuItem,
 }
 
 struct PreviewWidgets<'a> {
-    status: &'a Label,
     scroller: &'a ScrolledWindow,
     scale: &'a gtk::DropDown,
-    diagnostics: &'a Label,
+}
+
+fn build_menu_header(
+    menus: &WorkspaceMenus,
+    project_name: &Label,
+    project_label: &Label,
+) -> gtk::CenterBox {
+    let header = gtk::CenterBox::new();
+    header.add_css_class("workspace-header");
+    header.set_margin_top(4);
+    header.set_margin_bottom(4);
+    header.set_margin_start(4);
+    header.set_margin_end(4);
+    header.set_valign(Align::Start);
+    let menu_box = GtkBox::new(Orientation::Horizontal, 0);
+    for (label, menu, tooltip) in [
+        ("File", &menus.file, "Project and document actions"),
+        ("Edit", &menus.edit, "Editing actions"),
+        ("Capture", &menus.capture, "Capture actions"),
+        ("View", &menus.view, "Preview and export actions"),
+    ] {
+        let button = MenuButton::new();
+        button.set_label(label);
+        button.set_menu_model(Some(menu));
+        button.add_css_class("flat");
+        button.add_css_class("compact-menu-button");
+        button.set_tooltip_text(Some(tooltip));
+        button.set_size_request(-1, 20);
+        button.set_valign(Align::Start);
+        menu_box.append(&button);
+    }
+    let metadata = GtkBox::new(Orientation::Horizontal, 4);
+    metadata.set_halign(Align::Center);
+    metadata.set_hexpand(true);
+    project_name.set_xalign(0.0);
+    project_name.set_hexpand(false);
+    project_name.set_margin_start(8);
+    project_name.set_margin_end(4);
+    project_name.set_valign(Align::Center);
+    metadata.append(project_name);
+    project_label.set_xalign(0.0);
+    project_label.set_hexpand(false);
+    project_label.set_margin_start(4);
+    project_label.set_valign(Align::Center);
+    metadata.append(project_label);
+    header.set_start_widget(Some(&menu_box));
+    header.set_center_widget(Some(&metadata));
+    header
 }
 
 fn build_workspace(
     source_view: &sourceview::View,
     preview_widgets: PreviewWidgets<'_>,
-    menus: &WorkspaceMenus,
     project_tree: &ListBox,
-    project_tree_title: &Label,
+    project_name_label: &Label,
+    project_panel_title: &Label,
 ) -> GtkBox {
-    let PreviewWidgets {
-        status: preview_status,
-        scroller: preview_scroller,
-        scale: preview_scale,
-        diagnostics: diagnostics_label,
-    } = preview_widgets;
+    let PreviewWidgets { scroller: preview_scroller, scale: preview_scale } = preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
-    navigation.set_margin_top(16);
-    navigation.set_margin_bottom(16);
-    navigation.set_margin_start(16);
-    navigation.set_margin_end(16);
-    navigation.set_width_request(212);
-    let tree_header = GtkBox::new(Orientation::Horizontal, 4);
-    let tree_title = project_tree_title.clone();
-    tree_title.set_xalign(0.0);
-    tree_title.set_hexpand(true);
+    navigation.set_margin_top(4);
+    navigation.set_margin_bottom(4);
+    navigation.set_margin_start(4);
+    navigation.set_margin_end(4);
+    navigation.set_spacing(4);
+    navigation.set_width_request(0);
+    let tree_header = GtkBox::new(Orientation::Horizontal, 2);
+    tree_header.set_valign(Align::Center);
+    let project_name = project_name_label.clone();
+    project_name.set_xalign(0.0);
+    project_name.set_hexpand(false);
+    project_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    project_name.set_max_width_chars(16);
+    project_name.set_valign(Align::Center);
+    project_name.add_css_class("compact-menu-text");
+    project_panel_title.set_xalign(0.0);
+    project_panel_title.set_hexpand(true);
+    project_panel_title.set_margin_start(8);
+    project_panel_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    project_panel_title.set_max_width_chars(16);
+    project_panel_title.set_valign(Align::Center);
+    project_panel_title.add_css_class("compact-menu-text");
     let add_file = Button::from_icon_name("document-new-symbolic");
     add_file.set_action_name(Some("app.new-file"));
+    add_file.add_css_class("flat");
+    add_file.add_css_class("project-tree-action");
+    add_file.set_size_request(22, 22);
+    add_file.set_valign(Align::Center);
     add_file.set_tooltip_text(Some("Add file"));
     let add_folder = Button::from_icon_name("folder-new-symbolic");
     add_folder.set_action_name(Some("app.new-folder"));
+    add_folder.add_css_class("flat");
+    add_folder.add_css_class("project-tree-action");
+    add_folder.set_size_request(22, 22);
+    add_folder.set_valign(Align::Center);
     add_folder.set_tooltip_text(Some("Add folder"));
-    tree_header.append(&tree_title);
+    tree_header.append(project_panel_title);
+    let tree_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    tree_spacer.set_hexpand(true);
+    tree_header.append(&tree_spacer);
     tree_header.append(&add_file);
     tree_header.append(&add_folder);
     navigation.append(&tree_header);
@@ -355,8 +432,6 @@ fn build_workspace(
     preview.set_margin_bottom(16);
     preview.set_margin_start(16);
     preview.set_margin_end(16);
-    preview.append(&Label::new(Some("Preview")));
-    preview.append(preview_status);
     preview.append(preview_scroller);
     let scale_row = GtkBox::new(Orientation::Horizontal, 8);
     let scale_label = Label::new(Some("Scale"));
@@ -364,25 +439,19 @@ fn build_workspace(
     scale_row.append(&scale_label);
     scale_row.append(preview_scale);
     preview.append(&scale_row);
-    let diagnostics_title = Label::new(Some("Diagnostics"));
-    diagnostics_title.set_xalign(0.0);
-    diagnostics_title.add_css_class("heading");
-    preview.append(&diagnostics_title);
-    preview.append(diagnostics_label);
-
     let editor_preview = Paned::new(Orientation::Horizontal);
     editor_preview.set_start_child(Some(&editor_scroll));
     editor_preview.set_end_child(Some(&preview));
     editor_preview.set_resize_start_child(true);
     editor_preview.set_shrink_start_child(false);
     editor_preview.set_resize_end_child(true);
-    editor_preview.set_wide_handle(true);
+    editor_preview.set_wide_handle(false);
     editor_preview.connect_map(|paned| {
         let paned = paned.clone();
         glib::idle_add_local_once(move || {
             let width = paned.width();
             if width > 0 {
-                paned.set_position(width / 2);
+                paned.set_position(initial_editor_preview_position(width));
             }
         });
     });
@@ -391,65 +460,45 @@ fn build_workspace(
     workspace.set_start_child(Some(&navigation));
     workspace.set_end_child(Some(&editor_preview));
     workspace.set_resize_start_child(true);
-    workspace.set_shrink_start_child(false);
+    workspace.set_shrink_start_child(true);
     workspace.set_resize_end_child(true);
-    workspace.set_wide_handle(true);
+    workspace.set_wide_handle(false);
     workspace.connect_map(|paned| {
         let paned = paned.clone();
         glib::idle_add_local_once(move || {
             let width = paned.width();
             if width > 0 {
-                paned.set_position(width / 6);
+                paned.set_position(initial_navigation_position(width));
             }
         });
     });
 
-    let menu_strip = GtkBox::new(Orientation::Horizontal, 4);
-    menu_strip.set_halign(Align::Start);
-    menu_strip.set_margin_start(12);
-    menu_strip.set_margin_end(12);
-    menu_strip.set_margin_top(8);
-    menu_strip.set_margin_bottom(8);
-    for (label, menu, tooltip) in [
-        ("File", &menus.file, "Project and document actions"),
-        ("Edit", &menus.edit, "Editing actions"),
-        ("Capture", &menus.capture, "Capture actions"),
-        ("View", &menus.view, "Preview and export actions"),
-    ] {
-        let button = MenuButton::new();
-        button.set_label(label);
-        button.set_menu_model(Some(menu));
-        button.add_css_class("flat");
-        button.set_tooltip_text(Some(tooltip));
-        menu_strip.append(&button);
-    }
-
     let root = GtkBox::new(Orientation::Vertical, 0);
-    let separator = gtk::Separator::new(Orientation::Horizontal);
-    root.append(&menu_strip);
-    root.append(&separator);
     root.append(&workspace);
     root
 }
 
 fn install_actions(application: &Application) -> WorkspaceMenus {
     let file = gio::Menu::new();
-    file.append(Some("New project"), Some("app.new-project"));
-    file.append(Some("Open project"), Some("app.open-project"));
-    file.append(Some("Close project"), Some("app.close-project"));
-    file.append(Some("Save"), Some("app.save"));
+    append_menu_action(&file, "New project", "app.new-project");
+    append_menu_action(&file, "Open project", "app.open-project");
+    append_menu_action(&file, "Close project", "app.close-project");
+    append_menu_action(&file, "Save", "app.save");
     let edit = gio::Menu::new();
-    edit.append(Some("Format"), Some("app.format"));
-    edit.append(Some("Find and Replace"), Some("app.find-replace"));
-    edit.append(Some("Completion"), Some("app.completion"));
-    edit.append(Some("Undo"), Some("app.undo"));
-    edit.append(Some("Redo"), Some("app.redo"));
+    append_menu_action(&edit, "Format", "app.format");
+    append_menu_action(&edit, "Find and Replace", "app.find-replace");
+    append_menu_action(&edit, "Completion", "app.completion");
+    append_menu_action(&edit, "Undo", "app.undo");
+    append_menu_action(&edit, "Redo", "app.redo");
     let capture = gio::Menu::new();
-    capture.append(Some("Capture"), Some("app.capture"));
+    append_menu_action(&capture, "Capture", "app.capture");
     let view = gio::Menu::new();
-    view.append(Some("Preview"), Some("app.preview"));
-    view.append(Some("Export PDF"), Some("app.export"));
-    view.append(Some("Settings"), Some("app.settings"));
+    append_menu_action(&view, "Preview", "app.preview");
+    append_menu_action(&view, "Export PDF", "app.export");
+    let status_bar_item = gio::MenuItem::new(Some("Show status bar"), Some("app.status-bar"));
+    status_bar_item.set_attribute_value("accel", Some(&"".to_variant()));
+    view.append_item(&status_bar_item);
+    append_menu_action(&view, "Settings", "app.settings");
 
     for (name, accelerator) in [
         ("new-project", "<Primary>n"),
@@ -466,13 +515,20 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("capture", "<Primary><Shift>c"),
         ("preview", "<Primary>r"),
         ("export", "<Primary><Shift>e"),
+        ("status-bar", ""),
         ("settings", "<Primary>comma"),
     ] {
         let action = gio::SimpleAction::new(name, None);
         application.add_action(&action);
         application.set_accels_for_action(&format!("app.{name}"), &[accelerator]);
     }
-    WorkspaceMenus { file, edit, capture, view }
+    WorkspaceMenus { file, edit, capture, view, status_bar_item }
+}
+
+fn append_menu_action(menu: &gio::Menu, label: &str, action: &str) {
+    let item = gio::MenuItem::new(Some(label), Some(action));
+    item.set_attribute_value("accel", Some(&"".to_variant()));
+    menu.append_item(&item);
 }
 
 fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
@@ -543,6 +599,16 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let settings_ui = project_ui.clone();
     action.connect_activate(move |_, _| show_settings_dialog(&settings_ui));
+
+    let action = application.lookup_action("status-bar").expect("installed status action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let status_ui = project_ui.clone();
+    let status_item = project_ui.status_bar_item.clone();
+    action.connect_activate(move |_, _| {
+        let visible = !status_ui.status_row.is_visible();
+        status_ui.status_row.set_visible(visible);
+        status_item.set_label(Some(status_bar_action_label(visible)));
+    });
 }
 
 fn connect_project_button(button: &Button, create: bool, project_ui: &ProjectUi) {
@@ -570,13 +636,14 @@ struct ProjectUi {
     source_view: sourceview::View,
     project_label: Label,
     project_tree: ListBox,
-    project_tree_title: Label,
+    project_name_label: Label,
+    project_panel_title: Label,
     workspace_overlay: gtk::Overlay,
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
     tree_initialized: Rc<Cell<bool>>,
-    diagnostics_label: Label,
+    status_row: GtkBox,
+    status_bar_item: gio::MenuItem,
     preview_pages: GtkBox,
-    preview_status: Label,
     preview_scroller: ScrolledWindow,
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
@@ -1235,7 +1302,6 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
         let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
     }
     project_ui.render_state.borrow_mut().set_source_revision(state.revision);
-    project_ui.preview_status.set_text("Preview is out of date.");
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty)) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
@@ -1342,13 +1408,11 @@ fn start_save(project_ui: &ProjectUi) {
     let mut document = editor.document_snapshot();
     let format_on_save = snapshot.app.settings.formatting.format_on_save;
     let _ = thread::Builder::new().name("captee-save".to_owned()).spawn(move || {
-        let result: Result<(SourceDocument, Vec<Diagnostic>), String> = (|| {
-            let mut diagnostics = Vec::new();
+        let result: Result<SourceDocument, String> = (|| {
             if format_on_save {
                 let formatted = TypstFormatter::new(TypstRunner::discover(), &root)
                     .format_with_diagnostics(document.text())
                     .map_err(|error| error.to_string())?;
-                diagnostics = formatted.diagnostics;
                 if formatted.source != document.text() {
                     let previous_len = document.text().len();
                     document.replace(0..previous_len, &formatted.source).map_err(|error| {
@@ -1360,16 +1424,13 @@ fn start_save(project_ui: &ProjectUi) {
                 ProjectDocumentPersistence::open(root, entry).map_err(|error| error.to_string())?;
             document.save(&persistence).map_err(|error| error.to_string())?;
             persistence.clear_autosave().map_err(|error| error.to_string())?;
-            Ok((document, diagnostics))
+            Ok(document)
         })();
         let outcome = match result {
-            Ok((document, diagnostics)) => {
-                OperationOutcome::Completed(WorkspaceOperationResult::Saved {
-                    document,
-                    diagnostics,
-                    formatted: format_on_save,
-                })
-            }
+            Ok(document) => OperationOutcome::Completed(WorkspaceOperationResult::Saved {
+                document,
+                formatted: format_on_save,
+            }),
             Err(error) => OperationOutcome::Failed(error.to_string()),
         };
         let _ = task.finish(outcome);
@@ -1417,7 +1478,6 @@ fn start_format(project_ui: &ProjectUi) {
                 Err(error) => {
                     OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                         message: error.message,
-                        diagnostics: error.diagnostics,
                     })
                 }
             }
@@ -1493,7 +1553,6 @@ fn start_preview(project_ui: &ProjectUi) {
         }
     };
     project_ui.status.set_text("Rendering preview…");
-    project_ui.preview_status.set_text("Rendering current source…");
     let root = PathBuf::from(project.root);
     let cancellation = task.cancellation();
     let _ = thread::Builder::new().name("captee-preview-result".to_owned()).spawn(move || {
@@ -1790,6 +1849,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     };
     let selection = image.selection();
     let origin = project_ui.capture_origin.borrow().clone();
+    let review = Rc::new(RefCell::new(CaptureReview::new(image.clone())));
     let capture_surface = gtk::Overlay::new();
     capture_surface.add_css_class("capture-review-surface");
     capture_surface.set_hexpand(true);
@@ -1856,7 +1916,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         "Toggle whether the annotation code is before or after the image block",
     ));
     let placement_for_toggle = placement.clone();
+    let review_for_toggle = Rc::clone(&review);
     placement.connect_toggled(move |button| {
+        let mut review = review_for_toggle.borrow_mut();
+        if review.before_image() == button.is_active() {
+            review.toggle_placement();
+        }
         if button.is_active() {
             placement_for_toggle.set_label("Insert annotation before image");
         } else {
@@ -1918,24 +1983,53 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
     let completion_list = GtkBox::new(Orientation::Vertical, 2);
-    for suggestion in ["#text()", "#image(\"img/example.png\")", "#line(length: 1em)", "#box()[ ]"]
-    {
-        let item = Button::with_label(suggestion);
-        let buffer = code_buffer.clone();
-        let popover = completion_popover.clone();
-        let suggestion = suggestion.to_owned();
-        item.connect_clicked(move |_| {
-            buffer.insert_at_cursor(&suggestion);
-            popover.popdown();
-        });
-        completion_list.append(&item);
-    }
     completion_popover.set_child(Some(&completion_list));
     let completion_key = gtk::EventControllerKey::new();
     let completion_popover_for_key = completion_popover.clone();
+    let completion_list_for_key = completion_list.clone();
+    let code_buffer_for_key = code_buffer.clone();
     completion_key.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::space && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-            completion_popover_for_key.popup();
+            while let Some(child) = completion_list_for_key.first_child() {
+                completion_list_for_key.remove(&child);
+            }
+            let text = code_buffer_for_key
+                .text(&code_buffer_for_key.start_iter(), &code_buffer_for_key.end_iter(), true)
+                .to_string();
+            let cursor_chars =
+                code_buffer_for_key.iter_at_mark(&code_buffer_for_key.get_insert()).offset().max(0)
+                    as usize;
+            let cursor = byte_offset_for_character(&text, cursor_chars);
+            for suggestion in typst_completions(&text, cursor) {
+                let item = Button::with_label(&suggestion.label);
+                let buffer = code_buffer_for_key.clone();
+                let popover = completion_popover_for_key.clone();
+                item.connect_clicked(move |_| {
+                    let text =
+                        buffer.text(&buffer.start_iter(), &buffer.end_iter(), true).to_string();
+                    let cursor_chars =
+                        buffer.iter_at_mark(&buffer.get_insert()).offset().max(0) as usize;
+                    let cursor = byte_offset_for_character(&text, cursor_chars);
+                    if let Some(edit) = typst_completions(&text, cursor)
+                        .into_iter()
+                        .find(|candidate| candidate.label == suggestion.label)
+                        .and_then(|candidate| completion_edit(&text, cursor, &candidate))
+                    {
+                        let start_chars = text[..edit.range.start].chars().count() as i32;
+                        let end_chars = text[..edit.range.end].chars().count() as i32;
+                        let mut start = buffer.iter_at_offset(start_chars);
+                        let mut end = buffer.iter_at_offset(end_chars);
+                        buffer.delete(&mut start, &mut end);
+                        let mut insert = buffer.iter_at_offset(start_chars);
+                        buffer.insert(&mut insert, &edit.replacement);
+                    }
+                    popover.popdown();
+                });
+                completion_list_for_key.append(&item);
+            }
+            if completion_list_for_key.first_child().is_some() {
+                completion_popover_for_key.popup();
+            }
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -1993,6 +2087,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let confirm_ui = project_ui.clone();
     let confirm_window = review_window.clone();
+    let review_for_confirm = Rc::clone(&review);
     confirm.connect_clicked(move |_| {
         let text =
             code_buffer.text(&code_buffer.start_iter(), &code_buffer.end_iter(), true).to_string();
@@ -2001,11 +2096,24 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
             confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
             return;
         }
-        let before_image = placement.is_active();
+        let mut review = review_for_confirm.borrow_mut();
+        review.set_annotation(annotation);
+        let confirmed = match review.confirm() {
+            Ok(confirmed) => confirmed,
+            Err(_) => {
+                confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
+                return;
+            }
+        };
         confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
-        start_capture_storage_with_review(&confirm_ui, image.clone(), annotation, before_image);
+        start_capture_storage_with_review(
+            &confirm_ui,
+            confirmed.image,
+            confirmed.annotation,
+            confirmed.before_image,
+        );
     });
 
     review_window.present();
@@ -2421,12 +2529,13 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     project_ui.preview_scale.connect_selected_notify(move |dropdown| {
         let mode = match dropdown.selected() {
             0 => PreviewScale::FitPage,
-            1 => PreviewScale::Percent(50),
-            2 => PreviewScale::Percent(75),
-            3 => PreviewScale::Percent(100),
-            4 => PreviewScale::Percent(125),
-            5 => PreviewScale::Percent(150),
-            6 => PreviewScale::Percent(200),
+            1 => PreviewScale::FitPageWidth,
+            2 => PreviewScale::Percent(50),
+            3 => PreviewScale::Percent(75),
+            4 => PreviewScale::Percent(100),
+            5 => PreviewScale::Percent(125),
+            6 => PreviewScale::Percent(150),
+            7 => PreviewScale::Percent(200),
             _ => PreviewScale::Percent(300),
         };
         scale_ui.preview_scale_mode.set(mode);
@@ -2435,14 +2544,20 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 
     let resize_ui = project_ui.clone();
     project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
-        if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
+        if matches!(
+            resize_ui.preview_scale_mode.get(),
+            PreviewScale::FitPage | PreviewScale::FitPageWidth
+        ) {
             apply_preview_zoom(&resize_ui);
         }
     });
 
     let resize_ui = project_ui.clone();
     project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
-        if resize_ui.preview_scale_mode.get() == PreviewScale::FitPage {
+        if matches!(
+            resize_ui.preview_scale_mode.get(),
+            PreviewScale::FitPage | PreviewScale::FitPageWidth
+        ) {
             apply_preview_zoom(&resize_ui);
         }
     });
@@ -2461,22 +2576,37 @@ fn apply_preview_zoom(project_ui: &ProjectUi) {
             if let Some(paintable) = picture.paintable() {
                 let intrinsic_width = i64::from(paintable.intrinsic_width()).max(1);
                 let intrinsic_height = i64::from(paintable.intrinsic_height()).max(1);
-                let width = match mode {
-                    PreviewScale::FitPage => available_size
-                        .map(|(available_width, available_height)| {
-                            let width_fit = available_width;
-                            let height_fit = intrinsic_width * available_height / intrinsic_height;
-                            width_fit.min(height_fit)
-                        })
-                        .unwrap_or(intrinsic_width),
-                    PreviewScale::Percent(percent) => intrinsic_width * i64::from(percent) / 100,
-                }
-                .clamp(1, 8192);
+                let width = preview_width(mode, intrinsic_width, intrinsic_height, available_size);
                 let height = (intrinsic_height * width / intrinsic_width).clamp(1, 8192);
                 picture.set_size_request(width as i32, height as i32);
             }
         }
         child = widget.next_sibling();
+    }
+}
+
+fn preview_width(
+    mode: PreviewScale,
+    intrinsic_width: i64,
+    intrinsic_height: i64,
+    available_size: Option<(i64, i64)>,
+) -> i64 {
+    match mode {
+        PreviewScale::FitPage => available_size
+            .map(|(available_width, available_height)| {
+                let width_fit = available_width;
+                let height_fit = intrinsic_width * available_height / intrinsic_height.max(1);
+                width_fit.min(height_fit)
+            })
+            .unwrap_or(intrinsic_width)
+            .clamp(1, 8192),
+        PreviewScale::FitPageWidth => available_size
+            .map(|(available_width, _)| available_width)
+            .unwrap_or(intrinsic_width)
+            .clamp(1, 8192),
+        PreviewScale::Percent(percent) => {
+            (intrinsic_width * i64::from(percent) / 100).clamp(1, 8192)
+        }
     }
 }
 
@@ -2671,10 +2801,8 @@ fn apply_operation_result(
             match result.outcome {
                 OperationOutcome::Completed(WorkspaceOperationResult::Saved {
                     document,
-                    diagnostics,
                     formatted,
                 }) => {
-                    show_diagnostics(project_ui, &diagnostics);
                     let mut editor = project_ui.editor.borrow_mut();
                     if formatted
                         && editor
@@ -2715,7 +2843,6 @@ fn apply_operation_result(
                     }
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted)) => {
-                    show_diagnostics(project_ui, &formatted.diagnostics);
                     let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
                         editor.update_from_buffer(&formatted.source).ok().flatten()
                     });
@@ -2738,13 +2865,7 @@ fn apply_operation_result(
                     show_completion_dialog(project_ui, source_identity, items, cursor);
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)) => {
-                    let preview_diagnostics =
-                        outcome.result.as_ref().ok().map(|artifact| artifact.diagnostics.clone());
-                    let failure = outcome
-                        .result
-                        .as_ref()
-                        .err()
-                        .map(|error| (error.message.clone(), error.diagnostics.clone()));
+                    let failure = outcome.result.as_ref().err().map(|error| error.message.clone());
                     let (accepted, pages) =
                         outcome.apply_to_with_pages(&mut project_ui.render_state.borrow_mut());
                     if !accepted {
@@ -2755,12 +2876,8 @@ fn apply_operation_result(
                             .dispatch(UiCommand::Warn { message: message.to_owned() });
                         project_ui.status.set_text(message);
                     } else if let Some(pages) = pages {
-                        if let Some(diagnostics) = preview_diagnostics.as_deref() {
-                            show_diagnostics(project_ui, diagnostics);
-                        }
                         match display_preview_pages(project_ui, pages) {
                             Ok(()) => {
-                                project_ui.preview_status.set_text("Showing current preview.");
                                 let _ =
                                     project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
                                         message: "Preview rendered".to_owned(),
@@ -2773,21 +2890,14 @@ fn apply_operation_result(
                                     .shell
                                     .borrow_mut()
                                     .dispatch(UiCommand::Fail { message: message.clone() });
-                                project_ui.preview_status.set_text(
-                                    "Preview compiled, but its image could not be displayed.",
-                                );
                                 project_ui.status.set_text(&format!("Error: {message}"));
                             }
                         }
-                    } else if let Some((message, diagnostics)) = failure {
-                        show_diagnostics(project_ui, &diagnostics);
+                    } else if let Some(message) = failure {
                         let _ = project_ui
                             .shell
                             .borrow_mut()
                             .dispatch(UiCommand::Fail { message: message.clone() });
-                        project_ui
-                            .preview_status
-                            .set_text("Preview failed; the last valid preview is retained.");
                         project_ui.status.set_text(&format!("Preview error: {message}"));
                     }
                 }
@@ -2931,9 +3041,7 @@ fn apply_operation_result(
                 }
                 OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
                     message,
-                    diagnostics,
                 }) => {
-                    show_diagnostics(project_ui, &diagnostics);
                     let _ = project_ui
                         .shell
                         .borrow_mut()
@@ -3006,7 +3114,9 @@ fn show_completion_dialog(
             let selected = choices.selected() as usize;
             if let Some(item) = items.get(selected) {
                 let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
-                    editor.replace_range(cursor..cursor, &item.insert_text).ok()
+                    let current = editor.state();
+                    let edit = completion_edit(&current.text, cursor, item)?;
+                    editor.replace_range(edit.range, &edit.replacement).ok()
                 });
                 if let Some(state) = state {
                     apply_editor_state(&project_ui, &state, true);
@@ -3019,33 +3129,6 @@ fn show_completion_dialog(
         dialog.close();
     });
     dialog.present();
-}
-
-fn show_diagnostics(project_ui: &ProjectUi, diagnostics: &[Diagnostic]) {
-    if diagnostics.is_empty() {
-        project_ui.diagnostics_label.set_text("No diagnostics.");
-        return;
-    }
-    let text = diagnostics
-        .iter()
-        .take(20)
-        .map(|diagnostic| {
-            let severity = match diagnostic.severity {
-                DiagnosticSeverity::Error => "Error",
-                DiagnosticSeverity::Warning => "Warning",
-                DiagnosticSeverity::Info => "Info",
-            };
-            match &diagnostic.span {
-                Some(span) => format!(
-                    "{severity}: {}:{}:{}: {}",
-                    span.path, span.line, span.column, diagnostic.message
-                ),
-                None => format!("{severity}: {}", diagnostic.message),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    project_ui.diagnostics_label.set_text(&text);
 }
 
 fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult) {
@@ -3079,13 +3162,15 @@ fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult)
 fn refresh_project_label(project_ui: &ProjectUi) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
-        project_ui.project_label.set_text("No project open");
-        project_ui.project_tree_title.set_text("Project");
+        project_ui.project_label.set_text("Captee");
+        project_ui.project_name_label.set_text("Project");
+        project_ui.project_panel_title.set_text("Project");
         return;
     };
     let modified = if snapshot.app.dirty { " • Modified" } else { "" };
-    project_ui.project_label.set_text(&format!("{} · {}{modified}", project.name, project.root));
-    project_ui.project_tree_title.set_text(&project.name);
+    project_ui.project_label.set_text(&format!("{} · Captee{modified}", project.root));
+    project_ui.project_name_label.set_text(&project.name);
+    project_ui.project_panel_title.set_text(&project.name);
 }
 
 fn choose_project_action(create: bool, project_ui: &ProjectUi) {
@@ -3218,6 +3303,10 @@ fn show_open_project_dialog(project_ui: &ProjectUi) {
         .transient_for(&window)
         .modal(true)
         .build();
+    if let Some(folder) = last_open_project_folder() {
+        let folder = gio::File::for_path(folder);
+        let _ = dialog.set_current_folder(Some(&folder));
+    }
     let project_ui = project_ui.clone();
     dialog.run_async(move |dialog, response| {
         if response != gtk::ResponseType::Accept {
@@ -3241,6 +3330,21 @@ fn show_open_project_dialog(project_ui: &ProjectUi) {
         }
         dialog.destroy();
     });
+}
+
+fn last_open_project_folder() -> Option<PathBuf> {
+    let store_path = glib::user_data_dir().join("captee/recent-projects.json");
+    RecentProjectStore::new(store_path)
+        .load()
+        .ok()?
+        .paths
+        .into_iter()
+        .filter_map(|path| project_parent_folder(Path::new(&path)))
+        .find(|path| path.is_dir())
+}
+
+fn project_parent_folder(path: &Path) -> Option<PathBuf> {
+    path.parent().map(Path::to_path_buf)
 }
 
 struct LoadedProject {
@@ -3352,7 +3456,6 @@ fn open_loaded_project(
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
-            project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -3360,7 +3463,6 @@ fn open_loaded_project(
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
-            project_ui.preview_status.set_text("Preview has not been rendered yet.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &project.settings.keybindings);
             }
@@ -3474,7 +3576,6 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text("");
             project_ui.syncing_buffer.set(false);
-            project_ui.diagnostics_label.set_text("No diagnostics.");
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -3482,7 +3583,6 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
-            project_ui.preview_status.set_text("Render a document to see its preview.");
             if let Some(application) = project_ui.application() {
                 apply_project_accelerators(&application, &KeybindingSettings::default());
             }
@@ -3497,10 +3597,11 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, recovery_draft,
-        validate_project_name,
+        byte_offset_for_character, capture_insertion_expression, preview_width,
+        project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
     use captee_platform::AutosaveSnapshot;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn project_name_accepts_a_single_directory_name() {
@@ -3512,6 +3613,14 @@ mod tests {
         assert!(validate_project_name("").is_err());
         assert!(validate_project_name("nested/project").is_err());
         assert!(validate_project_name("..").is_err());
+    }
+
+    #[test]
+    fn remembered_open_folder_uses_project_parent() {
+        assert_eq!(
+            project_parent_folder(Path::new("Documents/TestProject")),
+            Some(PathBuf::from("Documents"))
+        );
     }
 
     #[test]
@@ -3550,5 +3659,11 @@ mod tests {
             ),
             "#image(\"img/capture.png\")\n#line(length: 1em)\n"
         );
+    }
+
+    #[test]
+    fn preview_fit_page_width_uses_viewport_width_without_height_constraint() {
+        assert_eq!(preview_width(PreviewScale::FitPageWidth, 800, 1000, Some((420, 120))), 420);
+        assert_eq!(preview_width(PreviewScale::FitPage, 800, 1000, Some((420, 120))), 96);
     }
 }

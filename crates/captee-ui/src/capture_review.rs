@@ -1,0 +1,107 @@
+use captee_core::CapturedImage;
+
+/// Headless state machine for the staged document-aware capture review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureReview {
+    image: CapturedImage,
+    annotation: String,
+    before_image: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureReviewError {
+    EmptyAnnotation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedCapture {
+    pub image: CapturedImage,
+    pub annotation: String,
+    pub before_image: bool,
+}
+
+impl CaptureReview {
+    pub fn new(image: CapturedImage) -> Self {
+        Self { image, annotation: String::new(), before_image: true }
+    }
+
+    pub fn image(&self) -> &CapturedImage {
+        &self.image
+    }
+
+    pub fn annotation(&self) -> &str {
+        &self.annotation
+    }
+
+    pub fn before_image(&self) -> bool {
+        self.before_image
+    }
+
+    pub fn set_annotation(&mut self, annotation: impl Into<String>) {
+        self.annotation = annotation.into();
+    }
+
+    pub fn toggle_placement(&mut self) {
+        self.before_image = !self.before_image;
+    }
+
+    pub fn confirm(&self) -> Result<ConfirmedCapture, CaptureReviewError> {
+        let annotation = self.annotation.trim();
+        if annotation.is_empty() {
+            return Err(CaptureReviewError::EmptyAnnotation);
+        }
+        Ok(ConfirmedCapture {
+            image: self.image.clone(),
+            annotation: annotation.to_owned(),
+            before_image: self.before_image,
+        })
+    }
+
+    pub fn discard(self) {}
+
+    pub fn modify(self) -> CapturedImage {
+        self.image
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use captee_core::SelectionGeometry;
+
+    fn image() -> CapturedImage {
+        CapturedImage::with_selection(
+            b"capture".to_vec(),
+            SelectionGeometry { x: 12, y: 24, width: 80, height: 60 },
+        )
+    }
+
+    #[test]
+    fn review_defaults_before_and_retains_selection_until_confirmation() {
+        let review = CaptureReview::new(image());
+        assert!(review.before_image());
+        assert_eq!(review.image().selection().expect("selection").x, 12);
+        assert_eq!(review.confirm(), Err(CaptureReviewError::EmptyAnnotation));
+    }
+
+    #[test]
+    fn placement_toggle_and_confirmation_keep_staged_capture_immutable() {
+        let mut review = CaptureReview::new(image());
+        review.set_annotation("#line(length: 1em)");
+        review.toggle_placement();
+
+        let confirmed = review.confirm().expect("confirmation");
+        assert!(!confirmed.before_image);
+        assert_eq!(confirmed.annotation, "#line(length: 1em)");
+        assert_eq!(confirmed.image.bytes(), b"capture");
+        assert_eq!(review.image().bytes(), b"capture");
+    }
+
+    #[test]
+    fn discard_and_modify_have_no_confirmation_side_effects() {
+        let image = image();
+        let modified = CaptureReview::new(image.clone()).modify();
+        assert_eq!(modified, image);
+        CaptureReview::new(image).discard();
+    }
+}
