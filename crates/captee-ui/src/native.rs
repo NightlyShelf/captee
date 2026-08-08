@@ -128,7 +128,7 @@ fn build_ui(application: &Application) {
          .typst-editor border { background-color: #3c4043; }\
          .workspace-header { background-color: #0a0705; }\
          .compact-menu-button, .compact-menu-button > button {\
-           padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
+           margin: 0; padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
          }\
          .compact-menu-text { font-size: 12px; }\
          .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
@@ -396,7 +396,7 @@ fn build_workspace(
     project_name.add_css_class("compact-menu-text");
     project_panel_title.set_xalign(0.0);
     project_panel_title.set_hexpand(true);
-    project_panel_title.set_margin_start(30);
+    project_panel_title.set_margin_start(27);
     project_panel_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     project_panel_title.set_max_width_chars(16);
     project_panel_title.set_valign(Align::Center);
