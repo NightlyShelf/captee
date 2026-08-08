@@ -188,7 +188,7 @@
 
 ## Workspace chrome refinement
 
-- Finding: Reduced menu button height while adding header breathing room, aligned the project title and tree actions, removed wide paned handles, removed the preview status label from the rendered pane, and hid workspace chrome on Home.
+- Finding: Reduced menu button height while adding header breathing room, moved the project title into the compact menu row, aligned it with the menu text, removed wide paned handles, removed the preview status label from the rendered pane, and hid workspace chrome on Home.
 - Impact: The GTK header and divider chrome use fewer visible pixels; preview updates no longer perform label text layout or widget updates. No new I/O, worker, or process lifetime is introduced.
 - Mitigation: Render failures and progress remain available through the global status channel, while page display and scale controls retain their existing revision checks and scroll behavior.
 - Follow-up: Recheck the compact header and narrow divider handles on small displays.

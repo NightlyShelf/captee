@@ -101,7 +101,7 @@ fn build_ui(application: &Application) {
     project_tree.set_selection_mode(gtk::SelectionMode::None);
     project_tree.set_hexpand(true);
     project_tree.set_vexpand(true);
-    let project_tree_title = Label::new(Some("Project"));
+    let project_name_label = Label::new(Some("Project"));
     let (background_sender, background_receiver) = mpsc::channel();
     let window = ApplicationWindow::builder()
         .application(application)
@@ -125,6 +125,7 @@ fn build_ui(application: &Application) {
            background-color: #292a2d; color: #9aa0a6;\
          }\
          .typst-editor border { background-color: #3c4043; }\
+         .workspace-header { background-color: #0a0705; }\
          .compact-menu-button, .compact-menu-button > button {\
            padding: 0 4px; min-height: 0; min-width: 0;\
          }\
@@ -205,7 +206,7 @@ fn build_ui(application: &Application) {
             &source_view,
             PreviewWidgets { scroller: &preview_scroller, scale: &preview_scale },
             &project_tree,
-            &project_tree_title,
+            &project_name_label,
         ),
         Some("workspace"),
     );
@@ -221,7 +222,7 @@ fn build_ui(application: &Application) {
         source_view: source_view.clone(),
         project_label: project_label.clone(),
         project_tree: project_tree.clone(),
-        project_tree_title: project_tree_title.clone(),
+        project_name_label: project_name_label.clone(),
         workspace_overlay: gtk::Overlay::new(),
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
         tree_initialized: Rc::new(Cell::new(false)),
@@ -247,7 +248,7 @@ fn build_ui(application: &Application) {
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
 
-    let header = build_menu_header(&menus, &project_label);
+    let header = build_menu_header(&menus, &project_name_label, &project_label);
     header.set_visible(false);
     let header_visibility = header.clone();
     stack.connect_visible_child_name_notify(move |stack| {
@@ -317,10 +318,15 @@ struct PreviewWidgets<'a> {
     scale: &'a gtk::DropDown,
 }
 
-fn build_menu_header(menus: &WorkspaceMenus, project_label: &Label) -> GtkBox {
+fn build_menu_header(
+    menus: &WorkspaceMenus,
+    project_name: &Label,
+    project_label: &Label,
+) -> GtkBox {
     let header = GtkBox::new(Orientation::Horizontal, 2);
-    header.set_margin_top(2);
-    header.set_margin_bottom(10);
+    header.add_css_class("workspace-header");
+    header.set_margin_top(4);
+    header.set_margin_bottom(4);
     header.set_margin_start(4);
     header.set_margin_end(4);
     header.set_valign(Align::Start);
@@ -340,6 +346,12 @@ fn build_menu_header(menus: &WorkspaceMenus, project_label: &Label) -> GtkBox {
         button.set_valign(Align::Start);
         header.append(&button);
     }
+    project_name.set_xalign(0.0);
+    project_name.set_hexpand(false);
+    project_name.set_margin_start(8);
+    project_name.set_margin_end(4);
+    project_name.set_valign(Align::Center);
+    header.append(project_name);
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
     project_label.set_margin_start(4);
@@ -352,7 +364,7 @@ fn build_workspace(
     source_view: &sourceview::View,
     preview_widgets: PreviewWidgets<'_>,
     project_tree: &ListBox,
-    project_tree_title: &Label,
+    project_name_label: &Label,
 ) -> GtkBox {
     let PreviewWidgets { scroller: preview_scroller, scale: preview_scale } = preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
@@ -364,12 +376,12 @@ fn build_workspace(
     navigation.set_width_request(0);
     let tree_header = GtkBox::new(Orientation::Horizontal, 2);
     tree_header.set_valign(Align::Center);
-    let tree_title = project_tree_title.clone();
-    tree_title.set_xalign(0.0);
-    tree_title.set_hexpand(true);
-    tree_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    tree_title.set_max_width_chars(16);
-    tree_title.set_valign(Align::Center);
+    let project_name = project_name_label.clone();
+    project_name.set_xalign(0.0);
+    project_name.set_hexpand(false);
+    project_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    project_name.set_max_width_chars(16);
+    project_name.set_valign(Align::Center);
     let add_file = Button::from_icon_name("document-new-symbolic");
     add_file.set_action_name(Some("app.new-file"));
     add_file.add_css_class("flat");
@@ -384,7 +396,9 @@ fn build_workspace(
     add_folder.set_size_request(22, 22);
     add_folder.set_valign(Align::Center);
     add_folder.set_tooltip_text(Some("Add folder"));
-    tree_header.append(&tree_title);
+    let tree_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    tree_spacer.set_hexpand(true);
+    tree_header.append(&tree_spacer);
     tree_header.append(&add_file);
     tree_header.append(&add_folder);
     navigation.append(&tree_header);
@@ -602,7 +616,7 @@ struct ProjectUi {
     source_view: sourceview::View,
     project_label: Label,
     project_tree: ListBox,
-    project_tree_title: Label,
+    project_name_label: Label,
     workspace_overlay: gtk::Overlay,
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
     tree_initialized: Rc<Cell<bool>>,
@@ -3128,12 +3142,12 @@ fn refresh_project_label(project_ui: &ProjectUi) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
         project_ui.project_label.set_text("Captee");
-        project_ui.project_tree_title.set_text("Project");
+        project_ui.project_name_label.set_text("Project");
         return;
     };
     let modified = if snapshot.app.dirty { " • Modified" } else { "" };
     project_ui.project_label.set_text(&format!("{} · Captee{modified}", project.root));
-    project_ui.project_tree_title.set_text(&project.name);
+    project_ui.project_name_label.set_text(&project.name);
 }
 
 fn choose_project_action(create: bool, project_ui: &ProjectUi) {

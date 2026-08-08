@@ -280,11 +280,11 @@ currently scans synchronously and skips symlinks; lazy expansion and
 worker-backed enumeration remain follow-up work for very large projects. The
 project divider is user-resizable, the initial editor/preview divider is set to
 an equal split, and long labels use GTK ellipsization. Compact File, Edit,
-Capture, and View menu buttons share the top header with the project path and
-Captee label; menu accelerators remain active but are not rendered into menu
-item text. The header is hidden on the Home surface and shown only for an
-active workspace. Both workspace dividers use the narrow GTK handle style
-without double-line borders.
+Capture, and View menu buttons share the top header with the project name,
+project path, and Captee label; menu accelerators remain active but are not
+rendered into menu item text. The header is hidden on the Home surface and
+shown only for an active workspace. Both workspace dividers use the narrow GTK
+handle style without double-line borders.
 
 Capture confirmation is a staged document-composition popup drawn as a small
 borderless floating window on the workspace that was active when capture
