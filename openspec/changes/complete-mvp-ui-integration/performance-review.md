@@ -179,6 +179,13 @@
 - Mitigation: Fit page retains two-dimensional bounds, fixed scales remain unchanged, status defaults off through a named constant, and render diagnostics remain revision-safe in core state even though preview UI no longer displays them.
 - Follow-up: Keep compiler bundling in packaging and make `tools/fetch-typst.sh` part of developer setup when no PATH compiler or `CAPTEE_TYPST_BINARY` exists.
 
+## Workspace header and navigation refinement
+
+- Finding: Moved compact menu buttons into the top header, removed the duplicate Captee title, placed project path plus Captee text after the menus, hid rendered accelerator hints from menu item labels, reduced project-tree controls, and changed initial navigation sizing from one sixth to one eighth while allowing shrink below the initial width.
+- Impact: Header and tree layout now use fewer pixels and less widget spacing. Paned resizing remains constant-time; no new I/O, process, or worker lifetime is introduced.
+- Mitigation: Menu action accelerators remain registered independently of visible menu labels, tree actions retain accessible tooltips, and `set_shrink_start_child(true)` removes the previous hard minimum imposed by the navigation pane.
+- Follow-up: Recheck typography and minimum readable tree width on displays below 1024 pixels.
+
 ## Global capture shortcut
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.

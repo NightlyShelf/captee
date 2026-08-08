@@ -267,16 +267,20 @@ project replacement, or source edits from racing committed state.
 
 The workspace navigation boundary now exposes a project-relative tree model to
 GTK. The tree renders files and folders in parent-before-child order with
-indentation and type icons, starts at roughly one sixth of the default window
-width, and leaves the remaining paned area to the editor and preview. Clicks
-open files, folder clicks toggle expansion, triple-click opens rename, and drag
-sources/drop targets support validated moves including the project root.
+indentation and type icons, starts at roughly one eighth of the default window
+width, and leaves the remaining paned area to the editor and preview. The
+navigation pane can shrink below its initial width. Clicks open files, folder
+clicks toggle expansion, triple-click opens rename, and drag sources/drop
+targets support validated moves including the project root.
 Context actions route create, inline rename, move, and delete through the
 platform workspace boundary after small confirmation dialogs. Tree refresh
 currently scans synchronously and skips symlinks; lazy expansion and
 worker-backed enumeration remain follow-up work for very large projects. The
 project divider is user-resizable, the initial editor/preview divider is set to
-an equal split, and long labels use GTK ellipsization.
+an equal split, and long labels use GTK ellipsization. Compact File, Edit,
+Capture, and View menu buttons share the top header with the project path and
+Captee label; menu accelerators remain active but are not rendered into menu
+item text.
 
 Capture confirmation is a staged document-composition popup drawn as a small
 borderless floating window on the workspace that was active when capture

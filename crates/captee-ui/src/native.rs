@@ -7,8 +7,8 @@ use crate::operation::{
     ResultDisposition, SourceIdentity,
 };
 use crate::{
-    initial_editor_preview_position, initial_navigation_position, UiCommand, UiShell,
-    INITIAL_NAVIGATION_WIDTH,
+    initial_editor_preview_position, initial_navigation_position, status_bar_action_label,
+    UiCommand, UiShell,
 };
 use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
@@ -27,6 +27,7 @@ use captee_platform::{
     TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
+use glib::variant::ToVariant;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -123,7 +124,9 @@ fn build_ui(application: &Application) {
          .typst-editor gutter, .typst-editor gutter.left {\
            background-color: #292a2d; color: #9aa0a6;\
          }\
-         .typst-editor border { background-color: #3c4043; }",
+         .typst-editor border { background-color: #3c4043; }\
+         .compact-menu-button { padding: 1px 4px; min-height: 0; min-width: 0; }\
+         .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -162,7 +165,7 @@ fn build_ui(application: &Application) {
     status_row.append(&status);
     status_row.append(&cancel_button);
 
-    let project_label = Label::new(Some("No project open"));
+    let project_label = Label::new(Some("Captee"));
     project_label.set_xalign(0.0);
     project_label.set_hexpand(true);
     let preview_pages = GtkBox::new(Orientation::Vertical, 16);
@@ -206,7 +209,6 @@ fn build_ui(application: &Application) {
                 scroller: &preview_scroller,
                 scale: &preview_scale,
             },
-            &menus,
             &project_tree,
             &project_tree_title,
         ),
@@ -229,6 +231,7 @@ fn build_ui(application: &Application) {
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
         tree_initialized: Rc::new(Cell::new(false)),
         status_row: status_row.clone(),
+        status_bar_item: menus.status_bar_item.clone(),
         preview_pages,
         preview_status,
         preview_scroller,
@@ -250,15 +253,7 @@ fn build_ui(application: &Application) {
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
 
-    let header = GtkBox::new(Orientation::Horizontal, 8);
-    header.set_margin_top(8);
-    header.set_margin_bottom(8);
-    header.set_margin_start(12);
-    header.set_margin_end(12);
-    let title = Label::new(Some("Captee"));
-    title.add_css_class("title-3");
-    header.append(&title);
-    header.append(&project_label);
+    let header = build_menu_header(&menus, &project_label);
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.append(&header);
@@ -314,6 +309,7 @@ struct WorkspaceMenus {
     edit: gio::Menu,
     capture: gio::Menu,
     view: gio::Menu,
+    status_bar_item: gio::MenuItem,
 }
 
 struct PreviewWidgets<'a> {
@@ -322,30 +318,65 @@ struct PreviewWidgets<'a> {
     scale: &'a gtk::DropDown,
 }
 
+fn build_menu_header(menus: &WorkspaceMenus, project_label: &Label) -> GtkBox {
+    let header = GtkBox::new(Orientation::Horizontal, 2);
+    header.set_margin_top(2);
+    header.set_margin_bottom(2);
+    header.set_margin_start(4);
+    header.set_margin_end(4);
+    for (label, menu, tooltip) in [
+        ("File", &menus.file, "Project and document actions"),
+        ("Edit", &menus.edit, "Editing actions"),
+        ("Capture", &menus.capture, "Capture actions"),
+        ("View", &menus.view, "Preview and export actions"),
+    ] {
+        let button = MenuButton::new();
+        button.set_label(label);
+        button.set_menu_model(Some(menu));
+        button.add_css_class("flat");
+        button.add_css_class("compact-menu-button");
+        button.set_tooltip_text(Some(tooltip));
+        header.append(&button);
+    }
+    project_label.set_xalign(0.0);
+    project_label.set_hexpand(true);
+    project_label.set_margin_start(4);
+    header.append(project_label);
+    header
+}
+
 fn build_workspace(
     source_view: &sourceview::View,
     preview_widgets: PreviewWidgets<'_>,
-    menus: &WorkspaceMenus,
     project_tree: &ListBox,
     project_tree_title: &Label,
 ) -> GtkBox {
     let PreviewWidgets { status: preview_status, scroller: preview_scroller, scale: preview_scale } =
         preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
-    navigation.set_margin_top(16);
-    navigation.set_margin_bottom(16);
-    navigation.set_margin_start(16);
-    navigation.set_margin_end(16);
-    navigation.set_width_request(INITIAL_NAVIGATION_WIDTH);
-    let tree_header = GtkBox::new(Orientation::Horizontal, 4);
+    navigation.set_margin_top(4);
+    navigation.set_margin_bottom(4);
+    navigation.set_margin_start(4);
+    navigation.set_margin_end(4);
+    navigation.set_spacing(4);
+    navigation.set_width_request(0);
+    let tree_header = GtkBox::new(Orientation::Horizontal, 2);
     let tree_title = project_tree_title.clone();
     tree_title.set_xalign(0.0);
     tree_title.set_hexpand(true);
+    tree_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    tree_title.set_max_width_chars(16);
     let add_file = Button::from_icon_name("document-new-symbolic");
     add_file.set_action_name(Some("app.new-file"));
+    add_file.add_css_class("flat");
+    add_file.add_css_class("project-tree-action");
+    add_file.set_size_request(22, 22);
     add_file.set_tooltip_text(Some("Add file"));
     let add_folder = Button::from_icon_name("folder-new-symbolic");
     add_folder.set_action_name(Some("app.new-folder"));
+    add_folder.add_css_class("flat");
+    add_folder.add_css_class("project-tree-action");
+    add_folder.set_size_request(22, 22);
     add_folder.set_tooltip_text(Some("Add folder"));
     tree_header.append(&tree_title);
     tree_header.append(&add_file);
@@ -390,7 +421,7 @@ fn build_workspace(
     workspace.set_start_child(Some(&navigation));
     workspace.set_end_child(Some(&editor_preview));
     workspace.set_resize_start_child(true);
-    workspace.set_shrink_start_child(false);
+    workspace.set_shrink_start_child(true);
     workspace.set_resize_end_child(true);
     workspace.set_wide_handle(true);
     workspace.connect_map(|paned| {
@@ -403,53 +434,32 @@ fn build_workspace(
         });
     });
 
-    let menu_strip = GtkBox::new(Orientation::Horizontal, 4);
-    menu_strip.set_halign(Align::Start);
-    menu_strip.set_margin_start(12);
-    menu_strip.set_margin_end(12);
-    menu_strip.set_margin_top(8);
-    menu_strip.set_margin_bottom(8);
-    for (label, menu, tooltip) in [
-        ("File", &menus.file, "Project and document actions"),
-        ("Edit", &menus.edit, "Editing actions"),
-        ("Capture", &menus.capture, "Capture actions"),
-        ("View", &menus.view, "Preview and export actions"),
-    ] {
-        let button = MenuButton::new();
-        button.set_label(label);
-        button.set_menu_model(Some(menu));
-        button.add_css_class("flat");
-        button.set_tooltip_text(Some(tooltip));
-        menu_strip.append(&button);
-    }
-
     let root = GtkBox::new(Orientation::Vertical, 0);
-    let separator = gtk::Separator::new(Orientation::Horizontal);
-    root.append(&menu_strip);
-    root.append(&separator);
     root.append(&workspace);
     root
 }
 
 fn install_actions(application: &Application) -> WorkspaceMenus {
     let file = gio::Menu::new();
-    file.append(Some("New project"), Some("app.new-project"));
-    file.append(Some("Open project"), Some("app.open-project"));
-    file.append(Some("Close project"), Some("app.close-project"));
-    file.append(Some("Save"), Some("app.save"));
+    append_menu_action(&file, "New project", "app.new-project");
+    append_menu_action(&file, "Open project", "app.open-project");
+    append_menu_action(&file, "Close project", "app.close-project");
+    append_menu_action(&file, "Save", "app.save");
     let edit = gio::Menu::new();
-    edit.append(Some("Format"), Some("app.format"));
-    edit.append(Some("Find and Replace"), Some("app.find-replace"));
-    edit.append(Some("Completion"), Some("app.completion"));
-    edit.append(Some("Undo"), Some("app.undo"));
-    edit.append(Some("Redo"), Some("app.redo"));
+    append_menu_action(&edit, "Format", "app.format");
+    append_menu_action(&edit, "Find and Replace", "app.find-replace");
+    append_menu_action(&edit, "Completion", "app.completion");
+    append_menu_action(&edit, "Undo", "app.undo");
+    append_menu_action(&edit, "Redo", "app.redo");
     let capture = gio::Menu::new();
-    capture.append(Some("Capture"), Some("app.capture"));
+    append_menu_action(&capture, "Capture", "app.capture");
     let view = gio::Menu::new();
-    view.append(Some("Preview"), Some("app.preview"));
-    view.append(Some("Export PDF"), Some("app.export"));
-    view.append(Some("Show status bar"), Some("app.status-bar"));
-    view.append(Some("Settings"), Some("app.settings"));
+    append_menu_action(&view, "Preview", "app.preview");
+    append_menu_action(&view, "Export PDF", "app.export");
+    let status_bar_item = gio::MenuItem::new(Some("Show status bar"), Some("app.status-bar"));
+    status_bar_item.set_attribute_value("accel", Some(&"".to_variant()));
+    view.append_item(&status_bar_item);
+    append_menu_action(&view, "Settings", "app.settings");
 
     for (name, accelerator) in [
         ("new-project", "<Primary>n"),
@@ -473,7 +483,13 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         application.add_action(&action);
         application.set_accels_for_action(&format!("app.{name}"), &[accelerator]);
     }
-    WorkspaceMenus { file, edit, capture, view }
+    WorkspaceMenus { file, edit, capture, view, status_bar_item }
+}
+
+fn append_menu_action(menu: &gio::Menu, label: &str, action: &str) {
+    let item = gio::MenuItem::new(Some(label), Some(action));
+    item.set_attribute_value("accel", Some(&"".to_variant()));
+    menu.append_item(&item);
 }
 
 fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
@@ -548,8 +564,11 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let action = application.lookup_action("status-bar").expect("installed status action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let status_ui = project_ui.clone();
+    let status_item = project_ui.status_bar_item.clone();
     action.connect_activate(move |_, _| {
-        status_ui.status_row.set_visible(!status_ui.status_row.is_visible());
+        let visible = !status_ui.status_row.is_visible();
+        status_ui.status_row.set_visible(visible);
+        status_item.set_label(Some(status_bar_action_label(visible)));
     });
 }
 
@@ -583,6 +602,7 @@ struct ProjectUi {
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
     tree_initialized: Rc<Cell<bool>>,
     status_row: GtkBox,
+    status_bar_item: gio::MenuItem,
     preview_pages: GtkBox,
     preview_status: Label,
     preview_scroller: ScrolledWindow,
@@ -3112,12 +3132,12 @@ fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult)
 fn refresh_project_label(project_ui: &ProjectUi) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
-        project_ui.project_label.set_text("No project open");
+        project_ui.project_label.set_text("Captee");
         project_ui.project_tree_title.set_text("Project");
         return;
     };
     let modified = if snapshot.app.dirty { " • Modified" } else { "" };
-    project_ui.project_label.set_text(&format!("{} · {}{modified}", project.name, project.root));
+    project_ui.project_label.set_text(&format!("{} · Captee{modified}", project.root));
     project_ui.project_tree_title.set_text(&project.name);
 }
 

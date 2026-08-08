@@ -60,14 +60,22 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { accelerator: "<Primary><Shift>e", action: ShortcutAction::Export },
 ];
 
-pub const INITIAL_NAVIGATION_WIDTH: i32 = 212;
+pub const INITIAL_NAVIGATION_WIDTH: i32 = 144;
 
 pub fn initial_navigation_position(width: i32) -> i32 {
-    width.max(0) / 6
+    width.max(0) / 8
 }
 
 pub fn initial_editor_preview_position(width: i32) -> i32 {
     width.max(0) / 2
+}
+
+pub fn status_bar_action_label(visible: bool) -> &'static str {
+    if visible {
+        "Hide status bar"
+    } else {
+        "Show status bar"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,11 +392,17 @@ mod tests {
     }
 
     #[test]
-    fn workspace_layout_starts_with_one_sixth_navigation_and_equal_remaining_panes() {
-        assert_eq!(INITIAL_NAVIGATION_WIDTH, 212);
-        assert_eq!(initial_navigation_position(1280), 213);
+    fn workspace_layout_starts_with_one_eighth_navigation_and_equal_remaining_panes() {
+        assert_eq!(INITIAL_NAVIGATION_WIDTH, 144);
+        assert_eq!(initial_navigation_position(1280), 160);
         assert_eq!(initial_editor_preview_position(1067), 533);
         assert_eq!(initial_navigation_position(-1), 0);
+    }
+
+    #[test]
+    fn status_bar_action_label_matches_visibility() {
+        assert_eq!(status_bar_action_label(false), "Show status bar");
+        assert_eq!(status_bar_action_label(true), "Hide status bar");
     }
 
     #[test]
