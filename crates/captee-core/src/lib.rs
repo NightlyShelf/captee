@@ -33,7 +33,8 @@ pub use diagnostics::{parse_diagnostics, Diagnostic, DiagnosticSeverity, SourceS
 pub use editor::{DocumentPersistence, EditError, SourceDocument};
 pub use project::{
     CaptureSettings, ConfigError, FormattingSettings, KeybindingSettings, PreviewSettings,
-    ProjectConfig, ProjectSettings, RecentProjects, CONFIG_VERSION,
+    ProjectConfig, ProjectSettings, RecentProject, RecentProjects, CONFIG_VERSION,
+    RECENT_PROJECT_LIMIT,
 };
 pub use render::{RenderState, RenderedPreview};
 pub use revision::{DebouncedScheduler, PendingWork, WorkKind};

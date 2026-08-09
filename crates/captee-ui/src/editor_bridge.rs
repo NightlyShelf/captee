@@ -14,6 +14,7 @@ pub struct EditorState {
 pub struct EditorBridge {
     entry_document: PathBuf,
     document: SourceDocument,
+    revision_base: u64,
 }
 
 /// Narrow adapter used after capture storage succeeds. It inserts at the
@@ -45,7 +46,19 @@ impl EditorInserter for EditorInsertionBridge<'_> {
 
 impl EditorBridge {
     pub fn new(entry_document: impl Into<PathBuf>, source: impl Into<String>) -> Self {
-        Self { entry_document: entry_document.into(), document: SourceDocument::new(source) }
+        Self::new_at_revision(entry_document, source, 0)
+    }
+
+    pub fn new_at_revision(
+        entry_document: impl Into<PathBuf>,
+        source: impl Into<String>,
+        revision_base: u64,
+    ) -> Self {
+        Self {
+            entry_document: entry_document.into(),
+            document: SourceDocument::new(source),
+            revision_base,
+        }
     }
 
     pub fn entry_document(&self) -> &Path {
@@ -55,7 +68,7 @@ impl EditorBridge {
     pub fn state(&self) -> EditorState {
         EditorState {
             text: self.document.text().to_owned(),
-            revision: self.document.revision(),
+            revision: self.revision_base.saturating_add(self.document.revision()),
             dirty: self.document.is_dirty(),
         }
     }
@@ -117,6 +130,13 @@ mod tests {
         assert_eq!(state.revision, 1);
         assert!(state.dirty);
         assert!(bridge.update_from_buffer("hello world").expect("same text").is_none());
+    }
+
+    #[test]
+    fn revision_base_keeps_file_switches_distinct() {
+        let bridge = EditorBridge::new_at_revision("appendix.typ", "hello", 12);
+
+        assert_eq!(bridge.state().revision, 12);
     }
 
     #[test]

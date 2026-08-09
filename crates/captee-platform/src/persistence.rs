@@ -72,16 +72,47 @@ impl RecentProjectStore {
             return Ok(RecentProjects::default());
         }
         let bytes = fs::read(&self.path).map_err(RecentProjectError::Io)?;
-        serde_json::from_slice(&bytes).map_err(RecentProjectError::Serialization)
+        let mut recent: RecentProjects =
+            serde_json::from_slice(&bytes).map_err(RecentProjectError::Serialization)?;
+        recent.migrate_legacy_paths();
+        Ok(recent)
     }
 
-    pub fn record(&self, path: impl Into<String>) -> Result<RecentProjects, RecentProjectError> {
+    pub fn record(
+        &self,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        last_access_unix_seconds: u64,
+    ) -> Result<RecentProjects, RecentProjectError> {
         let mut recent = self.load()?;
-        recent.record(path);
+        recent.record(name, path, last_access_unix_seconds);
+        self.save(&recent)?;
+        Ok(recent)
+    }
+
+    pub fn set_pinned(
+        &self,
+        path: &str,
+        pinned: bool,
+    ) -> Result<RecentProjects, RecentProjectError> {
+        let mut recent = self.load()?;
+        recent.set_pinned(path, pinned);
+        self.save(&recent)?;
+        Ok(recent)
+    }
+
+    pub fn remove(&self, path: &str) -> Result<RecentProjects, RecentProjectError> {
+        let mut recent = self.load()?;
+        recent.remove(path);
+        self.save(&recent)?;
+        Ok(recent)
+    }
+
+    fn save(&self, recent: &RecentProjects) -> Result<(), RecentProjectError> {
         let payload =
             serde_json::to_vec_pretty(&recent).map_err(RecentProjectError::Serialization)?;
         atomic_write(&self.path, &payload).map_err(RecentProjectError::Atomic)?;
-        Ok(recent)
+        Ok(())
     }
 }
 
@@ -151,14 +182,31 @@ mod tests {
     fn recent_projects_are_persisted_deduplicated_and_bounded() {
         let root = test_root("recent");
         let store = RecentProjectStore::new(root.join("recent.json"));
-        for index in 0..12 {
-            store.record(format!("project-{index}")).expect("record");
+        for index in 0..7 {
+            store
+                .record(format!("Project {index}"), format!("project-{index}"), index)
+                .expect("record");
         }
-        store.record("project-5").expect("deduplicate");
+        store.record("Project 5", "project-5", 9).expect("deduplicate");
 
         let recent = store.load().expect("load");
-        assert_eq!(recent.paths.first().map(String::as_str), Some("project-5"));
-        assert_eq!(recent.paths.len(), 10);
+        assert_eq!(recent.entries.first().map(|entry| entry.path.as_str()), Some("project-5"));
+        assert_eq!(recent.entries.len(), 5);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn recent_project_pin_and_removal_are_persisted() {
+        let root = test_root("recent-actions");
+        let store = RecentProjectStore::new(root.join("recent.json"));
+        store.record("Notes", "/work/notes", 1).expect("record");
+        store.set_pinned("/work/notes", true).expect("pin");
+
+        let recent = store.load().expect("load pinned project");
+        assert!(recent.entries[0].pinned);
+
+        store.remove("/work/notes").expect("remove");
+        assert!(store.load().expect("load removal").entries.is_empty());
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

@@ -34,3 +34,7 @@ cd captee
 cargo build --release -p captee-ui
 ./target/release/captee-ui
 ```
+
+## Configuration
+
+Recent projects: `$XDG_DATA_HOME/captee/recent-projects.json` (usually `~/.local/share/captee/`).
