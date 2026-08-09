@@ -4,8 +4,8 @@
 
 ## 1. Unified review editor
 
-- [ ] 1.1 Replace separate context and annotation areas with one Typst editor: prior content gray, editable annotation at insertion point, original line numbers kept.
-- [ ] 1.2 Remove selection coordinates; align placeholder and clear it on first annotation input.
+- [x] 1.1 Replace separate context and annotation areas with one Typst editor: prior content gray, editable annotation at insertion point, original line numbers kept.
+- [x] 1.2 Remove selection coordinates; align placeholder and clear it on first annotation input.
 
 ## 2. Capture flow
 

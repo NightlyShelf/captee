@@ -1914,42 +1914,6 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.set_valign(Align::Fill);
     panel.add_css_class("capture-review-panel");
 
-    let source_context = project_ui
-        .editor
-        .borrow()
-        .as_ref()
-        .map(EditorBridge::state)
-        .map(|state| {
-            state
-                .text
-                .lines()
-                .rev()
-                .take(5)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .filter(|text| !text.is_empty())
-        .unwrap_or_default();
-    let context_label = Label::new(Some(&source_context));
-    context_label.set_xalign(0.0);
-    context_label.set_wrap(true);
-    context_label.set_selectable(true);
-    context_label.set_max_width_chars(100);
-    context_label.add_css_class("capture-context");
-    panel.append(&context_label);
-
-    let selection_text = image
-        .selection()
-        .map(format_selection_geometry)
-        .unwrap_or_else(|| "Selection geometry unavailable for this capture backend".to_owned());
-    let selection_label = Label::new(Some(&selection_text));
-    selection_label.set_xalign(0.0);
-    selection_label.add_css_class("capture-context");
-    panel.append(&selection_label);
-
     let placement = ToggleButton::with_label("Insert annotation before image");
     placement.set_active(true);
     placement.set_tooltip_text(Some(
@@ -1971,14 +1935,36 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let code_buffer = sourceview::Buffer::builder().highlight_matching_brackets(true).build();
     configure_typst_buffer(&code_buffer);
-    code_buffer.set_text("");
+    let mut source_context = project_ui
+        .source_buffer
+        .text(&project_ui.source_buffer.start_iter(), &project_ui.source_buffer.end_iter(), true)
+        .to_string();
+    let cursor = project_ui.source_buffer.cursor_position().max(0) as usize;
+    let cursor = byte_offset_for_character(&source_context, cursor);
+    source_context.truncate(cursor);
+    if !source_context.is_empty() && !source_context.ends_with('\n') {
+        source_context.push('\n');
+    }
+    let annotation_offset = source_context.chars().count() as i32;
+    code_buffer.set_text(&source_context);
+    if annotation_offset > 0 {
+        let context_tag = gtk::TextTag::builder()
+            .name("capture-review-context")
+            .foreground("#9aa0a6")
+            .editable(false)
+            .build();
+        code_buffer.tag_table().add(&context_tag);
+        let start = code_buffer.start_iter();
+        let end = code_buffer.iter_at_offset(annotation_offset);
+        code_buffer.apply_tag(&context_tag, &start, &end);
+    }
     let code_view = sourceview::View::with_buffer(&code_buffer);
     code_view.set_show_line_numbers(true);
     code_view.set_monospace(true);
     code_view.set_hexpand(true);
     code_view.set_vexpand(true);
     code_view.add_css_class("typst-editor");
-    code_view.set_tooltip_text(Some("Full Typst annotation code"));
+    code_view.set_tooltip_text(Some("Typst annotation at the insertion point"));
 
     let code_scroller = ScrolledWindow::builder()
         .child(&code_view)
@@ -1991,13 +1977,13 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let code_placeholder = Label::new(Some("Type Typst annotation here…"));
     code_placeholder.set_halign(Align::Start);
     code_placeholder.set_valign(Align::Start);
-    code_placeholder.set_margin_start(56);
+    code_placeholder.set_margin_start(48);
     code_placeholder.set_margin_top(10);
     code_placeholder.add_css_class("capture-context");
     code_editor.add_overlay(&code_placeholder);
     let code_placeholder_for_change = code_placeholder.clone();
     code_buffer.connect_changed(move |buffer| {
-        code_placeholder_for_change.set_visible(buffer.char_count() == 0);
+        code_placeholder_for_change.set_visible(buffer.char_count() == annotation_offset);
     });
     panel.append(&code_editor);
     let bottom = GtkBox::new(Orientation::Horizontal, 8);
@@ -2105,6 +2091,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         glib::Propagation::Proceed
     });
     panel.add_controller(key_controller);
+    let annotation_start = code_buffer.iter_at_offset(annotation_offset);
+    code_buffer.place_cursor(&annotation_start);
     code_view.grab_focus();
 
     let modify_ui = project_ui.clone();
@@ -2129,8 +2117,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let confirm_window = review_window.clone();
     let review_for_confirm = Rc::clone(&review);
     confirm.connect_clicked(move |_| {
-        let text =
-            code_buffer.text(&code_buffer.start_iter(), &code_buffer.end_iter(), true).to_string();
+        let start = code_buffer.iter_at_offset(annotation_offset);
+        let text = code_buffer.text(&start, &code_buffer.end_iter(), true).to_string();
         let annotation = text.trim().to_owned();
         if annotation.is_empty() {
             confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
@@ -2281,13 +2269,6 @@ fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32
     let size = (texture.width(), texture.height());
     picture.set_paintable(Some(&texture));
     Ok(size)
-}
-
-fn format_selection_geometry(selection: SelectionGeometry) -> String {
-    format!(
-        "Selection: x={}, y={}, width={}, height={}",
-        selection.x, selection.y, selection.width, selection.height
-    )
 }
 
 fn configure_typst_buffer(buffer: &sourceview::Buffer) {
