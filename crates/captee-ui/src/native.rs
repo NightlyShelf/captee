@@ -71,6 +71,12 @@ enum PreviewScale {
     Percent(u16),
 }
 
+#[derive(Clone, Copy)]
+struct PreviewScrollAnchor {
+    page: usize,
+    y_ratio: f64,
+}
+
 const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
 
 #[derive(Debug)]
@@ -2872,7 +2878,16 @@ fn queue_preview_resize(
             project_ui.preview_scale_mode.get(),
             PreviewScale::FitPage | PreviewScale::FitPageWidth
         ) {
+            let anchor =
+                preview_scroll_anchor(&project_ui.preview_pages, &project_ui.preview_scroller);
             apply_preview_zoom(&project_ui);
+            if let Some(anchor) = anchor {
+                restore_preview_scroll_anchor(
+                    &project_ui.preview_pages,
+                    &project_ui.preview_scroller,
+                    anchor,
+                );
+            }
         }
     });
 }
@@ -2911,6 +2926,49 @@ fn apply_preview_zoom(project_ui: &ProjectUi) {
         }
         child = widget.next_sibling();
     }
+}
+
+fn preview_scroll_anchor(pages: &GtkBox, scroller: &ScrolledWindow) -> Option<PreviewScrollAnchor> {
+    let scroll_y = scroller.vadjustment().value();
+    let mut page = pages.first_child();
+    let mut page_number = 1;
+    while let Some(widget) = page {
+        let allocation = widget.allocation();
+        let top = f64::from(allocation.y());
+        let height = f64::from(allocation.height());
+        if height > 0.0 && scroll_y <= top + height {
+            return Some(PreviewScrollAnchor {
+                page: page_number,
+                y_ratio: ((scroll_y - top) / height).clamp(0.0, 1.0),
+            });
+        }
+        page = widget.next_sibling();
+        page_number += 1;
+    }
+    None
+}
+
+fn restore_preview_scroll_anchor(
+    pages: &GtkBox,
+    scroller: &ScrolledWindow,
+    anchor: PreviewScrollAnchor,
+) {
+    let pages = pages.clone();
+    let adjustment = scroller.vadjustment();
+    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+        let Some(page) = preview_page(&pages, anchor.page) else {
+            return;
+        };
+        let allocation = page.allocation();
+        if allocation.height() <= 0 {
+            return;
+        }
+        let target = f64::from(allocation.y()) + f64::from(allocation.height()) * anchor.y_ratio;
+        adjustment.set_value(target.clamp(
+            adjustment.lower(),
+            preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
+        ));
+    });
 }
 
 fn preview_width(
