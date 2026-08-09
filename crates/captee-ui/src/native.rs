@@ -14,17 +14,17 @@ use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, EditorInserter,
     InsertionResult, KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession,
-    ProjectSettings, RecentProject, RenderState, SelectionGeometry, SourceDocument,
+    ProjectSettings, RecentProject, RenderState, SourceDocument,
 };
 use captee_platform::{
-    confirm_and_trash, create_project, create_project_item, current_capture_origin,
+    confirm_and_trash, create_project, create_project_item,
     current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
-    open_project, place_capture_review_window, register_capture_shortcut, rename_project_item,
-    save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore,
-    CaptureOrigin, CaptureSelector, FormattedSource, GlobalShortcutEvent, GrimSlurpCapture,
-    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry,
-    RecentProjectStore, SavedAsset, TrashBackend, TrashError, TypstCompletionProvider,
-    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    open_project, register_capture_shortcut, rename_project_item, save_project_settings,
+    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
+    FormattedSource, GlobalShortcutEvent, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
+    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
+    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
+    XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use glib::variant::ToVariant;
@@ -96,6 +96,8 @@ fn build_ui(application: &Application) {
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let pending_capture = Rc::new(RefCell::new(None));
     let pending_annotation = Rc::new(RefCell::new(None));
+    let pending_review = Rc::new(RefCell::new(None));
+    let scroll_preview_to_end = Rc::new(Cell::new(false));
     let global_capture_receiver = register_capture_shortcut("CTRL+SHIFT+C");
     let project_tree = ListBox::new();
     project_tree.set_selection_mode(gtk::SelectionMode::None);
@@ -137,7 +139,7 @@ fn build_ui(application: &Application) {
          .recent-project-name { font-weight: bold; }\
          .recent-project-path, .recent-project-access { color: #9aa0a6; font-size: 12px; }\
          .recent-project-action { padding: 0; min-height: 24px; min-width: 24px; }\
-         .project-tree-row:hover, .project-tree-row.selected { background-color: rgba(255, 255, 255, 0.08); }\
+         .project-tree-row:hover, .project-tree-row.active-file { background-color: rgba(255, 255, 255, 0.08); }\
          .recovery-action { padding: 2px 8px; min-height: 24px; border-radius: 3px; border: 1px solid #3c4043; background: #292a2d; box-shadow: none; }\
          .recovery-action:hover { background: #3c4043; }\
          .recovery-action-primary { background: #4a3520; color: #ffffff; }\
@@ -261,7 +263,8 @@ fn build_ui(application: &Application) {
         render_state,
         pending_capture,
         pending_annotation,
-        capture_origin: Rc::new(RefCell::new(None)),
+        pending_review,
+        scroll_preview_to_end,
         global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
@@ -676,7 +679,8 @@ struct ProjectUi {
     render_state: Rc<RefCell<RenderState>>,
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
-    capture_origin: Rc<RefCell<Option<CaptureOrigin>>>,
+    pending_review: Rc<RefCell<Option<CaptureReview>>>,
+    scroll_preview_to_end: Rc<Cell<bool>>,
     global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
@@ -872,7 +876,7 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     row.set_selectable(false);
     row.add_css_class("project-tree-row");
     if is_active_tree_file(project_ui.editor.borrow().as_ref(), &entry.relative_path) {
-        row.add_css_class("selected");
+        row.add_css_class("active-file");
     }
     let depth = entry.relative_path.components().count().saturating_sub(1);
     let name = entry.relative_path.file_name().and_then(|name| name.to_str()).unwrap_or("item");
@@ -1615,7 +1619,6 @@ fn start_capture(project_ui: &ProjectUi) {
         return;
     }
     let settings = snapshot.app.settings.capture;
-    *project_ui.capture_origin.borrow_mut() = current_capture_origin();
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Capture) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
@@ -1883,13 +1886,11 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
     Ok(())
 }
 
-fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
+fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> Result<(), String> {
     let Some(application) = project_ui.application() else {
         return Err("The workspace window is no longer available.".to_owned());
     };
-    let selection = image.selection();
-    let origin = project_ui.capture_origin.borrow().clone();
-    let review = Rc::new(RefCell::new(CaptureReview::new(image.clone())));
+    let review = Rc::new(RefCell::new(review));
     let capture_surface = gtk::Overlay::new();
     capture_surface.add_css_class("capture-review-surface");
     capture_surface.set_hexpand(true);
@@ -1903,8 +1904,10 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         .resizable(false)
         .child(&capture_surface)
         .build();
-    let review_title = format!("Captee Capture Review {}", std::process::id());
-    review_window.set_title(Some(&review_title));
+    review_window.set_title(Some("Captee Capture Review"));
+    if let Some(parent) = project_ui.window() {
+        review_window.set_transient_for(Some(&parent));
+    }
     review_window.add_css_class("capture-review-window");
 
     let panel = GtkBox::new(Orientation::Vertical, 8);
@@ -1914,44 +1917,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.set_valign(Align::Fill);
     panel.add_css_class("capture-review-panel");
 
-    let source_context = project_ui
-        .editor
-        .borrow()
-        .as_ref()
-        .map(EditorBridge::state)
-        .map(|state| {
-            state
-                .text
-                .lines()
-                .rev()
-                .take(5)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .filter(|text| !text.is_empty())
-        .unwrap_or_default();
-    let context_label = Label::new(Some(&source_context));
-    context_label.set_xalign(0.0);
-    context_label.set_wrap(true);
-    context_label.set_selectable(true);
-    context_label.set_max_width_chars(100);
-    context_label.add_css_class("capture-context");
-    panel.append(&context_label);
-
-    let selection_text = image
-        .selection()
-        .map(format_selection_geometry)
-        .unwrap_or_else(|| "Selection geometry unavailable for this capture backend".to_owned());
-    let selection_label = Label::new(Some(&selection_text));
-    selection_label.set_xalign(0.0);
-    selection_label.add_css_class("capture-context");
-    panel.append(&selection_label);
-
     let placement = ToggleButton::with_label("Insert annotation before image");
-    placement.set_active(true);
+    placement.set_active(review.borrow().before_image());
     placement.set_tooltip_text(Some(
         "Toggle whether the annotation code is before or after the image block",
     ));
@@ -1971,14 +1938,37 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let code_buffer = sourceview::Buffer::builder().highlight_matching_brackets(true).build();
     configure_typst_buffer(&code_buffer);
-    code_buffer.set_text("");
+    let mut source_context = project_ui
+        .source_buffer
+        .text(&project_ui.source_buffer.start_iter(), &project_ui.source_buffer.end_iter(), true)
+        .to_string();
+    let cursor = project_ui.source_buffer.cursor_position().max(0) as usize;
+    let cursor = byte_offset_for_character(&source_context, cursor);
+    source_context.truncate(cursor);
+    if !source_context.is_empty() && !source_context.ends_with('\n') {
+        source_context.push('\n');
+    }
+    let annotation_offset = source_context.chars().count() as i32;
+    source_context.push_str(review.borrow().annotation());
+    code_buffer.set_text(&source_context);
+    if annotation_offset > 0 {
+        let context_tag = gtk::TextTag::builder()
+            .name("capture-review-context")
+            .foreground("#9aa0a6")
+            .editable(false)
+            .build();
+        code_buffer.tag_table().add(&context_tag);
+        let start = code_buffer.start_iter();
+        let end = code_buffer.iter_at_offset(annotation_offset);
+        code_buffer.apply_tag(&context_tag, &start, &end);
+    }
     let code_view = sourceview::View::with_buffer(&code_buffer);
     code_view.set_show_line_numbers(true);
     code_view.set_monospace(true);
     code_view.set_hexpand(true);
     code_view.set_vexpand(true);
     code_view.add_css_class("typst-editor");
-    code_view.set_tooltip_text(Some("Full Typst annotation code"));
+    code_view.set_tooltip_text(Some("Typst annotation at the insertion point"));
 
     let code_scroller = ScrolledWindow::builder()
         .child(&code_view)
@@ -1991,13 +1981,32 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let code_placeholder = Label::new(Some("Type Typst annotation here…"));
     code_placeholder.set_halign(Align::Start);
     code_placeholder.set_valign(Align::Start);
-    code_placeholder.set_margin_start(56);
-    code_placeholder.set_margin_top(10);
+    code_placeholder.set_margin_start(48);
     code_placeholder.add_css_class("capture-context");
     code_editor.add_overlay(&code_placeholder);
+    let update_placeholder_position = Rc::new({
+        let code_buffer = code_buffer.clone();
+        let code_placeholder = code_placeholder.clone();
+        let code_scroller = code_scroller.clone();
+        let code_view = code_view.clone();
+        move || {
+            let iter = code_buffer.iter_at_offset(annotation_offset);
+            let location = code_view.iter_location(&iter);
+            code_placeholder.set_margin_top(capture_placeholder_top(
+                location.y(),
+                code_scroller.vadjustment().value(),
+            ));
+        }
+    });
+    let update_placeholder_on_scroll = Rc::clone(&update_placeholder_position);
+    code_scroller.vadjustment().connect_value_changed(move |_| {
+        update_placeholder_on_scroll();
+    });
+    let update_placeholder_when_ready = Rc::clone(&update_placeholder_position);
+    glib::idle_add_local_once(move || update_placeholder_when_ready());
     let code_placeholder_for_change = code_placeholder.clone();
     code_buffer.connect_changed(move |buffer| {
-        code_placeholder_for_change.set_visible(buffer.char_count() == 0);
+        code_placeholder_for_change.set_visible(buffer.char_count() == annotation_offset);
     });
     panel.append(&code_editor);
     let bottom = GtkBox::new(Orientation::Horizontal, 8);
@@ -2078,12 +2087,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let editor_key = gtk::EventControllerKey::new();
     let confirm_for_editor = confirm.clone();
     let cancel_for_editor = cancel.clone();
-    editor_key.connect_key_pressed(move |_, key, _, _| {
+    editor_key.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::Escape {
             cancel_for_editor.emit_clicked();
             return glib::Propagation::Stop;
         }
-        if key == gtk::gdk::Key::Return {
+        if annotation_confirms_on_enter(key, state) {
             confirm_for_editor.emit_clicked();
             return glib::Propagation::Stop;
         }
@@ -2093,23 +2102,35 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let key_controller = gtk::EventControllerKey::new();
     let confirm_for_key = confirm.clone();
     let cancel_for_key = cancel.clone();
-    key_controller.connect_key_pressed(move |_, key, _, _| {
+    key_controller.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::Escape {
             cancel_for_key.emit_clicked();
             return glib::Propagation::Stop;
         }
-        if key == gtk::gdk::Key::Return {
+        if annotation_confirms_on_enter(key, state) {
             confirm_for_key.emit_clicked();
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
     panel.add_controller(key_controller);
+    let annotation_start = code_buffer.iter_at_offset(annotation_offset);
+    code_buffer.place_cursor(&annotation_start);
     code_view.grab_focus();
 
     let modify_ui = project_ui.clone();
     let modify_window = review_window.clone();
+    let review_for_modify = Rc::clone(&review);
+    let code_buffer_for_modify = code_buffer.clone();
     modify.connect_clicked(move |_| {
+        let start = code_buffer_for_modify.iter_at_offset(annotation_offset);
+        let annotation = code_buffer_for_modify
+            .text(&start, &code_buffer_for_modify.end_iter(), true)
+            .to_string();
+        let mut review = review_for_modify.borrow_mut();
+        review.set_annotation(annotation);
+        *modify_ui.pending_review.borrow_mut() = Some(review.clone());
+        drop(review);
         modify_window.close();
         *modify_ui.pending_capture.borrow_mut() = None;
         modify_ui.status.set_text("Select a new capture region.");
@@ -2122,6 +2143,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         cancel_window.close();
         *cancel_ui.pending_capture.borrow_mut() = None;
         *cancel_ui.pending_annotation.borrow_mut() = None;
+        *cancel_ui.pending_review.borrow_mut() = None;
         cancel_ui.status.set_text("Capture discarded; the project was not changed.");
     });
 
@@ -2129,25 +2151,16 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     let confirm_window = review_window.clone();
     let review_for_confirm = Rc::clone(&review);
     confirm.connect_clicked(move |_| {
-        let text =
-            code_buffer.text(&code_buffer.start_iter(), &code_buffer.end_iter(), true).to_string();
+        let start = code_buffer.iter_at_offset(annotation_offset);
+        let text = code_buffer.text(&start, &code_buffer.end_iter(), true).to_string();
         let annotation = text.trim().to_owned();
-        if annotation.is_empty() {
-            confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
-            return;
-        }
         let mut review = review_for_confirm.borrow_mut();
         review.set_annotation(annotation);
-        let confirmed = match review.confirm() {
-            Ok(confirmed) => confirmed,
-            Err(_) => {
-                confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
-                return;
-            }
-        };
+        let confirmed = review.confirm();
         confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
+        *confirm_ui.pending_review.borrow_mut() = None;
         start_capture_storage_with_review(
             &confirm_ui,
             confirmed.image,
@@ -2157,42 +2170,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     });
 
     review_window.present();
-    if let (Some(origin), Some(selection)) = (origin, selection) {
-        let Some((popup_x, popup_y)) = capture_popup_position(selection, &origin) else {
-            return Ok(());
-        };
-        let title = review_title.clone();
-        let workspace = origin.workspace;
-        let _ =
-            thread::Builder::new().name("captee-capture-placement".to_owned()).spawn(move || {
-                for _ in 0..20 {
-                    if place_capture_review_window(&title, &workspace, popup_x, popup_y).is_ok() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                }
-            });
-    }
 
     Ok(())
-}
-
-fn capture_popup_position(
-    selection: SelectionGeometry,
-    origin: &CaptureOrigin,
-) -> Option<(i64, i64)> {
-    const POPUP_WIDTH: i64 = 640;
-    const POPUP_HEIGHT: i64 = 360;
-    const GAP: i64 = 16;
-    const INSET: i64 = 8;
-    let right_x = i64::from(selection.x) + i64::from(selection.width) + GAP;
-    let left_x = i64::from(selection.x) - POPUP_WIDTH - GAP;
-    let mut x =
-        if right_x + POPUP_WIDTH <= origin.x + origin.width - INSET { right_x } else { left_x };
-    let mut y = i64::from(selection.y);
-    x = x.clamp(origin.x + INSET, origin.x + origin.width - POPUP_WIDTH - INSET);
-    y = y.clamp(origin.y + INSET, origin.y + origin.height - POPUP_HEIGHT - INSET);
-    Some((x, y))
 }
 
 fn start_capture_storage_with_review(
@@ -2281,13 +2260,6 @@ fn display_annotation_image(picture: &gtk::Picture, bytes: &[u8]) -> Result<(i32
     let size = (texture.width(), texture.height());
     picture.set_paintable(Some(&texture));
     Ok(size)
-}
-
-fn format_selection_geometry(selection: SelectionGeometry) -> String {
-    format!(
-        "Selection: x={}, y={}, width={}, height={}",
-        selection.x, selection.y, selection.width, selection.height
-    )
 }
 
 fn configure_typst_buffer(buffer: &sourceview::Buffer) {
@@ -2561,7 +2533,37 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
         project_ui.preview_pages.append(&picture);
     }
     apply_preview_zoom(project_ui);
+    if project_ui.scroll_preview_to_end.replace(false) {
+        scroll_preview_to_end(&project_ui.preview_scroller);
+    }
     Ok(())
+}
+
+fn scroll_preview_to_end(scroller: &ScrolledWindow) {
+    let adjustment = scroller.vadjustment();
+    glib::idle_add_local_once(move || {
+        adjustment.set_value(preview_scroll_end(
+            adjustment.lower(),
+            adjustment.upper(),
+            adjustment.page_size(),
+        ));
+    });
+}
+
+fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
+    (upper - page_size).max(lower)
+}
+
+fn capture_placeholder_top(iter_y: i32, scroll_y: f64) -> i32 {
+    (f64::from(iter_y) - scroll_y).max(0.0) as i32
+}
+
+fn annotation_confirms_on_enter(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
+    key == gtk::gdk::Key::Return && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+}
+
+fn insertion_end_offset(cursor: usize, expression: &str) -> usize {
+    cursor.saturating_add(expression.len())
 }
 
 fn connect_preview_scale(project_ui: &ProjectUi) {
@@ -2952,7 +2954,16 @@ fn apply_operation_result(
                 OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
                     *project_ui.pending_capture.borrow_mut() = Some(image.clone());
                     *project_ui.pending_annotation.borrow_mut() = None;
-                    match show_capture_review_dialog(project_ui, image) {
+                    let review = project_ui
+                        .pending_review
+                        .borrow_mut()
+                        .take()
+                        .map(|mut review| {
+                            review.replace_image(image.clone());
+                            review
+                        })
+                        .unwrap_or_else(|| CaptureReview::new(image));
+                    match show_capture_review_dialog(project_ui, review) {
                         Ok(()) => {
                             let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
                                 message: "Capture ready".to_owned(),
@@ -2961,6 +2972,7 @@ fn apply_operation_result(
                         }
                         Err(message) => {
                             *project_ui.pending_capture.borrow_mut() = None;
+                            *project_ui.pending_review.borrow_mut() = None;
                             let _ = project_ui
                                 .shell
                                 .borrow_mut()
@@ -2974,8 +2986,6 @@ fn apply_operation_result(
                     annotation,
                     before_image,
                 }) => {
-                    let focused = project_ui.shell.borrow().snapshot().focused
-                        == crate::FocusTarget::SourceEditor;
                     let character_offset =
                         project_ui.source_buffer.cursor_position().max(0) as usize;
                     let mut editor = project_ui.editor.borrow_mut();
@@ -2984,19 +2994,14 @@ fn apply_operation_result(
                         .map(EditorBridge::state)
                         .map(|state| byte_offset_for_character(&state.text, character_offset))
                         .unwrap_or_default();
-                    let target = if focused { editor.as_mut() } else { None };
                     let expression = capture_insertion_expression(
                         &asset.typst_image_expression(),
                         &annotation,
                         before_image,
                     );
                     let insertion = {
-                        let mut adapter = EditorInsertionBridge::new(target, cursor);
-                        if focused {
-                            adapter.insert_image_expression(&expression)
-                        } else {
-                            InsertionResult::NoFocusedEditor
-                        }
+                        let mut adapter = EditorInsertionBridge::new(editor.as_mut(), cursor);
+                        adapter.insert_image_expression(&expression)
                     };
                     let state = editor.as_ref().map(EditorBridge::state);
                     drop(editor);
@@ -3004,6 +3009,23 @@ fn apply_operation_result(
                         InsertionResult::Inserted => {
                             if let Some(state) = state {
                                 apply_editor_state(project_ui, &state, true);
+                                let end = insertion_end_offset(cursor, &expression);
+                                if let Some(prefix) = state.text.get(..end) {
+                                    let mut insertion = project_ui
+                                        .source_buffer
+                                        .iter_at_offset(prefix.chars().count() as i32);
+                                    project_ui.source_buffer.place_cursor(&insertion);
+                                    project_ui.source_view.scroll_to_iter(
+                                        &mut insertion,
+                                        0.2,
+                                        false,
+                                        0.0,
+                                        0.0,
+                                    );
+                                    project_ui.source_view.grab_focus();
+                                }
+                                project_ui.scroll_preview_to_end.set(true);
+                                scroll_preview_to_end(&project_ui.preview_scroller);
                             }
                             let message = format!(
                                 "Capture saved and inserted from {}.",
@@ -3710,6 +3732,7 @@ fn open_loaded_project(
             let _ = project_ui.coordinator.borrow_mut().set_source_revision(1);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            *project_ui.pending_review.borrow_mut() = None;
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
@@ -3853,6 +3876,7 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            *project_ui.pending_review.borrow_mut() = None;
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
@@ -3872,7 +3896,8 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, is_active_tree_file,
+        annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
+        capture_placeholder_top, insertion_end_offset, is_active_tree_file, preview_scroll_end,
         preview_width, project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
     use crate::editor_bridge::EditorBridge;
@@ -3943,6 +3968,36 @@ mod tests {
             ),
             "#image(\"img/capture.png\")\n#line(length: 1em)\n"
         );
+    }
+
+    #[test]
+    fn capture_insertion_cursor_ends_after_expression() {
+        assert_eq!(insertion_end_offset(3, "#image(\"img/capture.png\")\n"), 29);
+    }
+
+    #[test]
+    fn preview_scroll_end_stays_within_adjustment_bounds() {
+        assert_eq!(preview_scroll_end(0.0, 1000.0, 320.0), 680.0);
+        assert_eq!(preview_scroll_end(24.0, 100.0, 120.0), 24.0);
+    }
+
+    #[test]
+    fn capture_placeholder_tracks_its_editor_line() {
+        assert_eq!(capture_placeholder_top(96, 0.0), 96);
+        assert_eq!(capture_placeholder_top(96, 48.0), 48);
+        assert_eq!(capture_placeholder_top(48, 96.0), 0);
+    }
+
+    #[test]
+    fn shift_enter_adds_an_annotation_line() {
+        assert!(annotation_confirms_on_enter(
+            gtk4::gdk::Key::Return,
+            gtk4::gdk::ModifierType::empty(),
+        ));
+        assert!(!annotation_confirms_on_enter(
+            gtk4::gdk::Key::Return,
+            gtk4::gdk::ModifierType::SHIFT_MASK,
+        ));
     }
 
     #[test]
