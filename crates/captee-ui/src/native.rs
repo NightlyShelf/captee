@@ -163,7 +163,7 @@ fn build_ui(application: &Application) {
     source_view.set_monospace(true);
     source_view.set_hexpand(true);
     source_view.set_vexpand(true);
-    source_view.set_bottom_margin(112);
+    source_view.set_bottom_margin(1);
     source_view.add_css_class("typst-editor");
     source_view.set_tooltip_text(Some("Typst source editor"));
 
@@ -475,6 +475,7 @@ fn build_workspace(
 
     let editor_scroll =
         ScrolledWindow::builder().child(source_view).hexpand(true).vexpand(true).build();
+    keep_last_editor_line_reachable(&editor_scroll, source_view);
 
     let preview = GtkBox::new(Orientation::Vertical, 12);
     preview.set_margin_top(16);
@@ -2090,7 +2091,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     code_view.set_monospace(true);
     code_view.set_hexpand(true);
     code_view.set_vexpand(true);
-    code_view.set_bottom_margin(112);
+    code_view.set_bottom_margin(1);
     code_view.add_css_class("typst-editor");
     code_view.set_tooltip_text(Some("Typst annotation at the insertion point"));
 
@@ -2101,6 +2102,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         .min_content_height(220)
         .build();
     code_scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+    keep_last_editor_line_reachable(&code_scroller, &code_view);
     let code_editor = gtk::Overlay::new();
     code_editor.set_child(Some(&code_scroller));
     let code_placeholder = Label::new(Some("Type Typst annotation here…"));
@@ -2719,8 +2721,7 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
         let allocation = page.allocation();
         let content_y = f64::from(allocation.y())
             + f64::from(allocation.height()) * content_end.y_pt / content_end.page_height_pt;
-        let padding = 120.0;
-        adjustment.set_value((content_y - adjustment.page_size() + padding).clamp(
+        adjustment.set_value((content_y - adjustment.page_size() / 3.0).clamp(
             adjustment.lower(),
             preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
         ));
@@ -2733,6 +2734,18 @@ fn preview_page(pages: &GtkBox, page_number: usize) -> Option<gtk::Widget> {
         page = page?.next_sibling();
     }
     page
+}
+
+fn keep_last_editor_line_reachable(scroller: &ScrolledWindow, editor: &sourceview::View) {
+    let editor_for_resize = editor.clone();
+    scroller.connect_notify_local(Some("height"), move |scroller, _| {
+        editor_for_resize.set_bottom_margin(scroller.height().max(1));
+    });
+
+    let editor_for_map = editor.clone();
+    scroller.connect_map(move |scroller| {
+        editor_for_map.set_bottom_margin(scroller.height().max(1));
+    });
 }
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
