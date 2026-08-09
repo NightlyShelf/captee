@@ -2702,7 +2702,7 @@ fn display_preview_pages(
     for picture in pictures {
         project_ui.preview_pages.append(&picture);
     }
-    apply_preview_zoom(project_ui, false);
+    apply_preview_zoom(project_ui);
     project_ui.preview_content_end.set(content_end);
     if project_ui.auto_scroll_to_content_end.is_active() {
         scroll_preview_to_content_end(project_ui);
@@ -2801,7 +2801,7 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
             _ => PreviewScale::Percent(300),
         };
         scale_ui.preview_scale_mode.set(mode);
-        apply_preview_zoom(&scale_ui, !scale_ui.auto_scroll_to_content_end.is_active());
+        apply_preview_zoom(&scale_ui);
         if scale_ui.auto_scroll_to_content_end.is_active() {
             scroll_preview_to_content_end(&scale_ui);
         }
@@ -2872,7 +2872,7 @@ fn queue_preview_resize(
             project_ui.preview_scale_mode.get(),
             PreviewScale::FitPage | PreviewScale::FitPageWidth
         ) {
-            apply_preview_zoom(&project_ui, true);
+            apply_preview_zoom(&project_ui);
         }
     });
 }
@@ -2891,9 +2891,7 @@ fn connect_preview_content_navigation(project_ui: &ProjectUi) {
     });
 }
 
-fn apply_preview_zoom(project_ui: &ProjectUi, preserve_scroll: bool) {
-    let scroll_progress =
-        preserve_scroll.then(|| preview_scroll_progress(&project_ui.preview_scroller)).flatten();
+fn apply_preview_zoom(project_ui: &ProjectUi) {
     let mode = project_ui.preview_scale_mode.get();
     let available_size = Some((
         i64::from(project_ui.preview_scroller.width().saturating_sub(24)),
@@ -2913,29 +2911,6 @@ fn apply_preview_zoom(project_ui: &ProjectUi, preserve_scroll: bool) {
         }
         child = widget.next_sibling();
     }
-    if let Some(scroll_progress) = scroll_progress {
-        restore_preview_scroll_progress(&project_ui.preview_scroller, scroll_progress);
-    }
-}
-
-fn preview_scroll_progress(scroller: &ScrolledWindow) -> Option<f64> {
-    let adjustment = scroller.vadjustment();
-    let maximum =
-        preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size());
-    (maximum > adjustment.lower())
-        .then(|| (adjustment.value() - adjustment.lower()) / (maximum - adjustment.lower()))
-}
-
-fn restore_preview_scroll_progress(scroller: &ScrolledWindow, progress: f64) {
-    let adjustment = scroller.vadjustment();
-    glib::timeout_add_local_once(Duration::from_millis(16), move || {
-        let maximum =
-            preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size());
-        adjustment.set_value(
-            (adjustment.lower() + (maximum - adjustment.lower()) * progress)
-                .clamp(adjustment.lower(), maximum),
-        );
-    });
 }
 
 fn preview_width(
@@ -3407,7 +3382,7 @@ fn apply_operation_result(
                                 ));
                                 return;
                             }
-                            apply_preview_zoom(project_ui, true);
+                            apply_preview_zoom(project_ui);
                             if settings.preview.auto_render {
                                 if let Some(state) =
                                     project_ui.editor.borrow().as_ref().map(EditorBridge::state)
