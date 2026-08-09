@@ -208,7 +208,8 @@ impl PreviewCompiler for TypstPreviewCompiler {
 }
 
 fn parse_content_end(pdf: &[u8]) -> Option<PreviewContentEnd> {
-    let pdf = std::str::from_utf8(pdf).ok()?;
+    let pdf = String::from_utf8_lossy(pdf);
+    let pdf = pdf.as_ref();
     let marker = format!("/URI ({CONTENT_END_LINK})");
     let marker_position = pdf.find(&marker)?;
     let annotation = &pdf[..marker_position];
@@ -492,6 +493,16 @@ endobj
         assert_eq!(content_end.page, 1);
         assert_eq!(content_end.y_pt, 52.34);
         assert_eq!(content_end.page_height_pt, 288.0);
+    }
+
+    #[test]
+    fn parses_marker_when_pdf_contains_binary_stream_data() {
+        let content_end = parse_content_end(
+            b"\xff\xfe\n18 0 obj\n<< /Rect [0 700 1 710] /URI (captee://preview-content-end) >>\nendobj\n19 0 obj\n<< /Type /Page\n/MediaBox [0 0 500 800]\n/Annots [18 0 R]\n>>\nendobj",
+        )
+        .expect("content end");
+
+        assert_eq!(content_end.y_pt, 100.0);
     }
 
     #[test]
