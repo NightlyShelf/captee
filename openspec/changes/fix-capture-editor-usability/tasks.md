@@ -9,6 +9,7 @@
 
 - [x] 2.1 Open capture review with annotation insertion point visible and focused.
 - [x] 2.2 After capture insertion, focus and scroll source editor to inserted image/annotation and scroll preview to end.
+- [x] 2.3 Disable horizontal scrolling in capture review and vertically align its annotation input near the lower quarter of the editor.
 
 ## 3. Validation
 

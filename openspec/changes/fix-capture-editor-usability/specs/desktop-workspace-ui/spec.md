@@ -35,12 +35,13 @@ The application SHALL register the configured user-global capture shortcut only 
 
 ### Requirement: Capture editor navigation
 
-The capture review editor SHALL focus and reveal the editable annotation at its insertion point. After confirmed capture insertion, the source editor SHALL focus and reveal the inserted image and annotation, while the preview scrolls to its end.
+The capture review editor SHALL focus and reveal the editable annotation at its insertion point, positioned a few lines above the bottom edge, without horizontal scrolling. After confirmed capture insertion, the source editor SHALL focus and reveal the inserted image and annotation, while the preview scrolls to its end.
 
 #### Scenario: Open capture review
 
 - **WHEN** capture review opens with preceding source context
-- **THEN** the editable annotation insertion point is visible and focused
+- **THEN** the editable annotation insertion point is visible and focused a few lines above the editor bottom
+- **AND** the review editor has no horizontal scrollbar
 
 #### Scenario: Confirm capture insertion
 

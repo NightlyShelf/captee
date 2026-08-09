@@ -2043,6 +2043,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         .vexpand(true)
         .min_content_height(220)
         .build();
+    code_scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
     let code_editor = gtk::Overlay::new();
     code_editor.set_child(Some(&code_scroller));
     let code_placeholder = Label::new(Some("Type Typst annotation here…"));
@@ -2187,7 +2188,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let code_view_for_scroll = code_view.clone();
     glib::idle_add_local_once(move || {
         let mut annotation_start = code_buffer_for_scroll.iter_at_offset(annotation_offset);
-        code_view_for_scroll.scroll_to_iter(&mut annotation_start, 0.2, false, 0.0, 0.0);
+        code_view_for_scroll.scroll_to_iter(&mut annotation_start, 0.2, true, 0.0, 0.75);
         code_view_for_scroll.grab_focus();
     });
 
