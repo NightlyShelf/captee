@@ -20,4 +20,4 @@
 ## 4. Review fixes
 
 - [x] 4.1 Rebase this change on current main so recent-project home stays available.
-- [ ] 4.2 Place annotation placeholder at editable insertion line.
+- [x] 4.2 Place annotation placeholder at editable insertion line.

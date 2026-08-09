@@ -1985,9 +1985,28 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     code_placeholder.set_halign(Align::Start);
     code_placeholder.set_valign(Align::Start);
     code_placeholder.set_margin_start(48);
-    code_placeholder.set_margin_top(10);
     code_placeholder.add_css_class("capture-context");
     code_editor.add_overlay(&code_placeholder);
+    let update_placeholder_position = Rc::new({
+        let code_buffer = code_buffer.clone();
+        let code_placeholder = code_placeholder.clone();
+        let code_scroller = code_scroller.clone();
+        let code_view = code_view.clone();
+        move || {
+            let iter = code_buffer.iter_at_offset(annotation_offset);
+            let location = code_view.iter_location(&iter);
+            code_placeholder.set_margin_top(capture_placeholder_top(
+                location.y(),
+                code_scroller.vadjustment().value(),
+            ));
+        }
+    });
+    let update_placeholder_on_scroll = Rc::clone(&update_placeholder_position);
+    code_scroller.vadjustment().connect_value_changed(move |_| {
+        update_placeholder_on_scroll();
+    });
+    let update_placeholder_when_ready = Rc::clone(&update_placeholder_position);
+    glib::idle_add_local_once(move || update_placeholder_when_ready());
     let code_placeholder_for_change = code_placeholder.clone();
     code_buffer.connect_changed(move |buffer| {
         code_placeholder_for_change.set_visible(buffer.char_count() == annotation_offset);
@@ -2570,6 +2589,10 @@ fn scroll_preview_to_end(scroller: &ScrolledWindow) {
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
     (upper - page_size).max(lower)
+}
+
+fn capture_placeholder_top(iter_y: i32, scroll_y: f64) -> i32 {
+    (f64::from(iter_y) - scroll_y).max(0.0) as i32
 }
 
 fn insertion_end_offset(cursor: usize, expression: &str) -> usize {
@@ -3906,9 +3929,9 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, insertion_end_offset,
-        is_active_tree_file, preview_scroll_end, preview_width, project_parent_folder,
-        recovery_draft, validate_project_name, PreviewScale,
+        byte_offset_for_character, capture_insertion_expression, capture_placeholder_top,
+        insertion_end_offset, is_active_tree_file, preview_scroll_end, preview_width,
+        project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -3989,6 +4012,13 @@ mod tests {
     fn preview_scroll_end_stays_within_adjustment_bounds() {
         assert_eq!(preview_scroll_end(0.0, 1000.0, 320.0), 680.0);
         assert_eq!(preview_scroll_end(24.0, 100.0, 120.0), 24.0);
+    }
+
+    #[test]
+    fn capture_placeholder_tracks_its_editor_line() {
+        assert_eq!(capture_placeholder_top(96, 0.0), 96);
+        assert_eq!(capture_placeholder_top(96, 48.0), 48);
+        assert_eq!(capture_placeholder_top(48, 96.0), 0);
     }
 
     #[test]
