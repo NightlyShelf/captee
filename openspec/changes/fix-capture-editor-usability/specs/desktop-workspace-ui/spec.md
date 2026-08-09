@@ -43,6 +43,11 @@ The capture review editor SHALL focus and reveal the editable annotation at its 
 - **THEN** the editable annotation insertion point is visible and focused a few lines above the editor bottom
 - **AND** the review editor has no horizontal scrollbar
 
+#### Scenario: Reach final source line
+
+- **WHEN** the source editor cursor reaches the final document line
+- **THEN** bottom editor space allows that line to sit above the editor bottom edge
+
 #### Scenario: Confirm capture insertion
 
 - **WHEN** a confirmed capture is inserted into the source

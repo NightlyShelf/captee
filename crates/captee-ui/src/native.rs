@@ -163,6 +163,7 @@ fn build_ui(application: &Application) {
     source_view.set_monospace(true);
     source_view.set_hexpand(true);
     source_view.set_vexpand(true);
+    source_view.set_bottom_margin(112);
     source_view.add_css_class("typst-editor");
     source_view.set_tooltip_text(Some("Typst source editor"));
 

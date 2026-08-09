@@ -11,6 +11,7 @@
 - [x] 2.2 After capture insertion, focus and scroll source editor to inserted image/annotation and scroll preview to end.
 - [x] 2.3 Disable horizontal scrolling in capture review and vertically align its annotation input near the lower quarter of the editor.
 - [x] 2.4 Add bottom editor space so the final annotation line can align above the review controls.
+- [x] 2.5 Add matching bottom space to the main source editor.
 
 ## 3. Validation
 
