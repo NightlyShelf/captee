@@ -20,7 +20,9 @@ Write UI code that is clean, readable, and easy to maintain. Keep presentation, 
 
 Keep UI code independent from project, Typst, capture, and filesystem logic. Make core behavior testable without GTK, the desktop environment, or real filesystem side effects; wrap platform capture, trash, and external-tool interactions behind narrow interfaces with test doubles. Run Typst compilation asynchronously with debouncing and discard stale results before updating the UI. Protect user work with atomic autosaves, confirmation before moving project items to trash, and no mutation when a capture is cancelled. Add focused core-logic tests for every behavior change and run formatting, linting, and the complete test suite before handoff.
 
-After each implementation task, review only the code changed by that task for likely performance bottlenecks, including time, memory, I/O, concurrency, and process-lifetime risks. Record the finding, impact, mitigation, and any follow-up in the active OpenSpec change's performance review log, and mirror relevant architectural consequences in `docs/architecture.md`. This review and documentation must be complete before marking the task done or archiving the change.
+## OpenSpec
+
+Keep OpenSpec small and direct. Proposal: 3–5 precise sentences. Tasks: short, exact checklist. Create change `design.md` only for complex architecture; prefer simplest design. Record every user-stated change requirement in proposal, specs, or tasks. Before implementation, verify artifacts cover all discussed requirements. Validate the change before handoff or archive. Do not maintain a root architecture log.
 
 After completing each implementation task, stop and ask the user whether to continue. Do not commit, push, or begin the next task until the user confirms continuation. After confirmation, commit the completed task, push the commit to the repository, wait for the CI results, and only then move to the next task. If CI fails, stop and report the failure before continuing.
 
@@ -39,9 +41,9 @@ Never commit credentials or local environment files. Provide a checked-in exampl
 ## Implementation Branch and Merge Policy
 
 For every implementation change, work on a dedicated feature branch and do
-not merge it until all planned tasks, tests, performance review, and required
-documentation are complete. Keep implementation branches available for
-review until the change is verified end to end.
+not merge it until all planned tasks, tests, and required OpenSpec artifacts
+are complete. Keep implementation branches available for review until the
+change is verified end to end.
 
 For the `cache-rust-gtk-docker-images` change specifically, keep the test and
 build container images separate, consume only immutable image digests in
