@@ -139,7 +139,7 @@ fn build_ui(application: &Application) {
          .recent-project-name { font-weight: bold; }\
          .recent-project-path, .recent-project-access { color: #9aa0a6; font-size: 12px; }\
          .recent-project-action { padding: 0; min-height: 24px; min-width: 24px; }\
-         .project-tree-row:hover, .project-tree-row.selected { background-color: rgba(255, 255, 255, 0.08); }\
+         .project-tree-row:hover, .project-tree-row.active-file { background-color: rgba(255, 255, 255, 0.08); }\
          .recovery-action { padding: 2px 8px; min-height: 24px; border-radius: 3px; border: 1px solid #3c4043; background: #292a2d; box-shadow: none; }\
          .recovery-action:hover { background: #3c4043; }\
          .recovery-action-primary { background: #4a3520; color: #ffffff; }\
@@ -876,7 +876,7 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     row.set_selectable(false);
     row.add_css_class("project-tree-row");
     if is_active_tree_file(project_ui.editor.borrow().as_ref(), &entry.relative_path) {
-        row.add_css_class("selected");
+        row.add_css_class("active-file");
     }
     let depth = entry.relative_path.components().count().saturating_sub(1);
     let name = entry.relative_path.file_name().and_then(|name| name.to_str()).unwrap_or("item");
