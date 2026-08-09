@@ -2717,7 +2717,7 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
         return;
     };
     let adjustment = project_ui.preview_scroller.vadjustment();
-    glib::idle_add_local_once(move || {
+    project_ui.preview_scroller.add_tick_callback(move |_, _| {
         let allocation = page.allocation();
         let content_y = f64::from(allocation.y())
             + f64::from(allocation.height()) * content_end.y_pt / content_end.page_height_pt;
@@ -2725,6 +2725,7 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
             adjustment.lower(),
             preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
         ));
+        glib::ControlFlow::Break
     });
 }
 
@@ -2780,6 +2781,9 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
         };
         scale_ui.preview_scale_mode.set(mode);
         apply_preview_zoom(&scale_ui);
+        if scale_ui.auto_scroll_to_content_end.is_active() {
+            scroll_preview_to_content_end(&scale_ui);
+        }
     });
 
     let resize_ui = project_ui.clone();
