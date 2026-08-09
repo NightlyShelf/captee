@@ -2823,16 +2823,19 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     });
 
     let resize_pending = Rc::new(Cell::new(false));
+    let resize_sequence = Rc::new(Cell::new(0));
     let last_preview_size = Rc::new(Cell::new(None));
     let pending_anchor = Rc::new(Cell::new(None));
     let resize_ui = project_ui.clone();
     let resize_pending_for_width = Rc::clone(&resize_pending);
+    let resize_sequence_for_width = Rc::clone(&resize_sequence);
     let last_preview_size_for_width = Rc::clone(&last_preview_size);
     let pending_anchor_for_width = Rc::clone(&pending_anchor);
     project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
         queue_preview_resize(
             &resize_ui,
             &resize_pending_for_width,
+            &resize_sequence_for_width,
             &last_preview_size_for_width,
             &pending_anchor_for_width,
         );
@@ -2840,12 +2843,14 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 
     let resize_ui = project_ui.clone();
     let resize_pending_for_height = Rc::clone(&resize_pending);
+    let resize_sequence_for_height = Rc::clone(&resize_sequence);
     let last_preview_size_for_height = Rc::clone(&last_preview_size);
     let pending_anchor_for_height = Rc::clone(&pending_anchor);
     project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
         queue_preview_resize(
             &resize_ui,
             &resize_pending_for_height,
+            &resize_sequence_for_height,
             &last_preview_size_for_height,
             &pending_anchor_for_height,
         );
@@ -2856,28 +2861,38 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     {
         let resize_ui = project_ui.clone();
         let resize_pending = Rc::clone(&resize_pending);
+        let resize_sequence = Rc::clone(&resize_sequence);
         let last_preview_size = Rc::clone(&last_preview_size);
         let pending_anchor = Rc::clone(&pending_anchor);
         paned.connect_position_notify(move |_| {
-            queue_preview_resize(&resize_ui, &resize_pending, &last_preview_size, &pending_anchor);
+            queue_preview_resize(
+                &resize_ui,
+                &resize_pending,
+                &resize_sequence,
+                &last_preview_size,
+                &pending_anchor,
+            );
         });
     }
 
     if let Some(window) = project_ui.window() {
         let resize_ui = project_ui.clone();
         let resize_pending = Rc::clone(&resize_pending);
+        let resize_sequence = Rc::clone(&resize_sequence);
         let last_preview_size = Rc::clone(&last_preview_size);
         let pending_anchor = Rc::clone(&pending_anchor);
         window.connect_realize(move |window| {
             if let Some(surface) = window.surface() {
                 let resize_ui = resize_ui.clone();
                 let resize_pending = Rc::clone(&resize_pending);
+                let resize_sequence = Rc::clone(&resize_sequence);
                 let last_preview_size = Rc::clone(&last_preview_size);
                 let pending_anchor = Rc::clone(&pending_anchor);
                 surface.connect_layout(move |_, _, _| {
                     queue_preview_resize(
                         &resize_ui,
                         &resize_pending,
+                        &resize_sequence,
                         &last_preview_size,
                         &pending_anchor,
                     );
@@ -2890,19 +2905,25 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 fn queue_preview_resize(
     project_ui: &ProjectUi,
     pending: &Rc<Cell<bool>>,
+    sequence: &Rc<Cell<u64>>,
     last_preview_size: &Rc<Cell<Option<(i32, i32)>>>,
     pending_anchor: &Rc<Cell<Option<PreviewScrollAnchor>>>,
 ) {
-    if pending.replace(true) {
-        return;
+    let current_sequence = sequence.get().wrapping_add(1);
+    sequence.set(current_sequence);
+    if !pending.replace(true) {
+        pending_anchor
+            .set(preview_scroll_anchor(&project_ui.preview_pages, &project_ui.preview_scroller));
     }
-    pending_anchor
-        .set(preview_scroll_anchor(&project_ui.preview_pages, &project_ui.preview_scroller));
     let project_ui = project_ui.clone();
     let pending = Rc::clone(pending);
+    let sequence = Rc::clone(sequence);
     let last_preview_size = Rc::clone(last_preview_size);
     let pending_anchor = Rc::clone(pending_anchor);
     glib::timeout_add_local_once(Duration::from_millis(200), move || {
+        if sequence.get() != current_sequence {
+            return;
+        }
         pending.set(false);
         let size = (project_ui.preview_scroller.width(), project_ui.preview_scroller.height());
         if last_preview_size.replace(Some(size)) == Some(size) {
