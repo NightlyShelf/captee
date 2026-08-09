@@ -2364,12 +2364,12 @@ fn capture_insertion_expression(
     before_image: bool,
 ) -> String {
     if annotation.trim().is_empty() {
-        return format!("{image_expression}\n");
+        return format!("{image_expression}\n\n");
     }
     if before_image {
-        format!("{}\n{}\n", annotation.trim(), image_expression)
+        format!("{}\n{}\n\n", annotation.trim(), image_expression)
     } else {
-        format!("{}\n{}\n", image_expression, annotation.trim())
+        format!("{}\n{}\n\n", image_expression, annotation.trim())
     }
 }
 
@@ -4078,7 +4078,7 @@ mod tests {
     fn capture_annotation_can_be_inserted_before_or_after_image() {
         assert_eq!(
             capture_insertion_expression("#image(\"img/capture.png\")", "#line(length: 1em)", true),
-            "#line(length: 1em)\n#image(\"img/capture.png\")\n"
+            "#line(length: 1em)\n#image(\"img/capture.png\")\n\n"
         );
         assert_eq!(
             capture_insertion_expression(
@@ -4086,13 +4086,13 @@ mod tests {
                 "#line(length: 1em)",
                 false
             ),
-            "#image(\"img/capture.png\")\n#line(length: 1em)\n"
+            "#image(\"img/capture.png\")\n#line(length: 1em)\n\n"
         );
     }
 
     #[test]
     fn capture_insertion_cursor_ends_after_expression() {
-        assert_eq!(insertion_end_offset(3, "#image(\"img/capture.png\")\n"), 29);
+        assert_eq!(insertion_end_offset(3, "#image(\"img/capture.png\")\n\n"), 30);
     }
 
     #[test]
