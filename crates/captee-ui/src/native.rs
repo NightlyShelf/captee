@@ -1416,19 +1416,32 @@ fn connect_editor_autoscroll(view: &sourceview::View, buffer: &sourceview::Buffe
     let buffer_for_key = buffer.clone();
     key.connect_key_pressed(move |_, key, _, _| {
         if key == gtk::gdk::Key::Return {
-            scroll_cursor_to_lower_quarter(&view_for_key, &buffer_for_key);
+            preserve_cursor_vertical_position(&view_for_key, &buffer_for_key);
         }
         glib::Propagation::Proceed
     });
     view.add_controller(key);
 }
 
-fn scroll_cursor_to_lower_quarter(view: &sourceview::View, buffer: &sourceview::Buffer) {
+fn preserve_cursor_vertical_position(view: &sourceview::View, buffer: &sourceview::Buffer) {
+    let before = buffer.iter_at_mark(&buffer.get_insert());
+    let previous_y = view.iter_location(&before).y();
+    let previous_scroll = view.vadjustment().map(|adjustment| adjustment.value());
     let view = view.clone();
     let buffer = buffer.clone();
     glib::idle_add_local_once(move || {
         let mut cursor = buffer.iter_at_mark(&buffer.get_insert());
-        view.scroll_to_iter(&mut cursor, 0.2, true, 0.0, 0.75);
+        let Some(adjustment) = view.vadjustment() else {
+            view.scroll_to_iter(&mut cursor, 0.2, false, 0.0, 0.0);
+            return;
+        };
+        let current_y = view.iter_location(&cursor).y();
+        let scroll = previous_scroll.unwrap_or_else(|| adjustment.value())
+            + f64::from(current_y - previous_y);
+        adjustment.set_value(scroll.clamp(
+            adjustment.lower(),
+            preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
+        ));
     });
 }
 
@@ -2226,7 +2239,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
             return glib::Propagation::Stop;
         }
         if key == gtk::gdk::Key::Return {
-            scroll_cursor_to_lower_quarter(&code_view_for_editor, &code_buffer_for_editor);
+            preserve_cursor_vertical_position(&code_view_for_editor, &code_buffer_for_editor);
         }
         glib::Propagation::Proceed
     });
