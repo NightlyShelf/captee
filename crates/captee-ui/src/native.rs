@@ -2798,23 +2798,60 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
         }
     });
 
+    let resize_pending = Rc::new(Cell::new(false));
     let resize_ui = project_ui.clone();
+    let resize_pending_for_width = Rc::clone(&resize_pending);
     project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
-        if matches!(
-            resize_ui.preview_scale_mode.get(),
-            PreviewScale::FitPage | PreviewScale::FitPageWidth
-        ) {
-            apply_preview_zoom(&resize_ui);
-        }
+        queue_preview_resize(&resize_ui, &resize_pending_for_width);
     });
 
     let resize_ui = project_ui.clone();
+    let resize_pending_for_height = Rc::clone(&resize_pending);
     project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
+        queue_preview_resize(&resize_ui, &resize_pending_for_height);
+    });
+
+    if let Some(paned) =
+        project_ui.preview_scroller.ancestor(gtk::Paned::static_type()).and_downcast::<Paned>()
+    {
+        let resize_ui = project_ui.clone();
+        let resize_pending = Rc::clone(&resize_pending);
+        paned.connect_position_notify(move |_| {
+            queue_preview_resize(&resize_ui, &resize_pending);
+        });
+    }
+
+    if let Some(window) = project_ui.window() {
+        let resize_ui = project_ui.clone();
+        let resize_pending = Rc::clone(&resize_pending);
+        window.connect_realize(move |window| {
+            if let Some(surface) = window.surface() {
+                let resize_ui = resize_ui.clone();
+                let resize_pending = Rc::clone(&resize_pending);
+                surface.connect_layout(move |_, _, _| {
+                    queue_preview_resize(&resize_ui, &resize_pending);
+                });
+            }
+        });
+    }
+}
+
+fn queue_preview_resize(project_ui: &ProjectUi, pending: &Rc<Cell<bool>>) {
+    if pending.replace(true) {
+        return;
+    }
+    let project_ui = project_ui.clone();
+    let pending = Rc::clone(pending);
+    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+        pending.set(false);
         if matches!(
-            resize_ui.preview_scale_mode.get(),
+            project_ui.preview_scale_mode.get(),
             PreviewScale::FitPage | PreviewScale::FitPageWidth
         ) {
-            apply_preview_zoom(&resize_ui);
+            apply_preview_zoom(&project_ui);
+            if project_ui.auto_scroll_to_content_end.is_active() {
+                scroll_preview_to_content_end(&project_ui);
+            }
         }
     });
 }
