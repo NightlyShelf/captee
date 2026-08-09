@@ -96,6 +96,7 @@ fn build_ui(application: &Application) {
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let pending_capture = Rc::new(RefCell::new(None));
     let pending_annotation = Rc::new(RefCell::new(None));
+    let pending_review = Rc::new(RefCell::new(None));
     let global_capture_receiver = register_capture_shortcut("CTRL+SHIFT+C");
     let project_tree = ListBox::new();
     project_tree.set_selection_mode(gtk::SelectionMode::None);
@@ -261,6 +262,7 @@ fn build_ui(application: &Application) {
         render_state,
         pending_capture,
         pending_annotation,
+        pending_review,
         capture_origin: Rc::new(RefCell::new(None)),
         global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
         background_sender,
@@ -676,6 +678,7 @@ struct ProjectUi {
     render_state: Rc<RefCell<RenderState>>,
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
+    pending_review: Rc<RefCell<Option<CaptureReview>>>,
     capture_origin: Rc<RefCell<Option<CaptureOrigin>>>,
     global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
     background_sender: Sender<BackgroundResult>,
@@ -1883,13 +1886,13 @@ fn show_annotation_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Resul
     Ok(())
 }
 
-fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> Result<(), String> {
+fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> Result<(), String> {
     let Some(application) = project_ui.application() else {
         return Err("The workspace window is no longer available.".to_owned());
     };
-    let selection = image.selection();
+    let selection = review.image().selection();
     let origin = project_ui.capture_origin.borrow().clone();
-    let review = Rc::new(RefCell::new(CaptureReview::new(image.clone())));
+    let review = Rc::new(RefCell::new(review));
     let capture_surface = gtk::Overlay::new();
     capture_surface.add_css_class("capture-review-surface");
     capture_surface.set_hexpand(true);
@@ -1915,7 +1918,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
     panel.add_css_class("capture-review-panel");
 
     let placement = ToggleButton::with_label("Insert annotation before image");
-    placement.set_active(true);
+    placement.set_active(review.borrow().before_image());
     placement.set_tooltip_text(Some(
         "Toggle whether the annotation code is before or after the image block",
     ));
@@ -1946,6 +1949,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         source_context.push('\n');
     }
     let annotation_offset = source_context.chars().count() as i32;
+    source_context.push_str(review.borrow().annotation());
     code_buffer.set_text(&source_context);
     if annotation_offset > 0 {
         let context_tag = gtk::TextTag::builder()
@@ -2097,7 +2101,17 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
 
     let modify_ui = project_ui.clone();
     let modify_window = review_window.clone();
+    let review_for_modify = Rc::clone(&review);
+    let code_buffer_for_modify = code_buffer.clone();
     modify.connect_clicked(move |_| {
+        let start = code_buffer_for_modify.iter_at_offset(annotation_offset);
+        let annotation = code_buffer_for_modify
+            .text(&start, &code_buffer_for_modify.end_iter(), true)
+            .to_string();
+        let mut review = review_for_modify.borrow_mut();
+        review.set_annotation(annotation);
+        *modify_ui.pending_review.borrow_mut() = Some(review.clone());
+        drop(review);
         modify_window.close();
         *modify_ui.pending_capture.borrow_mut() = None;
         modify_ui.status.set_text("Select a new capture region.");
@@ -2110,6 +2124,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         cancel_window.close();
         *cancel_ui.pending_capture.borrow_mut() = None;
         *cancel_ui.pending_annotation.borrow_mut() = None;
+        *cancel_ui.pending_review.borrow_mut() = None;
         cancel_ui.status.set_text("Capture discarded; the project was not changed.");
     });
 
@@ -2136,6 +2151,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, image: CapturedImage) -> R
         confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
+        *confirm_ui.pending_review.borrow_mut() = None;
         start_capture_storage_with_review(
             &confirm_ui,
             confirmed.image,
@@ -2933,7 +2949,16 @@ fn apply_operation_result(
                 OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
                     *project_ui.pending_capture.borrow_mut() = Some(image.clone());
                     *project_ui.pending_annotation.borrow_mut() = None;
-                    match show_capture_review_dialog(project_ui, image) {
+                    let review = project_ui
+                        .pending_review
+                        .borrow_mut()
+                        .take()
+                        .map(|mut review| {
+                            review.replace_image(image.clone());
+                            review
+                        })
+                        .unwrap_or_else(|| CaptureReview::new(image));
+                    match show_capture_review_dialog(project_ui, review) {
                         Ok(()) => {
                             let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
                                 message: "Capture ready".to_owned(),
@@ -2942,6 +2967,7 @@ fn apply_operation_result(
                         }
                         Err(message) => {
                             *project_ui.pending_capture.borrow_mut() = None;
+                            *project_ui.pending_review.borrow_mut() = None;
                             let _ = project_ui
                                 .shell
                                 .borrow_mut()
@@ -3691,6 +3717,7 @@ fn open_loaded_project(
             let _ = project_ui.coordinator.borrow_mut().set_source_revision(1);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            *project_ui.pending_review.borrow_mut() = None;
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
@@ -3834,6 +3861,7 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            *project_ui.pending_review.borrow_mut() = None;
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);

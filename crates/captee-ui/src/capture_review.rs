@@ -41,6 +41,10 @@ impl CaptureReview {
         self.annotation = annotation.into();
     }
 
+    pub fn replace_image(&mut self, image: CapturedImage) {
+        self.image = image;
+    }
+
     pub fn toggle_placement(&mut self) {
         self.before_image = !self.before_image;
     }
@@ -95,6 +99,23 @@ mod tests {
         assert_eq!(confirmed.annotation, "#line(length: 1em)");
         assert_eq!(confirmed.image.bytes(), b"capture");
         assert_eq!(review.image().bytes(), b"capture");
+    }
+
+    #[test]
+    fn replacing_capture_keeps_annotation_and_placement() {
+        let mut review = CaptureReview::new(image());
+        review.set_annotation("#line(length: 1em)");
+        review.toggle_placement();
+        let replacement = CapturedImage::with_selection(
+            b"replacement".to_vec(),
+            SelectionGeometry { x: 32, y: 48, width: 120, height: 90 },
+        );
+
+        review.replace_image(replacement.clone());
+
+        assert_eq!(review.annotation(), "#line(length: 1em)");
+        assert!(!review.before_image());
+        assert_eq!(review.image(), &replacement);
     }
 
     #[test]
