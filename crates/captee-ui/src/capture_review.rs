@@ -9,11 +9,6 @@ pub struct CaptureReview {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CaptureReviewError {
-    EmptyAnnotation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmedCapture {
     pub image: CapturedImage,
     pub annotation: String,
@@ -49,16 +44,12 @@ impl CaptureReview {
         self.before_image = !self.before_image;
     }
 
-    pub fn confirm(&self) -> Result<ConfirmedCapture, CaptureReviewError> {
-        let annotation = self.annotation.trim();
-        if annotation.is_empty() {
-            return Err(CaptureReviewError::EmptyAnnotation);
-        }
-        Ok(ConfirmedCapture {
+    pub fn confirm(&self) -> ConfirmedCapture {
+        ConfirmedCapture {
             image: self.image.clone(),
-            annotation: annotation.to_owned(),
+            annotation: self.annotation.trim().to_owned(),
             before_image: self.before_image,
-        })
+        }
     }
 
     pub fn discard(self) {}
@@ -81,11 +72,13 @@ mod tests {
     }
 
     #[test]
-    fn review_defaults_before_and_retains_selection_until_confirmation() {
+    fn empty_review_confirms_image_only() {
         let review = CaptureReview::new(image());
         assert!(review.before_image());
         assert_eq!(review.image().selection().expect("selection").x, 12);
-        assert_eq!(review.confirm(), Err(CaptureReviewError::EmptyAnnotation));
+        let confirmed = review.confirm();
+        assert_eq!(confirmed.annotation, "");
+        assert_eq!(confirmed.image.bytes(), b"capture");
     }
 
     #[test]
@@ -94,7 +87,7 @@ mod tests {
         review.set_annotation("#line(length: 1em)");
         review.toggle_placement();
 
-        let confirmed = review.confirm().expect("confirmation");
+        let confirmed = review.confirm();
         assert!(!confirmed.before_image);
         assert_eq!(confirmed.annotation, "#line(length: 1em)");
         assert_eq!(confirmed.image.bytes(), b"capture");

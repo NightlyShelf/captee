@@ -2135,19 +2135,9 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         let start = code_buffer.iter_at_offset(annotation_offset);
         let text = code_buffer.text(&start, &code_buffer.end_iter(), true).to_string();
         let annotation = text.trim().to_owned();
-        if annotation.is_empty() {
-            confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
-            return;
-        }
         let mut review = review_for_confirm.borrow_mut();
         review.set_annotation(annotation);
-        let confirmed = match review.confirm() {
-            Ok(confirmed) => confirmed,
-            Err(_) => {
-                confirm_ui.status.set_text("Enter Typst annotation code before confirming.");
-                return;
-            }
-        };
+        let confirmed = review.confirm();
         confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;

@@ -6,7 +6,7 @@ use captee_platform::{
     insert_saved_asset, AssetStore, CaptureSelector, PngAnnotationBackend, SavedAsset,
 };
 use captee_ui::annotation_bridge::AnnotationDraft;
-use captee_ui::capture_review::{CaptureReview, CaptureReviewError};
+use captee_ui::capture_review::CaptureReview;
 use captee_ui::editor_bridge::{EditorBridge, EditorInsertionBridge};
 use captee_ui::operation::{OperationCoordinator, OperationOutcome, ResultDisposition};
 use std::fs;
@@ -167,11 +167,13 @@ fn capture_review_confirm_discard_and_modify_are_project_no_ops_until_confirmed(
         captee_core::SelectionGeometry { x: 20, y: 30, width: 80, height: 60 },
     );
     let mut review = CaptureReview::new(captured.clone());
-    assert_eq!(review.confirm(), Err(CaptureReviewError::EmptyAnnotation));
+    let empty_confirmation = review.confirm();
+    assert_eq!(empty_confirmation.annotation, "");
+    assert_eq!(empty_confirmation.image.bytes(), captured.bytes());
 
     review.set_annotation("#line(length: 1em)");
     review.toggle_placement();
-    let confirmed = review.confirm().expect("confirm review");
+    let confirmed = review.confirm();
     assert!(!confirmed.before_image);
     assert_eq!(confirmed.image.bytes(), captured.bytes());
     assert_eq!(confirmed.annotation, "#line(length: 1em)");
