@@ -97,6 +97,7 @@ fn build_ui(application: &Application) {
     let pending_capture = Rc::new(RefCell::new(None));
     let pending_annotation = Rc::new(RefCell::new(None));
     let pending_review = Rc::new(RefCell::new(None));
+    let scroll_preview_to_end = Rc::new(Cell::new(false));
     let global_capture_receiver = register_capture_shortcut("CTRL+SHIFT+C");
     let project_tree = ListBox::new();
     project_tree.set_selection_mode(gtk::SelectionMode::None);
@@ -263,6 +264,7 @@ fn build_ui(application: &Application) {
         pending_capture,
         pending_annotation,
         pending_review,
+        scroll_preview_to_end,
         capture_origin: Rc::new(RefCell::new(None)),
         global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
         background_sender,
@@ -679,6 +681,7 @@ struct ProjectUi {
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     pending_review: Rc<RefCell<Option<CaptureReview>>>,
+    scroll_preview_to_end: Rc<Cell<bool>>,
     capture_origin: Rc<RefCell<Option<CaptureOrigin>>>,
     global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
     background_sender: Sender<BackgroundResult>,
@@ -2548,7 +2551,18 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
         project_ui.preview_pages.append(&picture);
     }
     apply_preview_zoom(project_ui);
+    if project_ui.scroll_preview_to_end.replace(false) {
+        scroll_preview_to_end(&project_ui.preview_scroller);
+    }
     Ok(())
+}
+
+fn scroll_preview_to_end(scroller: &ScrolledWindow) {
+    let adjustment = scroller.vadjustment();
+    glib::idle_add_local_once(move || {
+        let end = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+        adjustment.set_value(end);
+    });
 }
 
 fn connect_preview_scale(project_ui: &ProjectUi) {
@@ -2971,8 +2985,6 @@ fn apply_operation_result(
                     annotation,
                     before_image,
                 }) => {
-                    let focused = project_ui.shell.borrow().snapshot().focused
-                        == crate::FocusTarget::SourceEditor;
                     let character_offset =
                         project_ui.source_buffer.cursor_position().max(0) as usize;
                     let mut editor = project_ui.editor.borrow_mut();
@@ -2981,19 +2993,14 @@ fn apply_operation_result(
                         .map(EditorBridge::state)
                         .map(|state| byte_offset_for_character(&state.text, character_offset))
                         .unwrap_or_default();
-                    let target = if focused { editor.as_mut() } else { None };
                     let expression = capture_insertion_expression(
                         &asset.typst_image_expression(),
                         &annotation,
                         before_image,
                     );
                     let insertion = {
-                        let mut adapter = EditorInsertionBridge::new(target, cursor);
-                        if focused {
-                            adapter.insert_image_expression(&expression)
-                        } else {
-                            InsertionResult::NoFocusedEditor
-                        }
+                        let mut adapter = EditorInsertionBridge::new(editor.as_mut(), cursor);
+                        adapter.insert_image_expression(&expression)
                     };
                     let state = editor.as_ref().map(EditorBridge::state);
                     drop(editor);
@@ -3001,6 +3008,23 @@ fn apply_operation_result(
                         InsertionResult::Inserted => {
                             if let Some(state) = state {
                                 apply_editor_state(project_ui, &state, true);
+                                let end = cursor.saturating_add(expression.len());
+                                if let Some(prefix) = state.text.get(..end) {
+                                    let mut insertion = project_ui
+                                        .source_buffer
+                                        .iter_at_offset(prefix.chars().count() as i32);
+                                    project_ui.source_buffer.place_cursor(&insertion);
+                                    project_ui.source_view.scroll_to_iter(
+                                        &mut insertion,
+                                        0.2,
+                                        false,
+                                        0.0,
+                                        0.0,
+                                    );
+                                    project_ui.source_view.grab_focus();
+                                }
+                                project_ui.scroll_preview_to_end.set(true);
+                                scroll_preview_to_end(&project_ui.preview_scroller);
                             }
                             let message = format!(
                                 "Capture saved and inserted from {}.",

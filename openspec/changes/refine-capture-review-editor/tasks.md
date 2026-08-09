@@ -11,7 +11,7 @@
 
 - [x] 2.1 Preserve staged annotation text, placement, and capture when Modify reselects.
 - [x] 2.2 Allow empty annotation and insert only the image.
-- [ ] 2.3 After confirmation, focus the source at insertion and scroll preview to end.
+- [x] 2.3 After confirmation, focus the source at insertion and scroll preview to end.
 
 ## 3. Validation
 
