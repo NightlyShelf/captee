@@ -2087,12 +2087,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let editor_key = gtk::EventControllerKey::new();
     let confirm_for_editor = confirm.clone();
     let cancel_for_editor = cancel.clone();
-    editor_key.connect_key_pressed(move |_, key, _, _| {
+    editor_key.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::Escape {
             cancel_for_editor.emit_clicked();
             return glib::Propagation::Stop;
         }
-        if key == gtk::gdk::Key::Return {
+        if annotation_confirms_on_enter(key, state) {
             confirm_for_editor.emit_clicked();
             return glib::Propagation::Stop;
         }
@@ -2102,12 +2102,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let key_controller = gtk::EventControllerKey::new();
     let confirm_for_key = confirm.clone();
     let cancel_for_key = cancel.clone();
-    key_controller.connect_key_pressed(move |_, key, _, _| {
+    key_controller.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::Escape {
             cancel_for_key.emit_clicked();
             return glib::Propagation::Stop;
         }
-        if key == gtk::gdk::Key::Return {
+        if annotation_confirms_on_enter(key, state) {
             confirm_for_key.emit_clicked();
             return glib::Propagation::Stop;
         }
@@ -2556,6 +2556,10 @@ fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
 
 fn capture_placeholder_top(iter_y: i32, scroll_y: f64) -> i32 {
     (f64::from(iter_y) - scroll_y).max(0.0) as i32
+}
+
+fn annotation_confirms_on_enter(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
+    key == gtk::gdk::Key::Return && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
 }
 
 fn insertion_end_offset(cursor: usize, expression: &str) -> usize {
@@ -3892,9 +3896,9 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, capture_placeholder_top,
-        insertion_end_offset, is_active_tree_file, preview_scroll_end, preview_width,
-        project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
+        annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
+        capture_placeholder_top, insertion_end_offset, is_active_tree_file, preview_scroll_end,
+        preview_width, project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -3982,6 +3986,18 @@ mod tests {
         assert_eq!(capture_placeholder_top(96, 0.0), 96);
         assert_eq!(capture_placeholder_top(96, 48.0), 48);
         assert_eq!(capture_placeholder_top(48, 96.0), 0);
+    }
+
+    #[test]
+    fn shift_enter_adds_an_annotation_line() {
+        assert!(annotation_confirms_on_enter(
+            gtk4::gdk::Key::Return,
+            gtk4::gdk::ModifierType::empty(),
+        ));
+        assert!(!annotation_confirms_on_enter(
+            gtk4::gdk::Key::Return,
+            gtk4::gdk::ModifierType::SHIFT_MASK,
+        ));
     }
 
     #[test]

@@ -23,3 +23,4 @@
 - [x] 4.2 Place annotation placeholder at editable insertion line.
 - [x] 4.3 Require a fresh `origin/main` before each new change.
 - [x] 4.4 Always center capture review window.
+- [x] 4.5 Let Shift+Enter add an annotation line.
