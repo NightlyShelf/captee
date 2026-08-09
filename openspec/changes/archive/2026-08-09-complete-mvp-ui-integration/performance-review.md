@@ -193,6 +193,13 @@
 - Mitigation: Render failures and progress remain available through the global status channel, while page display and scale controls retain their existing revision checks and scroll behavior.
 - Follow-up: Recheck the compact header and narrow divider handles on small displays.
 
+## OpenSpec OpenCode integration
+
+- Finding: OpenSpec adds six static skill instruction files under `.opencode/skills/`; they perform no application runtime work, filesystem mutation, subprocess execution, or background scheduling until explicitly invoked by the coding assistant.
+- Impact: Repository checkout size and assistant context increase by a bounded amount proportional to the generated Markdown instructions. Normal Captee CPU, memory, I/O, concurrency, and process lifetime are unchanged.
+- Mitigation: OpenSpec keeps workflow execution behind explicit skill invocations and the CLI remains independently versioned. `openspec doctor` passes against the existing project root.
+- Follow-up: Regenerate these files with `openspec update` after upgrading the global CLI, and review generated changes before committing them.
+
 ## Global capture shortcut
 
 - Finding: Capture registration now uses the XDG GlobalShortcuts portal in a named worker, with one GTK timer forwarding activation events to the existing capture coordinator.

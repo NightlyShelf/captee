@@ -44,6 +44,11 @@ The application SHALL provide a project home for creating/opening projects and a
 - **WHEN** the user activates Open Project
 - **THEN** the UI presents a folder-selection dialog for choosing an existing project
 
+#### Scenario: Open workspace
+
+- **WHEN** a project is opened or created successfully
+- **THEN** the workspace shows the project files, active Typst source, preview state, and active project context
+
 #### Scenario: Open workspace layout
 
 - **WHEN** a project is opened or created successfully
