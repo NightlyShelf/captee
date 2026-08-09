@@ -466,6 +466,14 @@ fn build_workspace(
     scale_label.set_xalign(0.0);
     scale_row.append(&scale_label);
     scale_row.append(preview_scale);
+    let scale_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    scale_spacer.set_hexpand(true);
+    scale_row.append(&scale_spacer);
+    let go_to_bottom = Button::with_label("Go to bottom");
+    go_to_bottom.set_tooltip_text(Some("Scroll preview to the final page"));
+    let preview_scroller_for_bottom = preview_scroller.clone();
+    go_to_bottom.connect_clicked(move |_| scroll_preview_to_end(&preview_scroller_for_bottom));
+    scale_row.append(&go_to_bottom);
     preview.append(&scale_row);
     let editor_preview = Paned::new(Orientation::Horizontal);
     editor_preview.set_start_child(Some(&editor_scroll));
