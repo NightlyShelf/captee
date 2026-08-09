@@ -12,8 +12,8 @@ use std::thread;
 use std::time::SystemTime;
 
 static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(0);
-const CONTENT_END_LABEL: &str = "<captee-content-end>";
-const CONTENT_END_MARKER: &str = "\n#context [#layout(size => [#metadata((position: here().position(), size: size)) <captee-content-end>])]\n";
+const CONTENT_END_LINK: &str = "captee://preview-content-end";
+const CONTENT_END_MARKER: &str = "\n#context [#place(dx: 0pt, dy: 0pt)[#text(fill: rgb(\"#00000000\"))[#link(\"captee://preview-content-end\")[.]]]]\n";
 
 /// Runs a pinned Typst executable without exposing process details to the UI.
 #[derive(Debug, Clone)]
@@ -69,15 +69,6 @@ impl TypstRunner {
             "png".to_owned(),
             path_arg(source),
             path_arg(output_template),
-        ])
-    }
-
-    fn query_content_end(&self, source: &Path) -> io::Result<Output> {
-        self.run([
-            "query".to_owned(),
-            "--one".to_owned(),
-            path_arg(source),
-            CONTENT_END_LABEL.to_owned(),
         ])
     }
 
@@ -181,12 +172,7 @@ impl PreviewCompiler for TypstPreviewCompiler {
                 message: format!("could not read rendered preview: {error}"),
                 diagnostics: diagnostics.clone(),
             })?;
-            let content_end = self
-                .runner
-                .query_content_end(&source_path)
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| parse_content_end(&output.stdout));
+            let content_end = parse_content_end(&pdf);
             let png_output =
                 self.runner.compile_png_pages(&source_path, &png_template).map_err(|error| {
                     PreviewError {
@@ -221,19 +207,48 @@ impl PreviewCompiler for TypstPreviewCompiler {
     }
 }
 
-fn parse_content_end(output: &[u8]) -> Option<PreviewContentEnd> {
-    let value: serde_json::Value = serde_json::from_slice(output).ok()?;
-    let value = value.get("value")?;
-    let position = value.get("position")?;
-    Some(PreviewContentEnd {
-        page: position.get("page")?.as_u64()?.try_into().ok()?,
-        y_pt: parse_points(position.get("y")?.as_str()?)?,
-        page_height_pt: parse_points(value.get("size")?.get("height")?.as_str()?)?,
-    })
-}
+fn parse_content_end(pdf: &[u8]) -> Option<PreviewContentEnd> {
+    let pdf = std::str::from_utf8(pdf).ok()?;
+    let marker = format!("/URI ({CONTENT_END_LINK})");
+    let marker_position = pdf.find(&marker)?;
+    let annotation = &pdf[..marker_position];
+    let header_end = annotation.rfind(" obj\n")?;
+    let header_start = annotation[..header_end].rfind('\n')? + 1;
+    let annotation_id = annotation[header_start..header_end].split_whitespace().next()?;
+    let rect_start = annotation.rfind("/Rect [")? + "/Rect [".len();
+    let rect_end = annotation[rect_start..].find(']')? + rect_start;
+    let rect = annotation[rect_start..rect_end]
+        .split_whitespace()
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let annotation_bottom = *rect.get(1)?;
 
-fn parse_points(value: &str) -> Option<f64> {
-    value.strip_suffix("pt")?.parse().ok()
+    let annotation_reference = format!("{annotation_id} 0 R");
+    let mut page_number = 0;
+    let mut remaining = pdf;
+    while let Some(page_start) = remaining.find("/Type /Page\n") {
+        page_number += 1;
+        let page_end = remaining[page_start..].find("endobj")? + page_start;
+        let page = &remaining[page_start..page_end];
+        if page.contains("/Annots") && page.contains(&annotation_reference) {
+            let media_box_start = page.find("/MediaBox [")? + "/MediaBox [".len();
+            let media_box_end = page[media_box_start..].find(']')? + media_box_start;
+            let media_box = page[media_box_start..media_box_end]
+                .split_whitespace()
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            let page_height_pt = *media_box.get(3)?;
+            return Some(PreviewContentEnd {
+                page: page_number,
+                y_pt: page_height_pt - annotation_bottom,
+                page_height_pt,
+            });
+        }
+        remaining = &remaining[page_start + "/Type /Page\n".len()..];
+    }
+    None
 }
 
 fn preview_page_paths(root: &Path, prefix: &str) -> Result<Vec<PathBuf>, PreviewError> {
@@ -454,15 +469,29 @@ mod tests {
     }
 
     #[test]
-    fn parses_typst_content_end_query() {
+    fn parses_typst_content_end_marker_from_pdf() {
         let content_end = parse_content_end(
-            br#"{"func":"metadata","value":{"position":{"page":2,"x":"70.87pt","y":"144.5pt"},"size":{"width":"526.7pt","height":"841.89pt"}},"label":"<captee-content-end>"}"#,
+            br#"
+18 0 obj
+<<
+  /Rect [34.28 235.66 36.70 250.05]
+  /A << /S /URI /URI (captee://preview-content-end) >>
+>>
+endobj
+19 0 obj
+<<
+  /Type /Page
+  /MediaBox [0 0 595.27 288]
+  /Annots [18 0 R]
+>>
+endobj
+"#,
         )
         .expect("content end");
 
-        assert_eq!(content_end.page, 2);
-        assert_eq!(content_end.y_pt, 144.5);
-        assert_eq!(content_end.page_height_pt, 841.89);
+        assert_eq!(content_end.page, 1);
+        assert_eq!(content_end.y_pt, 52.34);
+        assert_eq!(content_end.page_height_pt, 288.0);
     }
 
     #[test]
