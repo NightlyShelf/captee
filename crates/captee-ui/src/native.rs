@@ -14,17 +14,17 @@ use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, EditorInserter,
     InsertionResult, KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession,
-    ProjectSettings, RecentProject, RenderState, SelectionGeometry, SourceDocument,
+    ProjectSettings, RecentProject, RenderState, SourceDocument,
 };
 use captee_platform::{
-    confirm_and_trash, create_project, create_project_item, current_capture_origin,
+    confirm_and_trash, create_project, create_project_item,
     current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
-    open_project, place_capture_review_window, register_capture_shortcut, rename_project_item,
-    save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore,
-    CaptureOrigin, CaptureSelector, FormattedSource, GlobalShortcutEvent, GrimSlurpCapture,
-    PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry,
-    RecentProjectStore, SavedAsset, TrashBackend, TrashError, TypstCompletionProvider,
-    TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    open_project, register_capture_shortcut, rename_project_item, save_project_settings,
+    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
+    FormattedSource, GlobalShortcutEvent, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
+    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
+    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
+    XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use glib::variant::ToVariant;
@@ -265,7 +265,6 @@ fn build_ui(application: &Application) {
         pending_annotation,
         pending_review,
         scroll_preview_to_end,
-        capture_origin: Rc::new(RefCell::new(None)),
         global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
@@ -682,7 +681,6 @@ struct ProjectUi {
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     pending_review: Rc<RefCell<Option<CaptureReview>>>,
     scroll_preview_to_end: Rc<Cell<bool>>,
-    capture_origin: Rc<RefCell<Option<CaptureOrigin>>>,
     global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
@@ -1621,7 +1619,6 @@ fn start_capture(project_ui: &ProjectUi) {
         return;
     }
     let settings = snapshot.app.settings.capture;
-    *project_ui.capture_origin.borrow_mut() = current_capture_origin();
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Capture) {
         project_ui.status.set_text(&format!("Error: {error}"));
         return;
@@ -1893,8 +1890,6 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let Some(application) = project_ui.application() else {
         return Err("The workspace window is no longer available.".to_owned());
     };
-    let selection = review.image().selection();
-    let origin = project_ui.capture_origin.borrow().clone();
     let review = Rc::new(RefCell::new(review));
     let capture_surface = gtk::Overlay::new();
     capture_surface.add_css_class("capture-review-surface");
@@ -1909,8 +1904,10 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         .resizable(false)
         .child(&capture_surface)
         .build();
-    let review_title = format!("Captee Capture Review {}", std::process::id());
-    review_window.set_title(Some(&review_title));
+    review_window.set_title(Some("Captee Capture Review"));
+    if let Some(parent) = project_ui.window() {
+        review_window.set_transient_for(Some(&parent));
+    }
     review_window.add_css_class("capture-review-window");
 
     let panel = GtkBox::new(Orientation::Vertical, 8);
@@ -2173,42 +2170,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     });
 
     review_window.present();
-    if let (Some(origin), Some(selection)) = (origin, selection) {
-        let Some((popup_x, popup_y)) = capture_popup_position(selection, &origin) else {
-            return Ok(());
-        };
-        let title = review_title.clone();
-        let workspace = origin.workspace;
-        let _ =
-            thread::Builder::new().name("captee-capture-placement".to_owned()).spawn(move || {
-                for _ in 0..20 {
-                    if place_capture_review_window(&title, &workspace, popup_x, popup_y).is_ok() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                }
-            });
-    }
 
     Ok(())
-}
-
-fn capture_popup_position(
-    selection: SelectionGeometry,
-    origin: &CaptureOrigin,
-) -> Option<(i64, i64)> {
-    const POPUP_WIDTH: i64 = 640;
-    const POPUP_HEIGHT: i64 = 360;
-    const GAP: i64 = 16;
-    const INSET: i64 = 8;
-    let right_x = i64::from(selection.x) + i64::from(selection.width) + GAP;
-    let left_x = i64::from(selection.x) - POPUP_WIDTH - GAP;
-    let mut x =
-        if right_x + POPUP_WIDTH <= origin.x + origin.width - INSET { right_x } else { left_x };
-    let mut y = i64::from(selection.y);
-    x = x.clamp(origin.x + INSET, origin.x + origin.width - POPUP_WIDTH - INSET);
-    y = y.clamp(origin.y + INSET, origin.y + origin.height - POPUP_HEIGHT - INSET);
-    Some((x, y))
 }
 
 fn start_capture_storage_with_review(
