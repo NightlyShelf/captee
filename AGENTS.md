@@ -42,6 +42,8 @@ Do not create unnecessary artifacts or speculate beyond user request.
 
 ## Branches and Commits
 
+Before starting a new change, update from latest `origin/main`. Create its branch from that version.
+
 Use one dedicated branch per feature or bug fix.
 
 Keep commits small, focused, and easy to review. Use short Conventional Commit subjects.
