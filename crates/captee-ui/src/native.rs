@@ -75,6 +75,7 @@ enum PreviewScale {
 struct PreviewScrollAnchor {
     page: usize,
     y_ratio: f64,
+    page_height: f64,
 }
 
 const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
@@ -2806,9 +2807,17 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
             7 => PreviewScale::Percent(200),
             _ => PreviewScale::Percent(300),
         };
+        let anchor = preview_scroll_anchor(&scale_ui.preview_pages, &scale_ui.preview_scroller);
         scale_ui.preview_scale_mode.set(mode);
         apply_preview_zoom(&scale_ui);
-        if scale_ui.auto_scroll_to_content_end.is_active() {
+        if let Some(anchor) = anchor {
+            restore_preview_scroll_anchor(
+                &scale_ui.preview_pages,
+                &scale_ui.preview_scroller,
+                anchor,
+                scale_ui.auto_scroll_to_content_end.is_active().then(|| scale_ui.clone()),
+            );
+        } else if scale_ui.auto_scroll_to_content_end.is_active() {
             scroll_preview_to_content_end(&scale_ui);
         }
     });
@@ -2910,6 +2919,7 @@ fn queue_preview_resize(
                     &project_ui.preview_pages,
                     &project_ui.preview_scroller,
                     anchor,
+                    project_ui.auto_scroll_to_content_end.is_active().then(|| project_ui.clone()),
                 );
             }
         }
@@ -2964,6 +2974,7 @@ fn preview_scroll_anchor(pages: &GtkBox, scroller: &ScrolledWindow) -> Option<Pr
             return Some(PreviewScrollAnchor {
                 page: page_number,
                 y_ratio: ((scroll_y - top) / height).clamp(0.0, 1.0),
+                page_height: height,
             });
         }
         page = widget.next_sibling();
@@ -2976,21 +2987,34 @@ fn restore_preview_scroll_anchor(
     pages: &GtkBox,
     scroller: &ScrolledWindow,
     anchor: PreviewScrollAnchor,
+    content_end_ui: Option<ProjectUi>,
 ) {
     let pages = pages.clone();
     let adjustment = scroller.vadjustment();
-    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+    let mut attempts = 0;
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        attempts += 1;
         let Some(page) = preview_page(&pages, anchor.page) else {
-            return;
+            return glib::ControlFlow::Break;
         };
         let Some(bounds) = page.compute_bounds(&pages) else {
-            return;
+            return glib::ControlFlow::Continue;
         };
+        if (f64::from(bounds.height()) - anchor.page_height).abs() < 0.5 && attempts < 15 {
+            return glib::ControlFlow::Continue;
+        }
+        if let Some(project_ui) = content_end_ui.as_ref() {
+            if project_ui.auto_scroll_to_content_end.is_active() {
+                scroll_preview_to_content_end(project_ui);
+                return glib::ControlFlow::Break;
+            }
+        }
         let target = f64::from(bounds.y()) + f64::from(bounds.height()) * anchor.y_ratio;
         adjustment.set_value(target.clamp(
             adjustment.lower(),
             preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
         ));
+        glib::ControlFlow::Break
     });
 }
 
