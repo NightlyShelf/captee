@@ -2717,15 +2717,17 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
         return;
     };
     let adjustment = project_ui.preview_scroller.vadjustment();
-    project_ui.preview_scroller.add_tick_callback(move |_, _| {
+    glib::timeout_add_local_once(Duration::from_millis(16), move || {
         let allocation = page.allocation();
+        if allocation.height() <= 0 {
+            return;
+        }
         let content_y = f64::from(allocation.y())
             + f64::from(allocation.height()) * content_end.y_pt / content_end.page_height_pt;
         adjustment.set_value((content_y - adjustment.page_size() / 3.0).clamp(
             adjustment.lower(),
             preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
         ));
-        glib::ControlFlow::Break
     });
 }
 
@@ -2738,15 +2740,12 @@ fn preview_page(pages: &GtkBox, page_number: usize) -> Option<gtk::Widget> {
 }
 
 fn keep_last_editor_line_reachable(scroller: &ScrolledWindow, editor: &sourceview::View) {
-    let editor_for_resize = editor.clone();
-    scroller.connect_notify_local(Some("height"), move |scroller, _| {
-        editor_for_resize.set_bottom_margin(scroller.height().max(1));
+    let adjustment = scroller.vadjustment();
+    let editor_for_viewport = editor.clone();
+    adjustment.connect_notify_local(Some("page-size"), move |adjustment, _| {
+        editor_for_viewport.set_bottom_margin(adjustment.page_size().ceil().max(1.0) as i32);
     });
-
-    let editor_for_map = editor.clone();
-    scroller.connect_map(move |scroller| {
-        editor_for_map.set_bottom_margin(scroller.height().max(1));
-    });
+    editor.set_bottom_margin(adjustment.page_size().ceil().max(1.0) as i32);
 }
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
