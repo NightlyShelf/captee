@@ -75,7 +75,6 @@ enum PreviewScale {
 struct PreviewScrollAnchor {
     page: usize,
     y_ratio: f64,
-    page_height: f64,
 }
 
 const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
@@ -3002,7 +3001,6 @@ fn preview_scroll_anchor(pages: &GtkBox, scroller: &ScrolledWindow) -> Option<Pr
             return Some(PreviewScrollAnchor {
                 page: page_number,
                 y_ratio: ((scroll_y - top) / height).clamp(0.0, 1.0),
-                page_height: height,
             });
         }
         page = widget.next_sibling();
@@ -3020,30 +3018,38 @@ fn restore_preview_scroll_anchor(
     let pages = pages.clone();
     let adjustment = scroller.vadjustment();
     let handler = Rc::new(RefCell::new(None));
+    let layout_sequence = Rc::new(Cell::new(0_u64));
     let handler_for_signal = Rc::clone(&handler);
+    let layout_sequence_for_signal = Rc::clone(&layout_sequence);
     let pages_for_signal = pages.clone();
     let content_end_ui_for_signal = content_end_ui.clone();
     let handler_id = adjustment.connect_changed(move |adjustment| {
-        if !apply_preview_resize_scroll(
-            &pages_for_signal,
-            adjustment,
-            anchor,
-            content_end_ui_for_signal.as_ref(),
-            false,
-        ) {
-            return;
-        }
-        if let Some(handler_id) = handler_for_signal.borrow_mut().take() {
+        let sequence = layout_sequence_for_signal.get().wrapping_add(1);
+        layout_sequence_for_signal.set(sequence);
+        let adjustment = adjustment.clone();
+        let handler = Rc::clone(&handler_for_signal);
+        let layout_sequence = Rc::clone(&layout_sequence_for_signal);
+        let pages = pages_for_signal.clone();
+        let content_end_ui = content_end_ui_for_signal.clone();
+        glib::timeout_add_local_once(Duration::from_millis(24), move || {
+            if layout_sequence.get() != sequence {
+                return;
+            }
+            let Some(handler_id) = handler.borrow_mut().take() else {
+                return;
+            };
             adjustment.disconnect(handler_id);
-        }
+            apply_preview_resize_scroll(&pages, &adjustment, anchor, content_end_ui.as_ref());
+        });
     });
     *handler.borrow_mut() = Some(handler_id);
 
     glib::timeout_add_local_once(Duration::from_millis(250), move || {
-        if let Some(handler_id) = handler.borrow_mut().take() {
-            adjustment.disconnect(handler_id);
-        }
-        apply_preview_resize_scroll(&pages, &adjustment, anchor, content_end_ui.as_ref(), true);
+        let Some(handler_id) = handler.borrow_mut().take() else {
+            return;
+        };
+        adjustment.disconnect(handler_id);
+        apply_preview_resize_scroll(&pages, &adjustment, anchor, content_end_ui.as_ref());
     });
 }
 
@@ -3052,7 +3058,6 @@ fn apply_preview_resize_scroll(
     adjustment: &gtk::Adjustment,
     anchor: PreviewScrollAnchor,
     content_end_ui: Option<&ProjectUi>,
-    force: bool,
 ) -> bool {
     let Some(page) = preview_page(pages, anchor.page) else {
         return false;
@@ -3060,9 +3065,6 @@ fn apply_preview_resize_scroll(
     let Some(bounds) = page.compute_bounds(pages) else {
         return false;
     };
-    if !force && (f64::from(bounds.height()) - anchor.page_height).abs() < 0.5 {
-        return false;
-    }
     if let Some(project_ui) = content_end_ui {
         if project_ui.auto_scroll_to_content_end.is_active() {
             return set_preview_to_content_end(project_ui);
