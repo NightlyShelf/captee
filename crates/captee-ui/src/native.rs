@@ -269,7 +269,6 @@ fn build_ui(application: &Application) {
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
         go_to_content_end,
         auto_scroll_to_content_end,
-        preview_page_content_ends: Rc::new(RefCell::new(Vec::new())),
         progress_spinner,
         cancel_button: cancel_button.clone(),
         editor,
@@ -704,7 +703,6 @@ struct ProjectUi {
     preview_scale_mode: Rc<Cell<PreviewScale>>,
     go_to_content_end: Button,
     auto_scroll_to_content_end: CheckButton,
-    preview_page_content_ends: Rc<RefCell<Vec<(gtk::Picture, Option<f64>)>>>,
     progress_spinner: Spinner,
     cancel_button: Button,
     editor: Rc<RefCell<Option<EditorBridge>>>,
@@ -2665,7 +2663,6 @@ fn apply_global_accelerators(application: &Application, keybindings: &Keybinding
 fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<(), String> {
     let mut pictures = Vec::with_capacity(pages.len());
     for png in pages {
-        let content_end = preview_content_end_ratio(&png);
         let bytes = glib::Bytes::from_owned(png);
         let texture = gtk::gdk::Texture::from_bytes(&bytes)
             .map_err(|error| format!("could not decode preview page: {error}"))?;
@@ -2673,19 +2670,17 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
         picture.set_can_shrink(true);
         picture.set_hexpand(true);
         picture.set_halign(Align::Center);
-        pictures.push((picture, content_end));
+        pictures.push(picture);
     }
     while let Some(child) = project_ui.preview_pages.first_child() {
         project_ui.preview_pages.remove(&child);
     }
-    project_ui.preview_page_content_ends.borrow_mut().clear();
-    for (picture, content_end) in pictures {
+    for picture in pictures {
         project_ui.preview_pages.append(&picture);
-        project_ui.preview_page_content_ends.borrow_mut().push((picture, content_end));
     }
     apply_preview_zoom(project_ui);
     if project_ui.auto_scroll_to_content_end.is_active() {
-        scroll_preview_to_content_end(project_ui);
+        scroll_preview_to_end(&project_ui.preview_scroller);
     } else if project_ui.scroll_preview_to_end.replace(false) {
         scroll_preview_to_end(&project_ui.preview_scroller);
     }
@@ -2705,52 +2700,6 @@ fn scroll_preview_to_end(scroller: &ScrolledWindow) {
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
     (upper - page_size).max(lower)
-}
-
-fn preview_content_end_ratio(png: &[u8]) -> Option<f64> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(png));
-    let mut reader = decoder.read_info().ok()?;
-    let mut output = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut output).ok()?;
-    let pixels = &output[..info.buffer_size()];
-    let channels = match info.color_type {
-        png::ColorType::Rgba => 4,
-        png::ColorType::Rgb => 3,
-        png::ColorType::Grayscale => 1,
-        png::ColorType::GrayscaleAlpha => 2,
-        png::ColorType::Indexed => return None,
-    };
-    let width = usize::try_from(info.width).ok()?;
-    let height = usize::try_from(info.height).ok()?;
-    let first = pixels.get(..channels)?;
-    for y in (0..height).rev() {
-        let row = pixels.get(y * width * channels..(y + 1) * width * channels)?;
-        if row.chunks_exact(channels).any(|pixel| {
-            pixel.iter().zip(first).any(|(value, background)| value.abs_diff(*background) > 4)
-        }) {
-            return Some((y.saturating_add(1)) as f64 / height as f64);
-        }
-    }
-    None
-}
-
-fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
-    let pages = project_ui.preview_page_content_ends.clone();
-    let scroller = project_ui.preview_scroller.clone();
-    glib::idle_add_local_once(move || {
-        let Some((picture, content_end)) =
-            pages.borrow().iter().rev().find_map(|(picture, content_end)| {
-                content_end.map(|content_end| (picture.clone(), content_end))
-            })
-        else {
-            return;
-        };
-        let adjustment = scroller.vadjustment();
-        let target = f64::from(picture.allocation().y())
-            + f64::from(picture.height()) * content_end
-            - adjustment.page_size();
-        adjustment.set_value(target.max(adjustment.lower()));
-    });
 }
 
 fn capture_placeholder_top(iter_y: i32, scroll_y: f64) -> i32 {
@@ -2807,13 +2756,13 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 fn connect_preview_content_navigation(project_ui: &ProjectUi) {
     let project_ui_for_button = project_ui.clone();
     project_ui.go_to_content_end.connect_clicked(move |_| {
-        scroll_preview_to_content_end(&project_ui_for_button);
+        scroll_preview_to_end(&project_ui_for_button.preview_scroller);
     });
 
     let project_ui_for_toggle = project_ui.clone();
     project_ui.auto_scroll_to_content_end.connect_toggled(move |toggle| {
         if toggle.is_active() {
-            scroll_preview_to_content_end(&project_ui_for_toggle);
+            scroll_preview_to_end(&project_ui_for_toggle.preview_scroller);
         }
     });
 }
@@ -4142,25 +4091,12 @@ fn close_project(project_ui: &ProjectUi) {
 mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
-        capture_placeholder_top, insertion_end_offset, is_active_tree_file,
-        preview_content_end_ratio, preview_scroll_end, preview_width, project_parent_folder,
-        recovery_draft, validate_project_name, PreviewScale,
+        capture_placeholder_top, insertion_end_offset, is_active_tree_file, preview_scroll_end,
+        preview_width, project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
-    use std::io::Cursor;
     use std::path::{Path, PathBuf};
-
-    fn preview_png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
-        let mut png = Vec::new();
-        let mut encoder = png::Encoder::new(Cursor::new(&mut png), width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("header");
-        writer.write_image_data(pixels).expect("pixels");
-        drop(writer);
-        png
-    }
 
     #[test]
     fn project_name_accepts_a_single_directory_name() {
@@ -4237,15 +4173,6 @@ mod tests {
     fn preview_scroll_end_stays_within_adjustment_bounds() {
         assert_eq!(preview_scroll_end(0.0, 1000.0, 320.0), 680.0);
         assert_eq!(preview_scroll_end(24.0, 100.0, 120.0), 24.0);
-    }
-
-    #[test]
-    fn preview_content_end_stops_at_last_non_background_row() {
-        let mut pixels = vec![255; 4 * 8 * 4];
-        let offset = (5 * 4 + 2) * 4;
-        pixels[offset..offset + 4].copy_from_slice(&[0, 0, 0, 255]);
-        let png = preview_png(4, 8, &pixels);
-        assert_eq!(preview_content_end_ratio(&png), Some(0.75));
     }
 
     #[test]
