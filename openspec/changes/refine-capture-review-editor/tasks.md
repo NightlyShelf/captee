@@ -16,3 +16,8 @@
 ## 3. Validation
 
 - [x] 3.1 Add focused tests for draft preservation, empty annotation, insertion focus, and preview scroll.
+
+## 4. Review fixes
+
+- [x] 4.1 Rebase this change on current main so recent-project home stays available.
+- [ ] 4.2 Place annotation placeholder at editable insertion line.
