@@ -9,10 +9,8 @@ description = "Captee GTK desktop application shell"
 captee-core = { path = "../captee-core" }
 captee-platform = { path = "../captee-platform" }
 gtk4 = { version = "0.11.4", features = ["v4_6"] }
-sourceview5 = "0.11.2"
-
-[dev-dependencies]
 png.workspace = true
+sourceview5 = "0.11.2"
 
 [lints]
 workspace = true
