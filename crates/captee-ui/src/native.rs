@@ -2741,17 +2741,17 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
         return;
     };
     let adjustment = project_ui.preview_scroller.vadjustment();
+    let pages = project_ui.preview_pages.clone();
     let scroll_generation = Rc::clone(&project_ui.preview_scroll_generation);
     glib::timeout_add_local_once(Duration::from_millis(16), move || {
         if scroll_generation.get() != generation {
             return;
         }
-        let allocation = page.allocation();
-        if allocation.height() <= 0 {
+        let Some(bounds) = page.compute_bounds(&pages) else {
             return;
-        }
-        let content_y = f64::from(allocation.y())
-            + f64::from(allocation.height()) * content_end.y_pt / content_end.page_height_pt;
+        };
+        let content_y = f64::from(bounds.y())
+            + f64::from(bounds.height()) * content_end.y_pt / content_end.page_height_pt;
         adjustment.set_value((content_y - adjustment.page_size() / 3.0).clamp(
             adjustment.lower(),
             preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
@@ -2957,9 +2957,9 @@ fn preview_scroll_anchor(pages: &GtkBox, scroller: &ScrolledWindow) -> Option<Pr
     let mut page = pages.first_child();
     let mut page_number = 1;
     while let Some(widget) = page {
-        let allocation = widget.allocation();
-        let top = f64::from(allocation.y());
-        let height = f64::from(allocation.height());
+        let bounds = widget.compute_bounds(pages)?;
+        let top = f64::from(bounds.y());
+        let height = f64::from(bounds.height());
         if height > 0.0 && scroll_y <= top + height {
             return Some(PreviewScrollAnchor {
                 page: page_number,
@@ -2983,11 +2983,10 @@ fn restore_preview_scroll_anchor(
         let Some(page) = preview_page(&pages, anchor.page) else {
             return;
         };
-        let allocation = page.allocation();
-        if allocation.height() <= 0 {
+        let Some(bounds) = page.compute_bounds(&pages) else {
             return;
-        }
-        let target = f64::from(allocation.y()) + f64::from(allocation.height()) * anchor.y_ratio;
+        };
+        let target = f64::from(bounds.y()) + f64::from(bounds.height()) * anchor.y_ratio;
         adjustment.set_value(target.clamp(
             adjustment.lower(),
             preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
