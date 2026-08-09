@@ -14,7 +14,7 @@ use captee_core::{
     replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
     AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, EditorInserter,
     InsertionResult, KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession,
-    ProjectSettings, RenderState, SelectionGeometry, SourceDocument,
+    ProjectSettings, RecentProject, RenderState, SelectionGeometry, SourceDocument,
 };
 use captee_platform::{
     confirm_and_trash, create_project, create_project_item, current_capture_origin,
@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APPLICATION_ID: &str = "com.nightlyshelf.captee";
 
@@ -131,7 +131,17 @@ fn build_ui(application: &Application) {
            margin: 0; padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
          }\
          .compact-menu-text { font-size: 12px; }\
-         .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }",
+         .project-tree-action { padding: 0; min-height: 22px; min-width: 22px; }\
+         .home-panel { background-color: #202124; border-radius: 4px; padding: 16px; }\
+         .recent-project-row { padding: 10px 0; border-bottom: 1px solid #3c4043; }\
+         .recent-project-name { font-weight: bold; }\
+         .recent-project-path, .recent-project-access { color: #9aa0a6; font-size: 12px; }\
+         .recent-project-action { padding: 0; min-height: 24px; min-width: 24px; }\
+         .project-tree-row:hover, .project-tree-row.selected { background-color: rgba(255, 255, 255, 0.08); }\
+         .recovery-action { padding: 2px 8px; min-height: 24px; border-radius: 3px; border: 1px solid #3c4043; background: #292a2d; box-shadow: none; }\
+         .recovery-action:hover { background: #3c4043; }\
+         .recovery-action-primary { background: #4a3520; color: #ffffff; }\
+         .recovery-action-primary:hover { background: #5c442a; }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -197,12 +207,16 @@ fn build_ui(application: &Application) {
         .min_content_height(240)
         .build();
 
-    let home_new_button = Button::with_label("New project");
+    let home_new_button = Button::with_label("New Project");
     home_new_button.add_css_class("suggested-action");
-    let home_open_button = Button::with_label("Open project");
+    let home_open_button = Button::with_label("Open Existing…");
     home_open_button.add_css_class("suggested-action");
+    let recent_projects = GtkBox::new(Orientation::Vertical, 0);
     let stack = Stack::builder().hexpand(true).vexpand(true).build();
-    stack.add_named(&build_home(&home_new_button, &home_open_button), Some("home"));
+    stack.add_named(
+        &build_home(&home_new_button, &home_open_button, &recent_projects),
+        Some("home"),
+    );
     stack.add_named(
         &build_workspace(
             &source_view,
@@ -224,7 +238,9 @@ fn build_ui(application: &Application) {
         source_buffer: source_buffer.clone(),
         source_view: source_view.clone(),
         project_label: project_label.clone(),
+        recent_projects: recent_projects.clone(),
         project_tree: project_tree.clone(),
+        selected_tree_file: Rc::new(RefCell::new(None)),
         project_name_label: project_name_label.clone(),
         project_panel_title: project_panel_title.clone(),
         workspace_overlay: gtk::Overlay::new(),
@@ -278,10 +294,11 @@ fn build_ui(application: &Application) {
     connect_global_capture_shortcut(&project_ui);
     connect_cancel_button(&cancel_button, &project_ui);
     sync_operation_feedback(&project_ui);
+    refresh_recent_projects(&project_ui);
     window.present();
 }
 
-fn build_home(new_button: &Button, open_button: &Button) -> GtkBox {
+fn build_home(new_button: &Button, open_button: &Button, recent_projects: &GtkBox) -> GtkBox {
     let home = GtkBox::new(Orientation::Vertical, 12);
     home.set_halign(Align::Center);
     home.set_valign(Align::Center);
@@ -292,19 +309,21 @@ fn build_home(new_button: &Button, open_button: &Button) -> GtkBox {
 
     let title = Label::new(Some("Welcome to Captee"));
     title.add_css_class("title-1");
-    let description = Label::new(Some(
-        "Create a new Typst workspace or open an existing project to start writing.",
-    ));
-    description.set_wrap(true);
-    description.set_justify(gtk::Justification::Center);
     home.append(&title);
-    home.append(&description);
-    home.append(&Label::new(Some("Your projects stay local on this computer.")));
-    let actions = GtkBox::new(Orientation::Horizontal, 8);
-    actions.set_halign(Align::Center);
-    actions.append(new_button);
-    actions.append(open_button);
-    home.append(&actions);
+    let panel = GtkBox::new(Orientation::Vertical, 12);
+    panel.add_css_class("home-panel");
+    panel.set_width_request(560);
+    let header = GtkBox::new(Orientation::Horizontal, 8);
+    let label = Label::new(Some("Latest projects"));
+    label.add_css_class("title-4");
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    header.append(&label);
+    header.append(new_button);
+    header.append(open_button);
+    panel.append(&header);
+    panel.append(recent_projects);
+    home.append(&panel);
     home
 }
 
@@ -635,7 +654,9 @@ struct ProjectUi {
     source_buffer: sourceview::Buffer,
     source_view: sourceview::View,
     project_label: Label,
+    recent_projects: GtkBox,
     project_tree: ListBox,
+    selected_tree_file: Rc<RefCell<Option<PathBuf>>>,
     project_name_label: Label,
     project_panel_title: Label,
     workspace_overlay: gtk::Overlay,
@@ -851,6 +872,10 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     let row = ListBoxRow::new();
     row.set_activatable(true);
     row.set_selectable(false);
+    row.add_css_class("project-tree-row");
+    if project_ui.selected_tree_file.borrow().as_deref() == Some(entry.relative_path.as_path()) {
+        row.add_css_class("selected");
+    }
     let depth = entry.relative_path.components().count().saturating_sub(1);
     let name = entry.relative_path.file_name().and_then(|name| name.to_str()).unwrap_or("item");
     let expanded = project_ui.expanded_tree.borrow().contains(&entry.relative_path);
@@ -892,11 +917,16 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     click.connect_pressed(move |_, n_press, _, _| {
         if n_press == 3 {
             begin_inline_rename(&project_ui_for_click, &row_for_click, &path_for_click);
-        } else if n_press == 1 {
+        }
+    });
+    let project_ui_for_release = project_ui.clone();
+    let path_for_release = entry.relative_path.clone();
+    click.connect_released(move |_, n_press, _, _| {
+        if n_press == 1 {
             if is_directory {
-                toggle_tree_path(&project_ui_for_click, &path_for_click);
+                toggle_tree_path(&project_ui_for_release, &path_for_release);
             } else {
-                open_project_tree_file(&project_ui_for_click, &path_for_click);
+                open_project_tree_file(&project_ui_for_release, &path_for_release);
             }
         }
     });
@@ -956,10 +986,19 @@ fn open_project_tree_file(project_ui: &ProjectUi, relative: &Path) {
     let path = PathBuf::from(&project.root).join(relative);
     match fs::read_to_string(&path) {
         Ok(source) => {
-            *project_ui.editor.borrow_mut() = Some(EditorBridge::new(relative, source.clone()));
+            let revision = project_ui
+                .coordinator
+                .borrow()
+                .active_source()
+                .map(|source| source.revision().saturating_add(1))
+                .unwrap_or(1);
+            *project_ui.editor.borrow_mut() =
+                Some(EditorBridge::new_at_revision(relative, source.clone(), revision));
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&source);
             project_ui.syncing_buffer.set(false);
+            *project_ui.selected_tree_file.borrow_mut() = Some(relative.to_path_buf());
+            refresh_project_tree(project_ui);
             project_ui.status.set_text(&format!("Opened {}.", relative.display()));
             if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
                 let _ = project_ui.coordinator.borrow_mut().set_source_revision(state.revision);
@@ -3076,6 +3115,9 @@ fn apply_operation_result(
                 .borrow_mut()
                 .dispatch(UiCommand::Warn { message: message.to_owned() });
             project_ui.status.set_text(message);
+            if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
+                schedule_preview(project_ui, &state);
+            }
         }
     }
     refresh_project_label(project_ui);
@@ -3150,10 +3192,12 @@ fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult)
                 .borrow()
                 .active_source()
                 .is_some_and(|source| source.project() == &project);
-            if is_current {
-                if let Err(message) = result {
+            match result {
+                Ok(()) => refresh_recent_projects(project_ui),
+                Err(message) if is_current => {
                     project_ui.status.set_text(&format!("Recent-project warning: {message}"));
                 }
+                Err(_) => {}
             }
         }
     }
@@ -3333,14 +3377,218 @@ fn show_open_project_dialog(project_ui: &ProjectUi) {
 }
 
 fn last_open_project_folder() -> Option<PathBuf> {
-    let store_path = glib::user_data_dir().join("captee/recent-projects.json");
-    RecentProjectStore::new(store_path)
+    recent_project_store()
         .load()
         .ok()?
-        .paths
+        .entries
         .into_iter()
-        .filter_map(|path| project_parent_folder(Path::new(&path)))
+        .filter_map(|entry| project_parent_folder(Path::new(&entry.path)))
         .find(|path| path.is_dir())
+}
+
+fn recent_project_store() -> RecentProjectStore {
+    RecentProjectStore::new(glib::user_data_dir().join("captee/recent-projects.json"))
+}
+
+fn refresh_recent_projects(project_ui: &ProjectUi) {
+    while let Some(child) = project_ui.recent_projects.first_child() {
+        project_ui.recent_projects.remove(&child);
+    }
+
+    match recent_project_store().load() {
+        Ok(recent) if recent.entries.is_empty() => {
+            let empty = Label::new(Some("No recent projects yet."));
+            empty.set_xalign(0.0);
+            empty.add_css_class("recent-project-path");
+            project_ui.recent_projects.append(&empty);
+        }
+        Ok(recent) => {
+            for project in recent.entries {
+                project_ui.recent_projects.append(&build_recent_project_row(project_ui, project));
+            }
+        }
+        Err(error) => {
+            let warning = Label::new(Some(&format!("Could not load recent projects: {error}")));
+            warning.set_xalign(0.0);
+            warning.add_css_class("error");
+            warning.set_wrap(true);
+            project_ui.recent_projects.append(&warning);
+        }
+    }
+}
+
+fn build_recent_project_row(project_ui: &ProjectUi, project: RecentProject) -> GtkBox {
+    let row = GtkBox::new(Orientation::Vertical, 4);
+    row.add_css_class("recent-project-row");
+    let header = GtkBox::new(Orientation::Horizontal, 6);
+    let name = Button::with_label(&project.name);
+    name.add_css_class("flat");
+    name.add_css_class("recent-project-name");
+    name.set_halign(Align::Start);
+    name.set_hexpand(true);
+    name.set_tooltip_text(Some("Open project"));
+    let path_for_open = project.path.clone();
+    let open_ui = project_ui.clone();
+    name.connect_clicked(move |_| open_recent_project(&open_ui, Path::new(&path_for_open)));
+
+    let pin = Button::new();
+    pin.set_child(Some(&recent_project_pin_icon(project.pinned)));
+    pin.add_css_class("flat");
+    pin.add_css_class("recent-project-action");
+    pin.set_tooltip_text(Some(if project.pinned { "Unpin project" } else { "Pin project" }));
+    let path_for_pin = project.path.clone();
+    let pin_ui = project_ui.clone();
+    let pinned = project.pinned;
+    pin.connect_clicked(move |_| match recent_project_store().set_pinned(&path_for_pin, !pinned) {
+        Ok(_) => refresh_recent_projects(&pin_ui),
+        Err(error) => pin_ui.status.set_text(&format!("Could not update project pin: {error}")),
+    });
+
+    let delete = Button::from_icon_name("user-trash-symbolic");
+    delete.add_css_class("flat");
+    delete.add_css_class("recent-project-action");
+    delete.set_tooltip_text(Some("Remove or delete project"));
+    let delete_ui = project_ui.clone();
+    let project_for_delete = project.clone();
+    delete.connect_clicked(move |_| {
+        show_recent_project_delete_dialog(&delete_ui, &project_for_delete)
+    });
+
+    let path = Label::new(Some(&project.path));
+    path.set_xalign(0.0);
+    path.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    path.add_css_class("recent-project-path");
+    let last_access = Label::new(Some(&format!(
+        "Last access: {}",
+        format_recent_project_date(project.last_access_unix_seconds)
+    )));
+    last_access.set_xalign(0.0);
+    last_access.add_css_class("recent-project-access");
+
+    header.append(&name);
+    header.append(&pin);
+    header.append(&delete);
+    row.append(&header);
+    row.append(&path);
+    row.append(&last_access);
+    row
+}
+
+fn recent_project_pin_icon(pinned: bool) -> gtk::DrawingArea {
+    let icon = gtk::DrawingArea::new();
+    icon.set_content_width(16);
+    icon.set_content_height(16);
+    icon.set_draw_func(move |_, context, width, height| {
+        let scale = f64::from(width.min(height)) / 16.0;
+        context.translate(
+            (f64::from(width) - 16.0 * scale) / 2.0,
+            (f64::from(height) - 16.0 * scale) / 2.0,
+        );
+        context.scale(scale, scale);
+        if pinned {
+            context.set_source_rgb(1.0, 1.0, 1.0);
+        } else {
+            context.set_source_rgb(0.78, 0.60, 0.38);
+            context.set_line_width(1.4);
+        }
+        context.move_to(4.0, 2.0);
+        context.line_to(12.0, 2.0);
+        context.line_to(10.0, 5.0);
+        context.line_to(10.0, 8.0);
+        context.line_to(13.0, 10.0);
+        context.line_to(3.0, 10.0);
+        context.line_to(6.0, 8.0);
+        context.line_to(6.0, 5.0);
+        context.close_path();
+        if pinned {
+            let _ = context.fill();
+        } else {
+            let _ = context.stroke();
+        }
+        context.move_to(8.0, 10.0);
+        context.line_to(8.0, 15.0);
+        let _ = context.stroke();
+    });
+    icon
+}
+
+fn format_recent_project_date(last_access_unix_seconds: u64) -> String {
+    let timestamp = i64::try_from(last_access_unix_seconds).unwrap_or(i64::MAX);
+    glib::DateTime::from_unix_local(timestamp)
+        .and_then(|date| date.format("%Y-%m-%d"))
+        .map(|date| date.to_string())
+        .unwrap_or_else(|_| "Unknown".to_owned())
+}
+
+fn open_recent_project(project_ui: &ProjectUi, path: &Path) {
+    match load_project(path) {
+        Ok(project) => {
+            open_loaded_project(project, false, path, project_ui);
+        }
+        Err(error) => project_ui.status.set_text(&format!("Could not open project: {error}")),
+    }
+}
+
+fn show_recent_project_delete_dialog(project_ui: &ProjectUi, project: &RecentProject) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title("Remove recent project?")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(420)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Remove from list", ResponseType::Other(1));
+    dialog.add_button("Delete from disk", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Cancel);
+    let message = Label::new(Some(&format!(
+        "{}\n{}\n\nRemove from list keeps files. Delete from disk moves the project to trash.",
+        project.name, project.path
+    )));
+    message.set_wrap(true);
+    message.set_xalign(0.0);
+    message.set_margin_top(12);
+    message.set_margin_bottom(12);
+    message.set_margin_start(12);
+    message.set_margin_end(12);
+    dialog.content_area().append(&message);
+    let project_ui = project_ui.clone();
+    let project = project.clone();
+    dialog.connect_response(move |dialog, response| {
+        let result = match response {
+            ResponseType::Other(1) => recent_project_store().remove(&project.path),
+            ResponseType::Accept => {
+                if !Path::new(&project.path).exists() {
+                    recent_project_store().remove(&project.path)
+                } else {
+                    match confirm_and_trash(&GioTrashBackend, Path::new(&project.path), true) {
+                        Ok(_) => recent_project_store().remove(&project.path),
+                        Err(error) => {
+                            project_ui
+                                .status
+                                .set_text(&format!("Could not delete project: {error}"));
+                            dialog.close();
+                            return;
+                        }
+                    }
+                }
+            }
+            _ => {
+                dialog.close();
+                return;
+            }
+        };
+        match result {
+            Ok(_) => refresh_recent_projects(&project_ui),
+            Err(error) => {
+                project_ui.status.set_text(&format!("Could not update recent projects: {error}"))
+            }
+        }
+        dialog.close();
+    });
+    dialog.present();
 }
 
 fn project_parent_folder(path: &Path) -> Option<PathBuf> {
@@ -3449,14 +3697,18 @@ fn open_loaded_project(
     match result {
         Ok(()) => {
             project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
-            *project_ui.editor.borrow_mut() = Some(EditorBridge::new(
+            *project_ui.editor.borrow_mut() = Some(EditorBridge::new_at_revision(
                 project.session.entry_document.clone(),
                 project.source.clone(),
+                1,
             ));
+            *project_ui.selected_tree_file.borrow_mut() =
+                Some(PathBuf::from(&project.session.entry_document));
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
-            *project_ui.render_state.borrow_mut() = RenderState::new(0);
+            *project_ui.render_state.borrow_mut() = RenderState::new(1);
+            let _ = project_ui.coordinator.borrow_mut().set_source_revision(1);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
             reset_preview_scale(project_ui);
@@ -3474,7 +3726,7 @@ fn open_loaded_project(
             } else {
                 "Project opened. Ready to edit."
             });
-            record_recent_project(project_ui, project_identity);
+            record_recent_project(project_ui, project_identity, project.session.name);
             if let Some(warning) = project.recovery_warning {
                 project_ui.status.set_text(&format!("Recovery warning: {warning}"));
             }
@@ -3505,13 +3757,17 @@ fn reset_preview_scale(project_ui: &ProjectUi) {
     project_ui.preview_scale.set_selected(0);
 }
 
-fn record_recent_project(project_ui: &ProjectUi, project: ProjectIdentity) {
+fn record_recent_project(project_ui: &ProjectUi, project: ProjectIdentity, name: String) {
     let store_path = glib::user_data_dir().join("captee/recent-projects.json");
     let project_path = project.root().to_string_lossy().into_owned();
+    let last_access_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
     let sender = project_ui.background_sender.clone();
     let _ = thread::Builder::new().name("captee-recent-project".to_owned()).spawn(move || {
         let result = RecentProjectStore::new(store_path)
-            .record(project_path)
+            .record(name, project_path, last_access_unix_seconds)
             .map(|_| ())
             .map_err(|error| error.to_string());
         let _ = sender.send(BackgroundResult::RecentProject { project, result });
@@ -3527,40 +3783,59 @@ fn show_recovery_dialog(project_ui: &ProjectUi, recovery: RecoveryDraft) {
         .transient_for(&window)
         .modal(true)
         .build();
-    dialog.add_button("Keep disk version", ResponseType::Cancel);
-    dialog.add_button("Recover draft", ResponseType::Accept);
-    dialog.set_default_response(ResponseType::Accept);
+    dialog.set_default_size(520, -1);
     let message = Label::new(Some(&format!(
         "A different autosaved draft (revision {}) was found. Recover it as unsaved editor content?",
         recovery.revision
     )));
     message.set_wrap(true);
-    message.set_margin_top(16);
-    message.set_margin_bottom(16);
-    message.set_margin_start(16);
-    message.set_margin_end(16);
-    dialog.content_area().append(&message);
+    message.set_margin_top(8);
+    let content = GtkBox::new(Orientation::Vertical, 12);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    content.append(&message);
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.set_halign(Align::End);
+    let keep = Button::with_label("Keep disk version");
+    keep.add_css_class("recovery-action");
+    let recover = Button::with_label("Recover draft");
+    recover.add_css_class("recovery-action");
+    recover.add_css_class("recovery-action-primary");
+    actions.append(&keep);
+    actions.append(&recover);
+    content.append(&actions);
+    dialog.content_area().append(&content);
 
     let project_ui = project_ui.clone();
     let source_identity = project_ui.coordinator.borrow().active_source();
-    dialog.connect_response(move |dialog, response| {
-        if response == ResponseType::Accept
-            && project_ui.coordinator.borrow().active_source() == source_identity
-        {
-            let state = project_ui
+    let recover_ui = project_ui.clone();
+    let recover_dialog = dialog.clone();
+    recover.connect_clicked(move |_| {
+        if recover_ui.coordinator.borrow().active_source() == source_identity {
+            let state = recover_ui
                 .editor
                 .borrow_mut()
                 .as_mut()
                 .and_then(|editor| editor.update_from_buffer(&recovery.source).ok().flatten());
             if let Some(state) = state {
-                apply_editor_state(&project_ui, &state, true);
-                project_ui.status.set_text("Autosaved draft recovered. Save to keep it.");
+                apply_editor_state(&recover_ui, &state, true);
+                recover_ui.status.set_text("Autosaved draft recovered. Save to keep it.");
             }
         }
-        if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
-            schedule_preview(&project_ui, &state);
+        if let Some(state) = recover_ui.editor.borrow().as_ref().map(EditorBridge::state) {
+            schedule_preview(&recover_ui, &state);
         }
-        dialog.close();
+        recover_dialog.close();
+    });
+    let keep_dialog = dialog.clone();
+    let keep_ui = project_ui.clone();
+    keep.connect_clicked(move |_| {
+        if let Some(state) = keep_ui.editor.borrow().as_ref().map(EditorBridge::state) {
+            schedule_preview(&keep_ui, &state);
+        }
+        keep_dialog.close();
     });
     dialog.present();
 }
@@ -3579,6 +3854,7 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
+            *project_ui.selected_tree_file.borrow_mut() = None;
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
@@ -3588,6 +3864,7 @@ fn close_project(project_ui: &ProjectUi) {
             }
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);
+            refresh_recent_projects(project_ui);
             project_ui.status.set_text("Project closed. Create or open a project to begin.");
         }
         Err(error) => project_ui.status.set_text(&format!("Error: {error}")),

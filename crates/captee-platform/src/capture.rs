@@ -699,6 +699,18 @@ mod tests {
         root
     }
 
+    #[cfg(unix)]
+    fn write_command(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = path.with_extension("tmp");
+        fs::write(&temporary, contents).expect("command script");
+        let mut permissions = fs::metadata(&temporary).expect("script metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&temporary, permissions).expect("script permissions");
+        fs::rename(temporary, path).expect("install script");
+    }
+
     #[test]
     fn portal_success_is_preferred_over_fallback() {
         let (portal, portal_calls) =
@@ -820,18 +832,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn grim_slurp_adapter_runs_selection_then_capture_with_a_bound() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = test_root("commands");
         let slurp = root.join("slurp");
         let grim = root.join("grim");
-        fs::write(&slurp, "#!/bin/sh\nprintf '0,0 10x10'\n").expect("slurp script");
-        fs::write(&grim, "#!/bin/sh\nprintf 'PNG fixture'\n").expect("grim script");
-        for path in [&slurp, &grim] {
-            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(path, permissions).expect("script permissions");
-        }
+        write_command(&slurp, "#!/bin/sh\nprintf '0,0 10x10'\n");
+        write_command(&grim, "#!/bin/sh\nprintf 'PNG fixture'\n");
 
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(1));
         assert_eq!(
@@ -847,19 +852,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn grim_output_larger_than_a_pipe_buffer_is_drained_while_running() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = test_root("large-output");
         let slurp = root.join("slurp");
         let grim = root.join("grim");
-        fs::write(&slurp, "#!/bin/sh\nprintf '0,0 10x10'\n").expect("slurp script");
-        fs::write(&grim, "#!/bin/sh\ndd if=/dev/zero bs=1024 count=256 2>/dev/null\n")
-            .expect("grim script");
-        for path in [&slurp, &grim] {
-            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(path, permissions).expect("script permissions");
-        }
+        write_command(&slurp, "#!/bin/sh\nprintf '0,0 10x10'\n");
+        write_command(&grim, "#!/bin/sh\ndd if=/dev/zero bs=1024 count=256 2>/dev/null\n");
 
         let capture = GrimSlurpCapture::with_paths(slurp, grim, Duration::from_secs(2));
         let CaptureResult::Completed(image) = capture.capture() else {

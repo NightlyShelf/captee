@@ -45,10 +45,15 @@ fn collect_tree(
         if file_type.is_symlink() {
             continue;
         }
-        if relative.as_os_str().is_empty()
-            && matches!(item.file_name().to_str(), Some(name) if name == CONFIG_FILE || name == ".captee-autosave")
-        {
-            continue;
+        if relative.as_os_str().is_empty() {
+            let name = item.file_name();
+            if name.to_str().is_some_and(|name| {
+                name == CONFIG_FILE
+                    || name == ".captee-autosave"
+                    || name.starts_with(".captee-preview-")
+            }) {
+                continue;
+            }
         }
         let child = if relative.as_os_str().is_empty() {
             PathBuf::from(item.file_name())
@@ -403,6 +408,20 @@ mod tests {
             move_project_item(&root, "notes", "notes"),
             Err(WorkspaceError::MoveIntoDescendant)
         ));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn project_tree_hides_temporary_preview_files() {
+        let root = test_root("tree-preview-files");
+        fs::write(root.join(".captee-preview-1.typ"), "preview").expect("preview source");
+        fs::write(root.join(".captee-preview-1.pdf"), "preview").expect("preview output");
+        fs::write(root.join("notes.typ"), "notes").expect("project source");
+
+        let entries = list_project_tree(&root).expect("tree");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, PathBuf::from("notes.typ"));
         fs::remove_dir_all(root).expect("cleanup");
     }
 

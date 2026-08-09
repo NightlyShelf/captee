@@ -146,24 +146,90 @@ impl Default for PreviewSettings {
     }
 }
 
+pub const RECENT_PROJECT_LIMIT: usize = 5;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecentProjects {
-    pub max_entries: usize,
-    pub paths: Vec<String>,
+pub struct RecentProject {
+    pub name: String,
+    pub path: String,
+    pub last_access_unix_seconds: u64,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
-impl Default for RecentProjects {
-    fn default() -> Self {
-        Self { max_entries: 10, paths: Vec::new() }
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentProjects {
+    #[serde(default)]
+    pub entries: Vec<RecentProject>,
+    #[serde(default, rename = "paths", skip_serializing)]
+    legacy_paths: Vec<String>,
 }
 
 impl RecentProjects {
-    pub fn record(&mut self, path: impl Into<String>) {
+    pub fn record(
+        &mut self,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        last_access_unix_seconds: u64,
+    ) {
         let path = path.into();
-        self.paths.retain(|existing| existing != &path);
-        self.paths.insert(0, path);
-        self.paths.truncate(self.max_entries);
+        let pinned =
+            self.entries.iter().find(|entry| entry.path == path).is_some_and(|entry| entry.pinned);
+        self.entries.retain(|entry| entry.path != path);
+        self.entries.push(RecentProject {
+            name: name.into(),
+            path,
+            last_access_unix_seconds,
+            pinned,
+        });
+        self.sort_and_limit();
+    }
+
+    pub fn set_pinned(&mut self, path: &str, pinned: bool) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) else {
+            return false;
+        };
+        entry.pinned = pinned;
+        self.sort_and_limit();
+        true
+    }
+
+    pub fn remove(&mut self, path: &str) -> bool {
+        let entry_count = self.entries.len();
+        self.entries.retain(|entry| entry.path != path);
+        entry_count != self.entries.len()
+    }
+
+    pub fn migrate_legacy_paths(&mut self) {
+        if !self.entries.is_empty() || self.legacy_paths.is_empty() {
+            return;
+        }
+
+        let count = self.legacy_paths.len() as u64;
+        for (index, path) in self.legacy_paths.drain(..).enumerate() {
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&path)
+                .to_owned();
+            self.entries.push(RecentProject {
+                name,
+                path,
+                last_access_unix_seconds: count.saturating_sub(index as u64),
+                pinned: false,
+            });
+        }
+        self.sort_and_limit();
+    }
+
+    fn sort_and_limit(&mut self) {
+        self.entries.sort_by(|left, right| {
+            right
+                .pinned
+                .cmp(&left.pinned)
+                .then_with(|| right.last_access_unix_seconds.cmp(&left.last_access_unix_seconds))
+        });
+        self.entries.truncate(RECENT_PROJECT_LIMIT);
     }
 }
 
@@ -228,13 +294,31 @@ mod tests {
     }
 
     #[test]
-    fn recent_projects_are_deduplicated_and_bounded() {
-        let mut recent = RecentProjects { max_entries: 2, paths: Vec::new() };
-        recent.record("a");
-        recent.record("b");
-        recent.record("a");
-        assert_eq!(recent.paths, vec!["a", "b"]);
-        recent.record("c");
-        assert_eq!(recent.paths, vec!["c", "a"]);
+    fn recent_projects_are_deduplicated_pinned_and_bounded() {
+        let mut recent = RecentProjects::default();
+        for index in 0..6 {
+            recent.record(format!("Project {index}"), format!("project-{index}"), index);
+        }
+        recent.set_pinned("project-1", true);
+        recent.record("New name", "project-1", 9);
+
+        assert_eq!(recent.entries.len(), RECENT_PROJECT_LIMIT);
+        assert_eq!(recent.entries[0].path, "project-1");
+        assert!(recent.entries[0].pinned);
+        assert_eq!(recent.entries[0].name, "New name");
+        assert!(!recent.entries.iter().any(|entry| entry.path == "project-0"));
+    }
+
+    #[test]
+    fn legacy_recent_project_paths_are_migrated() {
+        let mut recent: RecentProjects =
+            serde_json::from_str(r#"{"max_entries":10,"paths":["/work/Notes","/work/Plan"]}"#)
+                .expect("legacy recent projects");
+
+        recent.migrate_legacy_paths();
+
+        assert_eq!(recent.entries[0].name, "Notes");
+        assert_eq!(recent.entries[1].name, "Plan");
+        assert!(recent.entries.iter().all(|entry| !entry.pinned));
     }
 }
