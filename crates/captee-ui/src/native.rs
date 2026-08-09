@@ -2560,9 +2560,20 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
 fn scroll_preview_to_end(scroller: &ScrolledWindow) {
     let adjustment = scroller.vadjustment();
     glib::idle_add_local_once(move || {
-        let end = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
-        adjustment.set_value(end);
+        adjustment.set_value(preview_scroll_end(
+            adjustment.lower(),
+            adjustment.upper(),
+            adjustment.page_size(),
+        ));
     });
+}
+
+fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
+    (upper - page_size).max(lower)
+}
+
+fn insertion_end_offset(cursor: usize, expression: &str) -> usize {
+    cursor.saturating_add(expression.len())
 }
 
 fn connect_preview_scale(project_ui: &ProjectUi) {
@@ -3008,7 +3019,7 @@ fn apply_operation_result(
                         InsertionResult::Inserted => {
                             if let Some(state) = state {
                                 apply_editor_state(project_ui, &state, true);
-                                let end = cursor.saturating_add(expression.len());
+                                let end = insertion_end_offset(cursor, &expression);
                                 if let Some(prefix) = state.text.get(..end) {
                                     let mut insertion = project_ui
                                         .source_buffer
@@ -3895,8 +3906,9 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, is_active_tree_file,
-        preview_width, project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
+        byte_offset_for_character, capture_insertion_expression, insertion_end_offset,
+        is_active_tree_file, preview_scroll_end, preview_width, project_parent_folder,
+        recovery_draft, validate_project_name, PreviewScale,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -3966,6 +3978,17 @@ mod tests {
             ),
             "#image(\"img/capture.png\")\n#line(length: 1em)\n"
         );
+    }
+
+    #[test]
+    fn capture_insertion_cursor_ends_after_expression() {
+        assert_eq!(insertion_end_offset(3, "#image(\"img/capture.png\")\n"), 29);
+    }
+
+    #[test]
+    fn preview_scroll_end_stays_within_adjustment_bounds() {
+        assert_eq!(preview_scroll_end(0.0, 1000.0, 320.0), 680.0);
+        assert_eq!(preview_scroll_end(24.0, 100.0, 120.0), 24.0);
     }
 
     #[test]

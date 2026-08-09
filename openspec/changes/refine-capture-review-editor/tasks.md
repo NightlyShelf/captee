@@ -15,4 +15,4 @@
 
 ## 3. Validation
 
-- [ ] 3.1 Add focused tests for draft preservation, empty annotation, insertion focus, and preview scroll.
+- [x] 3.1 Add focused tests for draft preservation, empty annotation, insertion focus, and preview scroll.
