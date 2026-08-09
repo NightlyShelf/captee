@@ -1,5 +1,10 @@
 # Captee
 
+[![Rust checks](https://github.com/NightlyShelf/captee/actions/workflows/rust-checks.yml/badge.svg?branch=main)](https://github.com/NightlyShelf/captee/actions/workflows/rust-checks.yml)
+[![AppImage build](https://github.com/NightlyShelf/captee/actions/workflows/appimage.yml/badge.svg?branch=main)](https://github.com/NightlyShelf/captee/actions/workflows/appimage.yml)
+![Rust 1.97.1](https://img.shields.io/badge/Rust-1.97.1-dea584)
+![Typst 0.14.2](https://img.shields.io/badge/Typst-0.14.2-239dad)
+
 Captee is local-first desktop workspace for Typst notes and annotated screenshots.
 
 Unlike separate editors, screenshot tools, and PDF exporters, Captee keeps writing, live preview, capture, annotation, and export in one app. Projects and assets stay on your machine; no account or cloud service required.
