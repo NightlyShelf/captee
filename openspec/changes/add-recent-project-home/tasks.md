@@ -37,3 +37,8 @@
 - [x] 7.1 Show an actual white-filled pin state with the same pin shape.
 - [x] 7.2 Let Typst files and folders drag before click actions run.
 - [x] 7.3 Add focused regression tests.
+
+## 8. Selection fix
+
+- [x] 8.1 Highlight the file currently loaded by the editor.
+- [x] 8.2 Add focused regression test.

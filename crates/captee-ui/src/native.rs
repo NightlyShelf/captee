@@ -240,7 +240,6 @@ fn build_ui(application: &Application) {
         project_label: project_label.clone(),
         recent_projects: recent_projects.clone(),
         project_tree: project_tree.clone(),
-        selected_tree_file: Rc::new(RefCell::new(None)),
         project_name_label: project_name_label.clone(),
         project_panel_title: project_panel_title.clone(),
         workspace_overlay: gtk::Overlay::new(),
@@ -656,7 +655,6 @@ struct ProjectUi {
     project_label: Label,
     recent_projects: GtkBox,
     project_tree: ListBox,
-    selected_tree_file: Rc<RefCell<Option<PathBuf>>>,
     project_name_label: Label,
     project_panel_title: Label,
     workspace_overlay: gtk::Overlay,
@@ -873,7 +871,7 @@ fn append_project_tree_row(project_ui: &ProjectUi, entry: ProjectTreeEntry) {
     row.set_activatable(true);
     row.set_selectable(false);
     row.add_css_class("project-tree-row");
-    if project_ui.selected_tree_file.borrow().as_deref() == Some(entry.relative_path.as_path()) {
+    if is_active_tree_file(project_ui.editor.borrow().as_ref(), &entry.relative_path) {
         row.add_css_class("selected");
     }
     let depth = entry.relative_path.components().count().saturating_sub(1);
@@ -997,7 +995,6 @@ fn open_project_tree_file(project_ui: &ProjectUi, relative: &Path) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&source);
             project_ui.syncing_buffer.set(false);
-            *project_ui.selected_tree_file.borrow_mut() = Some(relative.to_path_buf());
             refresh_project_tree(project_ui);
             project_ui.status.set_text(&format!("Opened {}.", relative.display()));
             if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
@@ -1008,6 +1005,10 @@ fn open_project_tree_file(project_ui: &ProjectUi, relative: &Path) {
         }
         Err(error) => project_ui.status.set_text(&format!("Could not open file: {error}")),
     }
+}
+
+fn is_active_tree_file(editor: Option<&EditorBridge>, relative: &Path) -> bool {
+    editor.is_some_and(|editor| editor.entry_document() == relative)
 }
 
 fn show_project_tree_context_menu(project_ui: &ProjectUi, row: &ListBoxRow, path: &Path) {
@@ -3702,8 +3703,6 @@ fn open_loaded_project(
                 project.source.clone(),
                 1,
             ));
-            *project_ui.selected_tree_file.borrow_mut() =
-                Some(PathBuf::from(&project.session.entry_document));
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
@@ -3854,7 +3853,6 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
-            *project_ui.selected_tree_file.borrow_mut() = None;
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
@@ -3874,9 +3872,10 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset_for_character, capture_insertion_expression, preview_width,
-        project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
+        byte_offset_for_character, capture_insertion_expression, is_active_tree_file,
+        preview_width, project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
     };
+    use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
     use std::path::{Path, PathBuf};
 
@@ -3912,6 +3911,14 @@ mod tests {
 
         let invalid = AutosaveSnapshot { revision: 4, contents: vec![0xff] };
         assert!(recovery_draft(invalid, "disk").is_err());
+    }
+
+    #[test]
+    fn tree_selection_follows_the_active_editor_file() {
+        let editor = EditorBridge::new("test.typ", "meow");
+
+        assert!(!is_active_tree_file(Some(&editor), std::path::Path::new("main.typ")));
+        assert!(is_active_tree_file(Some(&editor), std::path::Path::new("test.typ")));
     }
 
     #[test]
