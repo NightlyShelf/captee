@@ -3240,7 +3240,6 @@ fn apply_operation_result(
                                     });
                                 }
                                 project_ui.scroll_preview_to_end.set(true);
-                                scroll_preview_to_end(&project_ui.preview_scroller);
                             }
                             let message = format!(
                                 "Capture saved and inserted from {}.",
