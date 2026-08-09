@@ -2799,16 +2799,19 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     });
 
     let resize_pending = Rc::new(Cell::new(false));
+    let last_preview_size = Rc::new(Cell::new(None));
     let resize_ui = project_ui.clone();
     let resize_pending_for_width = Rc::clone(&resize_pending);
+    let last_preview_size_for_width = Rc::clone(&last_preview_size);
     project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
-        queue_preview_resize(&resize_ui, &resize_pending_for_width);
+        queue_preview_resize(&resize_ui, &resize_pending_for_width, &last_preview_size_for_width);
     });
 
     let resize_ui = project_ui.clone();
     let resize_pending_for_height = Rc::clone(&resize_pending);
+    let last_preview_size_for_height = Rc::clone(&last_preview_size);
     project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
-        queue_preview_resize(&resize_ui, &resize_pending_for_height);
+        queue_preview_resize(&resize_ui, &resize_pending_for_height, &last_preview_size_for_height);
     });
 
     if let Some(paned) =
@@ -2816,34 +2819,46 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
     {
         let resize_ui = project_ui.clone();
         let resize_pending = Rc::clone(&resize_pending);
+        let last_preview_size = Rc::clone(&last_preview_size);
         paned.connect_position_notify(move |_| {
-            queue_preview_resize(&resize_ui, &resize_pending);
+            queue_preview_resize(&resize_ui, &resize_pending, &last_preview_size);
         });
     }
 
     if let Some(window) = project_ui.window() {
         let resize_ui = project_ui.clone();
         let resize_pending = Rc::clone(&resize_pending);
+        let last_preview_size = Rc::clone(&last_preview_size);
         window.connect_realize(move |window| {
             if let Some(surface) = window.surface() {
                 let resize_ui = resize_ui.clone();
                 let resize_pending = Rc::clone(&resize_pending);
+                let last_preview_size = Rc::clone(&last_preview_size);
                 surface.connect_layout(move |_, _, _| {
-                    queue_preview_resize(&resize_ui, &resize_pending);
+                    queue_preview_resize(&resize_ui, &resize_pending, &last_preview_size);
                 });
             }
         });
     }
 }
 
-fn queue_preview_resize(project_ui: &ProjectUi, pending: &Rc<Cell<bool>>) {
+fn queue_preview_resize(
+    project_ui: &ProjectUi,
+    pending: &Rc<Cell<bool>>,
+    last_preview_size: &Rc<Cell<Option<(i32, i32)>>>,
+) {
     if pending.replace(true) {
         return;
     }
     let project_ui = project_ui.clone();
     let pending = Rc::clone(pending);
+    let last_preview_size = Rc::clone(last_preview_size);
     glib::timeout_add_local_once(Duration::from_millis(16), move || {
         pending.set(false);
+        let size = (project_ui.preview_scroller.width(), project_ui.preview_scroller.height());
+        if last_preview_size.replace(Some(size)) == Some(size) {
+            return;
+        }
         if matches!(
             project_ui.preview_scale_mode.get(),
             PreviewScale::FitPage | PreviewScale::FitPageWidth
