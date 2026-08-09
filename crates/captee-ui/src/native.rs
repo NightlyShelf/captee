@@ -2864,9 +2864,6 @@ fn queue_preview_resize(
             PreviewScale::FitPage | PreviewScale::FitPageWidth
         ) {
             apply_preview_zoom(&project_ui);
-            if project_ui.auto_scroll_to_content_end.is_active() {
-                scroll_preview_to_content_end(&project_ui);
-            }
         }
     });
 }
