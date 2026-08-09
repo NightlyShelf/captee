@@ -24,6 +24,7 @@ fn success(revision: u64, pdf: &[u8]) -> PreviewOutcome {
         result: Ok(PreviewArtifact {
             pdf: pdf.to_vec(),
             page_pngs: vec![b"png".to_vec()],
+            content_end: None,
             diagnostics: Vec::new(),
         }),
         rendered_at: UNIX_EPOCH,

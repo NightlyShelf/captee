@@ -30,8 +30,8 @@ pub use persistence::{
 };
 pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent, GlobalShortcutRegistration};
 pub use typst::{
-    AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewError, PreviewHandle,
-    PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,
+    AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewContentEnd, PreviewError,
+    PreviewHandle, PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,
 };
 pub use workspace::{
     confirm_and_trash, create_project, create_project_item, delete_project_item, list_project_tree,

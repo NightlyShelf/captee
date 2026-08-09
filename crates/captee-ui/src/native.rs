@@ -22,10 +22,10 @@ use captee_platform::{
     open_project, register_capture_shortcut, rename_project_item, save_project_settings,
     AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
     FormattedSource, GlobalKeybindingStore, GlobalShortcutEvent, GlobalShortcutRegistration,
-    GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence,
-    ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend, TrashError,
-    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture,
-    AUTOSAVE_FILE,
+    GrimSlurpCapture, PngAnnotationBackend, PreviewContentEnd, PreviewOutcome,
+    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
+    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
+    XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use glib::variant::ToVariant;
@@ -267,6 +267,7 @@ fn build_ui(application: &Application) {
         preview_scroller,
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
+        preview_content_end: Rc::new(Cell::new(None)),
         go_to_content_end,
         auto_scroll_to_content_end,
         progress_spinner,
@@ -701,6 +702,7 @@ struct ProjectUi {
     preview_scroller: ScrolledWindow,
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
+    preview_content_end: Rc<Cell<Option<PreviewContentEnd>>>,
     go_to_content_end: Button,
     auto_scroll_to_content_end: CheckButton,
     progress_spinner: Spinner,
@@ -2660,7 +2662,11 @@ fn apply_global_accelerators(application: &Application, keybindings: &Keybinding
     }
 }
 
-fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<(), String> {
+fn display_preview_pages(
+    project_ui: &ProjectUi,
+    pages: Vec<Vec<u8>>,
+    content_end: Option<PreviewContentEnd>,
+) -> Result<(), String> {
     let mut pictures = Vec::with_capacity(pages.len());
     for png in pages {
         let bytes = glib::Bytes::from_owned(png);
@@ -2679,10 +2685,11 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
         project_ui.preview_pages.append(&picture);
     }
     apply_preview_zoom(project_ui);
+    project_ui.preview_content_end.set(content_end);
     if project_ui.auto_scroll_to_content_end.is_active() {
-        scroll_preview_to_end(&project_ui.preview_scroller);
+        scroll_preview_to_content_end(project_ui);
     } else if project_ui.scroll_preview_to_end.replace(false) {
-        scroll_preview_to_end(&project_ui.preview_scroller);
+        scroll_preview_to_content_end(project_ui);
     }
     Ok(())
 }
@@ -2696,6 +2703,36 @@ fn scroll_preview_to_end(scroller: &ScrolledWindow) {
             adjustment.page_size(),
         ));
     });
+}
+
+fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
+    let Some(content_end) = project_ui.preview_content_end.get() else {
+        scroll_preview_to_end(&project_ui.preview_scroller);
+        return;
+    };
+    let Some(page) = preview_page(&project_ui.preview_pages, content_end.page) else {
+        scroll_preview_to_end(&project_ui.preview_scroller);
+        return;
+    };
+    let adjustment = project_ui.preview_scroller.vadjustment();
+    glib::idle_add_local_once(move || {
+        let allocation = page.allocation();
+        let content_y = f64::from(allocation.y())
+            + f64::from(allocation.height()) * content_end.y_pt / content_end.page_height_pt;
+        let padding = 120.0;
+        adjustment.set_value((content_y - adjustment.page_size() + padding).clamp(
+            adjustment.lower(),
+            preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
+        ));
+    });
+}
+
+fn preview_page(pages: &GtkBox, page_number: usize) -> Option<gtk::Widget> {
+    let mut page = pages.first_child();
+    for _ in 1..page_number {
+        page = page?.next_sibling();
+    }
+    page
 }
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
@@ -2756,13 +2793,13 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
 fn connect_preview_content_navigation(project_ui: &ProjectUi) {
     let project_ui_for_button = project_ui.clone();
     project_ui.go_to_content_end.connect_clicked(move |_| {
-        scroll_preview_to_end(&project_ui_for_button.preview_scroller);
+        scroll_preview_to_content_end(&project_ui_for_button);
     });
 
     let project_ui_for_toggle = project_ui.clone();
     project_ui.auto_scroll_to_content_end.connect_toggled(move |toggle| {
         if toggle.is_active() {
-            scroll_preview_to_end(&project_ui_for_toggle.preview_scroller);
+            scroll_preview_to_content_end(&project_ui_for_toggle);
         }
     });
 }
@@ -3079,8 +3116,8 @@ fn apply_operation_result(
                             .borrow_mut()
                             .dispatch(UiCommand::Warn { message: message.to_owned() });
                         project_ui.status.set_text(message);
-                    } else if let Some(pages) = pages {
-                        match display_preview_pages(project_ui, pages) {
+                    } else if let Some((pages, content_end)) = pages {
+                        match display_preview_pages(project_ui, pages, content_end) {
                             Ok(()) => {
                                 let _ =
                                     project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {

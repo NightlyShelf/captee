@@ -18,6 +18,7 @@ impl PreviewCompiler for FixtureCompiler {
             return Ok(PreviewArtifact {
                 pdf: b"fixture-success-pdf".to_vec(),
                 page_pngs: vec![b"fixture-success-png".to_vec()],
+                content_end: None,
                 diagnostics: Vec::new(),
             });
         }

@@ -12,6 +12,8 @@ use std::thread;
 use std::time::SystemTime;
 
 static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(0);
+const CONTENT_END_LABEL: &str = "<captee-content-end>";
+const CONTENT_END_MARKER: &str = "\n#context [#layout(size => [#metadata((position: here().position(), size: size)) <captee-content-end>])]\n";
 
 /// Runs a pinned Typst executable without exposing process details to the UI.
 #[derive(Debug, Clone)]
@@ -70,6 +72,15 @@ impl TypstRunner {
         ])
     }
 
+    fn query_content_end(&self, source: &Path) -> io::Result<Output> {
+        self.run([
+            "query".to_owned(),
+            "--one".to_owned(),
+            path_arg(source),
+            CONTENT_END_LABEL.to_owned(),
+        ])
+    }
+
     /// Formats a Typst source file in place.
     pub fn format(&self, source: &Path) -> io::Result<Output> {
         self.run(["fmt".to_owned(), path_arg(source)])
@@ -93,11 +104,20 @@ impl TypstRunner {
 }
 
 /// The successful output of a preview compilation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreviewArtifact {
     pub pdf: Vec<u8>,
     pub page_pngs: Vec<Vec<u8>>,
+    pub content_end: Option<PreviewContentEnd>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// The final source position reported by Typst's layout engine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewContentEnd {
+    pub page: usize,
+    pub y_pt: f64,
+    pub page_height_pt: f64,
 }
 
 /// A compiler failure that can be displayed without exposing process details.
@@ -138,9 +158,12 @@ impl PreviewCompiler for TypstPreviewCompiler {
         let png_template = self.project_root.join(format!("{prefix}-page-{{p}}-of-{{t}}.png"));
 
         let result = (|| {
-            atomic_write(&source_path, source.as_bytes()).map_err(|error| PreviewError {
-                message: format!("could not stage preview source: {error}"),
-                diagnostics: Vec::new(),
+            let preview_source = format!("{source}{CONTENT_END_MARKER}");
+            atomic_write(&source_path, preview_source.as_bytes()).map_err(|error| {
+                PreviewError {
+                    message: format!("could not stage preview source: {error}"),
+                    diagnostics: Vec::new(),
+                }
             })?;
             let output =
                 self.runner.compile(&source_path, &output_path).map_err(|error| PreviewError {
@@ -158,6 +181,12 @@ impl PreviewCompiler for TypstPreviewCompiler {
                 message: format!("could not read rendered preview: {error}"),
                 diagnostics: diagnostics.clone(),
             })?;
+            let content_end = self
+                .runner
+                .query_content_end(&source_path)
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| parse_content_end(&output.stdout));
             let png_output =
                 self.runner.compile_png_pages(&source_path, &png_template).map_err(|error| {
                     PreviewError {
@@ -182,7 +211,7 @@ impl PreviewCompiler for TypstPreviewCompiler {
             }
             let mut diagnostics = diagnostics;
             diagnostics.append(&mut image_diagnostics);
-            Ok(PreviewArtifact { pdf, page_pngs, diagnostics })
+            Ok(PreviewArtifact { pdf, page_pngs, content_end, diagnostics })
         })();
 
         let _ = std::fs::remove_file(&source_path);
@@ -190,6 +219,21 @@ impl PreviewCompiler for TypstPreviewCompiler {
         remove_preview_pages(&self.project_root, &prefix);
         result
     }
+}
+
+fn parse_content_end(output: &[u8]) -> Option<PreviewContentEnd> {
+    let value: serde_json::Value = serde_json::from_slice(output).ok()?;
+    let value = value.get("value")?;
+    let position = value.get("position")?;
+    Some(PreviewContentEnd {
+        page: position.get("page")?.as_u64()?.try_into().ok()?,
+        y_pt: parse_points(position.get("y")?.as_str()?)?,
+        page_height_pt: parse_points(value.get("size")?.get("height")?.as_str()?)?,
+    })
+}
+
+fn parse_points(value: &str) -> Option<f64> {
+    value.strip_suffix("pt")?.parse().ok()
 }
 
 fn preview_page_paths(root: &Path, prefix: &str) -> Result<Vec<PathBuf>, PreviewError> {
@@ -245,7 +289,7 @@ fn remove_preview_pages(root: &Path, prefix: &str) {
 }
 
 /// A revision-tagged result returned by an asynchronous preview compilation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreviewOutcome {
     pub revision: u64,
     pub result: Result<PreviewArtifact, PreviewError>,
@@ -261,17 +305,21 @@ impl PreviewOutcome {
     /// Applies this result and transfers page images only when it is current.
     /// Keeping the page buffers in the outcome avoids cloning every page while
     /// the core render state records only the PDF and diagnostics.
-    pub fn apply_to_with_pages(self, state: &mut RenderState) -> (bool, Option<Vec<Vec<u8>>>) {
+    pub fn apply_to_with_pages(
+        self,
+        state: &mut RenderState,
+    ) -> (bool, Option<(Vec<Vec<u8>>, Option<PreviewContentEnd>)>) {
         match self.result {
             Ok(artifact) => {
                 let page_pngs = artifact.page_pngs;
+                let content_end = artifact.content_end;
                 let accepted = state.apply_success(
                     self.revision,
                     artifact.pdf,
                     artifact.diagnostics,
                     self.rendered_at,
                 );
-                (accepted, accepted.then_some(page_pngs))
+                (accepted, accepted.then_some((page_pngs, content_end)))
             }
             Err(error) => {
                 let diagnostics = if error.diagnostics.is_empty() {
@@ -387,6 +435,7 @@ mod tests {
             Ok(PreviewArtifact {
                 pdf: source.as_bytes().to_vec(),
                 page_pngs: vec![b"png".to_vec()],
+                content_end: None,
                 diagnostics: Vec::new(),
             })
         }
@@ -402,6 +451,18 @@ mod tests {
         let artifact = outcome.result.expect("successful preview");
         assert_eq!(artifact.pdf, b"#let answer = 42");
         assert_eq!(artifact.page_pngs, vec![b"png".to_vec()]);
+    }
+
+    #[test]
+    fn parses_typst_content_end_query() {
+        let content_end = parse_content_end(
+            br#"{"func":"metadata","value":{"position":{"page":2,"x":"70.87pt","y":"144.5pt"},"size":{"width":"526.7pt","height":"841.89pt"}},"label":"<captee-content-end>"}"#,
+        )
+        .expect("content end");
+
+        assert_eq!(content_end.page, 2);
+        assert_eq!(content_end.y_pt, 144.5);
+        assert_eq!(content_end.page_height_pt, 841.89);
     }
 
     #[test]
