@@ -21,10 +21,11 @@ use captee_platform::{
     current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
     open_project, register_capture_shortcut, rename_project_item, save_project_settings,
     AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
-    FormattedSource, GlobalShortcutEvent, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
-    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
-    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
-    XdgPortalCapture, AUTOSAVE_FILE,
+    FormattedSource, GlobalKeybindingStore, GlobalShortcutEvent, GlobalShortcutRegistration,
+    GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome, ProjectDocumentPersistence,
+    ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend, TrashError,
+    TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture,
+    AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use glib::variant::ToVariant;
@@ -60,7 +61,7 @@ enum WorkspaceOperationResult {
     Exported(PathBuf),
     Captured(CapturedImage),
     CaptureStored { asset: SavedAsset, annotation: String, before_image: bool },
-    SettingsSaved(ProjectSettings),
+    SettingsSaved { settings: ProjectSettings, keybindings: KeybindingSettings },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +99,9 @@ fn build_ui(application: &Application) {
     let pending_annotation = Rc::new(RefCell::new(None));
     let pending_review = Rc::new(RefCell::new(None));
     let scroll_preview_to_end = Rc::new(Cell::new(false));
-    let global_capture_receiver = register_capture_shortcut("CTRL+SHIFT+C");
+    let global_keybindings = Rc::new(RefCell::new(
+        global_keybinding_store().load().unwrap_or_else(|_| KeybindingSettings::default()),
+    ));
     let project_tree = ListBox::new();
     project_tree.set_selection_mode(gtk::SelectionMode::None);
     project_tree.set_hexpand(true);
@@ -265,7 +268,8 @@ fn build_ui(application: &Application) {
         pending_annotation,
         pending_review,
         scroll_preview_to_end,
-        global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
+        global_keybindings,
+        global_capture_shortcut: Rc::new(RefCell::new(None)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -285,6 +289,7 @@ fn build_ui(application: &Application) {
     root.append(&status_row);
     project_ui.workspace_overlay.set_child(Some(&root));
     window.set_child(Some(&project_ui.workspace_overlay));
+    apply_global_accelerators(application, &project_ui.global_keybindings.borrow());
 
     connect_ui_actions(&project_ui, application);
     connect_project_button(&home_new_button, true, &project_ui);
@@ -533,7 +538,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("completion", "<Primary>space"),
         ("undo", "<Primary>z"),
         ("redo", "<Primary><Shift>z"),
-        ("capture", "<Primary><Shift>c"),
+        ("capture", "<Primary>asciitilde"),
         ("preview", "<Primary>r"),
         ("export", "<Primary><Shift>e"),
         ("status-bar", ""),
@@ -681,7 +686,8 @@ struct ProjectUi {
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     pending_review: Rc<RefCell<Option<CaptureReview>>>,
     scroll_preview_to_end: Rc<Cell<bool>>,
-    global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
+    global_keybindings: Rc<RefCell<KeybindingSettings>>,
+    global_capture_shortcut: Rc<RefCell<Option<GlobalShortcutRegistration>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -712,20 +718,81 @@ fn connect_global_capture_shortcut(project_ui: &ProjectUi) {
     let project_ui = project_ui.clone();
     glib::timeout_add_local(Duration::from_millis(100), move || {
         loop {
-            let event = project_ui.global_capture_receiver.borrow_mut().try_recv();
+            let event = project_ui
+                .global_capture_shortcut
+                .borrow()
+                .as_ref()
+                .map(GlobalShortcutRegistration::try_recv);
             match event {
-                Ok(GlobalShortcutEvent::Activated) => start_capture(&project_ui),
-                Ok(GlobalShortcutEvent::Failed(error)) => {
+                Some(Ok(GlobalShortcutEvent::Activated)) => start_capture(&project_ui),
+                Some(Ok(GlobalShortcutEvent::Failed(error))) => {
                     project_ui
                         .status
                         .set_text(&format!("Global capture shortcut unavailable: {error}"));
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+                Some(Err(TryRecvError::Empty)) | None => break,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    *project_ui.global_capture_shortcut.borrow_mut() = None;
+                    break;
+                }
             }
         }
         glib::ControlFlow::Continue
     });
+}
+
+fn global_capture_trigger(accelerator: &str) -> Option<String> {
+    let (key, modifiers) = gtk::accelerator_parse(accelerator)?;
+    let key = match key.name()?.as_str() {
+        "asciitilde" => "GRAVE".to_owned(),
+        name => name.to_ascii_uppercase(),
+    };
+    let mut parts = Vec::new();
+    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+        parts.push("CTRL");
+    }
+    if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+        parts.push("SHIFT");
+    }
+    if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) {
+        parts.push("ALT");
+    }
+    if modifiers.contains(gtk::gdk::ModifierType::SUPER_MASK) {
+        parts.push("SUPER");
+    }
+    parts.push(&key);
+    Some(parts.join("+"))
+}
+
+fn start_global_capture_shortcut(project_ui: &ProjectUi) {
+    let keybindings = project_ui.global_keybindings.borrow();
+    let Some(trigger) = global_capture_trigger(&keybindings.capture) else {
+        project_ui.status.set_text("Global capture shortcut has an unsupported accelerator.");
+        return;
+    };
+    drop(keybindings);
+    if let Some(shortcut) = project_ui.global_capture_shortcut.borrow_mut().take() {
+        shortcut.stop();
+    }
+    *project_ui.global_capture_shortcut.borrow_mut() = Some(register_capture_shortcut(trigger));
+}
+
+fn stop_global_capture_shortcut(project_ui: &ProjectUi) {
+    if let Some(shortcut) = project_ui.global_capture_shortcut.borrow_mut().take() {
+        shortcut.stop();
+    }
+}
+
+fn rebind_global_capture_shortcut(project_ui: &ProjectUi) -> Result<(), String> {
+    let keybindings = project_ui.global_keybindings.borrow();
+    let trigger = global_capture_trigger(&keybindings.capture)
+        .ok_or_else(|| "Global capture shortcut has an unsupported accelerator.".to_owned())?;
+    drop(keybindings);
+    let shortcut = project_ui.global_capture_shortcut.borrow();
+    let Some(shortcut) = shortcut.as_ref() else {
+        return Ok(());
+    };
+    shortcut.rebind(trigger)
 }
 
 fn sync_operation_feedback(project_ui: &ProjectUi) {
@@ -2116,7 +2183,13 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     panel.add_controller(key_controller);
     let annotation_start = code_buffer.iter_at_offset(annotation_offset);
     code_buffer.place_cursor(&annotation_start);
-    code_view.grab_focus();
+    let code_buffer_for_scroll = code_buffer.clone();
+    let code_view_for_scroll = code_view.clone();
+    glib::idle_add_local_once(move || {
+        let mut annotation_start = code_buffer_for_scroll.iter_at_offset(annotation_offset);
+        code_view_for_scroll.scroll_to_iter(&mut annotation_start, 0.2, false, 0.0, 0.0);
+        code_view_for_scroll.grab_focus();
+    });
 
     let modify_ui = project_ui.clone();
     let modify_window = review_window.clone();
@@ -2311,6 +2384,7 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         return;
     };
     let settings = snapshot.app.settings;
+    let global_keybindings = project_ui.global_keybindings.borrow().clone();
     let dialog = Dialog::builder()
         .title("Project settings")
         .transient_for(&window)
@@ -2376,21 +2450,21 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
     keybindings_title.add_css_class("heading");
     keybindings_title.set_xalign(0.0);
     content.append(&keybindings_title);
-    let keybindings = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
+    let keybinding_grid = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
     let save_key = Entry::new();
-    save_key.set_text(&settings.keybindings.save);
+    save_key.set_text(&global_keybindings.save);
     let format_key = Entry::new();
-    format_key.set_text(&settings.keybindings.format);
+    format_key.set_text(&global_keybindings.format);
     let find_key = Entry::new();
-    find_key.set_text(&settings.keybindings.find_replace);
+    find_key.set_text(&global_keybindings.find_replace);
     let completion_key = Entry::new();
-    completion_key.set_text(&settings.keybindings.completion);
+    completion_key.set_text(&global_keybindings.completion);
     let capture_key = Entry::new();
-    capture_key.set_text(&settings.keybindings.capture);
+    capture_key.set_text(&global_keybindings.capture);
     let preview_key = Entry::new();
-    preview_key.set_text(&settings.keybindings.preview);
+    preview_key.set_text(&global_keybindings.preview);
     let export_key = Entry::new();
-    export_key.set_text(&settings.keybindings.export);
+    export_key.set_text(&global_keybindings.export);
     for (row, (label, entry)) in [
         ("Save", &save_key),
         ("Format", &format_key),
@@ -2407,10 +2481,10 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         label.set_xalign(0.0);
         entry.set_hexpand(true);
         entry.set_tooltip_text(Some("GTK accelerator, for example <Primary><Shift>c"));
-        keybindings.attach(&label, 0, row as i32, 1, 1);
-        keybindings.attach(entry, 1, row as i32, 1, 1);
+        keybinding_grid.attach(&label, 0, row as i32, 1, 1);
+        keybinding_grid.attach(entry, 1, row as i32, 1, 1);
     }
-    content.append(&keybindings);
+    content.append(&keybinding_grid);
     let error_label = Label::new(None);
     error_label.add_css_class("error");
     error_label.set_xalign(0.0);
@@ -2438,7 +2512,7 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         updated.capture.fallback_enabled = fallback_enabled.is_active();
         updated.preview.auto_render = auto_render.is_active();
         updated.preview.zoom_percent = zoom.value_as_int() as u16;
-        updated.keybindings = KeybindingSettings {
+        let keybindings = KeybindingSettings {
             save: save_key.text().to_string(),
             format: format_key.text().to_string(),
             find_replace: find_key.text().to_string(),
@@ -2451,8 +2525,11 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
             error_label.set_text(&error.to_string());
             return;
         }
-        if let Some((action, binding)) = updated
-            .keybindings
+        if let Err(error) = crate::validate_keybindings(&keybindings) {
+            error_label.set_text(&error.to_string());
+            return;
+        }
+        if let Some((action, binding)) = keybindings
             .named_bindings()
             .into_iter()
             .find(|(_, binding)| gtk::accelerator_parse(*binding).is_none())
@@ -2461,12 +2538,16 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
             return;
         }
         dialog.close();
-        start_settings_save(&project_ui, updated);
+        start_settings_save(&project_ui, updated, keybindings);
     });
     dialog.present();
 }
 
-fn start_settings_save(project_ui: &ProjectUi, settings: ProjectSettings) {
+fn start_settings_save(
+    project_ui: &ProjectUi,
+    settings: ProjectSettings,
+    keybindings: KeybindingSettings,
+) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
         project_ui.status.set_text("The project closed before settings could be saved.");
@@ -2491,16 +2572,20 @@ fn start_settings_save(project_ui: &ProjectUi, settings: ProjectSettings) {
     let root = PathBuf::from(project.root);
     let _ = thread::Builder::new().name("captee-settings".to_owned()).spawn(move || {
         let outcome = match save_project_settings(root, settings) {
-            Ok(config) => OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved(
-                config.settings,
-            )),
+            Ok(config) => match global_keybinding_store().save(&keybindings) {
+                Ok(()) => OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
+                    settings: config.settings,
+                    keybindings,
+                }),
+                Err(error) => OperationOutcome::Failed(error.to_string()),
+            },
             Err(error) => OperationOutcome::Failed(error.to_string()),
         };
         let _ = task.finish(outcome);
     });
 }
 
-fn apply_project_accelerators(application: &Application, keybindings: &KeybindingSettings) {
+fn apply_global_accelerators(application: &Application, keybindings: &KeybindingSettings) {
     for (action, binding) in [
         ("save", keybindings.save.as_str()),
         ("format", keybindings.format.as_str()),
@@ -3011,18 +3096,21 @@ fn apply_operation_result(
                                 apply_editor_state(project_ui, &state, true);
                                 let end = insertion_end_offset(cursor, &expression);
                                 if let Some(prefix) = state.text.get(..end) {
-                                    let mut insertion = project_ui
-                                        .source_buffer
-                                        .iter_at_offset(prefix.chars().count() as i32);
-                                    project_ui.source_buffer.place_cursor(&insertion);
-                                    project_ui.source_view.scroll_to_iter(
-                                        &mut insertion,
-                                        0.2,
-                                        false,
-                                        0.0,
-                                        0.0,
-                                    );
-                                    project_ui.source_view.grab_focus();
+                                    let offset = prefix.chars().count() as i32;
+                                    let source_buffer = project_ui.source_buffer.clone();
+                                    let source_view = project_ui.source_view.clone();
+                                    glib::idle_add_local_once(move || {
+                                        let mut insertion = source_buffer.iter_at_offset(offset);
+                                        source_buffer.place_cursor(&insertion);
+                                        source_view.scroll_to_iter(
+                                            &mut insertion,
+                                            0.2,
+                                            false,
+                                            0.0,
+                                            0.0,
+                                        );
+                                        source_view.grab_focus();
+                                    });
                                 }
                                 project_ui.scroll_preview_to_end.set(true);
                                 scroll_preview_to_end(&project_ui.preview_scroller);
@@ -3067,7 +3155,10 @@ fn apply_operation_result(
                         }
                     }
                 }
-                OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved(settings)) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
+                    settings,
+                    keybindings,
+                }) => {
                     let _ = project_ui
                         .shell
                         .borrow_mut()
@@ -3078,8 +3169,18 @@ fn apply_operation_result(
                         .dispatch(UiCommand::ApplySettings(settings.clone()));
                     match applied {
                         Ok(()) => {
+                            *project_ui.global_keybindings.borrow_mut() = keybindings;
                             if let Some(application) = project_ui.application() {
-                                apply_project_accelerators(&application, &settings.keybindings);
+                                apply_global_accelerators(
+                                    &application,
+                                    &project_ui.global_keybindings.borrow(),
+                                );
+                            }
+                            if let Err(error) = rebind_global_capture_shortcut(project_ui) {
+                                project_ui.status.set_text(&format!(
+                                    "Settings saved, but global capture shortcut could not update: {error}"
+                                ));
+                                return;
                             }
                             apply_preview_zoom(project_ui);
                             if settings.preview.auto_render {
@@ -3413,6 +3514,10 @@ fn recent_project_store() -> RecentProjectStore {
     RecentProjectStore::new(glib::user_data_dir().join("captee/recent-projects.json"))
 }
 
+fn global_keybinding_store() -> GlobalKeybindingStore {
+    GlobalKeybindingStore::new(glib::user_data_dir().join("captee/keybindings.json"))
+}
+
 fn refresh_recent_projects(project_ui: &ProjectUi) {
     while let Some(child) = project_ui.recent_projects.first_child() {
         project_ui.recent_projects.remove(&child);
@@ -3713,6 +3818,16 @@ fn open_loaded_project(
             return false;
         }
     };
+    if !global_keybinding_store().exists() {
+        if let Some(keybindings) = project.settings.legacy_keybindings() {
+            match global_keybinding_store().save(keybindings) {
+                Ok(()) => *project_ui.global_keybindings.borrow_mut() = keybindings.clone(),
+                Err(error) => project_ui.status.set_text(&format!(
+                    "Could not migrate project keybindings to user settings: {error}"
+                )),
+            }
+        }
+    }
     let result = project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
         session: project.session.clone(),
         settings: project.settings.clone(),
@@ -3738,8 +3853,9 @@ fn open_loaded_project(
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
             if let Some(application) = project_ui.application() {
-                apply_project_accelerators(&application, &project.settings.keybindings);
+                apply_global_accelerators(&application, &project_ui.global_keybindings.borrow());
             }
+            start_global_capture_shortcut(project_ui);
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
@@ -3877,12 +3993,13 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
             *project_ui.pending_review.borrow_mut() = None;
+            stop_global_capture_shortcut(project_ui);
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
             if let Some(application) = project_ui.application() {
-                apply_project_accelerators(&application, &KeybindingSettings::default());
+                apply_global_accelerators(&application, &project_ui.global_keybindings.borrow());
             }
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);

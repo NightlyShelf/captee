@@ -62,13 +62,30 @@ fn is_safe_relative_typst_path(path: &str) -> bool {
         && path.components().all(|component| !matches!(component, std::path::Component::ParentDir))
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub formatting: FormattingSettings,
     pub capture: CaptureSettings,
     pub preview: PreviewSettings,
-    #[serde(default)]
-    pub keybindings: KeybindingSettings,
+    #[serde(default, rename = "keybindings", skip_serializing)]
+    legacy_keybindings: Option<KeybindingSettings>,
+}
+
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self {
+            formatting: FormattingSettings::default(),
+            capture: CaptureSettings::default(),
+            preview: PreviewSettings::default(),
+            legacy_keybindings: None,
+        }
+    }
+}
+
+impl ProjectSettings {
+    pub fn legacy_keybindings(&self) -> Option<&KeybindingSettings> {
+        self.legacy_keybindings.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +106,7 @@ impl Default for KeybindingSettings {
             format: "<Primary><Shift>f".to_owned(),
             find_replace: "<Primary>f".to_owned(),
             completion: "<Primary>space".to_owned(),
-            capture: "<Primary><Shift>c".to_owned(),
+            capture: "<Primary>asciitilde".to_owned(),
             preview: "<Primary>r".to_owned(),
             export: "<Primary><Shift>e".to_owned(),
         }
@@ -272,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn older_project_settings_receive_default_keybindings() {
+    fn legacy_project_keybindings_are_read_but_not_written() {
         let json = r#"{
           "version": 1,
           "name": "Notes",
@@ -280,11 +297,21 @@ mod tests {
           "settings": {
             "formatting": { "line_width": 90, "format_on_save": false },
             "capture": { "portal_enabled": true, "fallback_enabled": true },
-            "preview": { "auto_render": true, "zoom_percent": 100 }
+            "preview": { "auto_render": true, "zoom_percent": 100 },
+            "keybindings": {
+              "save": "<Primary>s",
+              "format": "<Primary><Shift>f",
+              "find_replace": "<Primary>f",
+              "completion": "<Primary>space",
+              "capture": "<Primary>asciitilde",
+              "preview": "<Primary>r",
+              "export": "<Primary><Shift>e"
+            }
           }
         }"#;
         let config = ProjectConfig::from_json(json).expect("old config remains readable");
-        assert_eq!(config.settings.keybindings, KeybindingSettings::default());
+        assert_eq!(config.settings.legacy_keybindings(), Some(&KeybindingSettings::default()));
+        assert!(!config.to_json().expect("serialize").contains("keybindings"));
     }
 
     #[test]

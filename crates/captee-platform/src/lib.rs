@@ -25,10 +25,10 @@ pub use capture::{
 pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
 pub use persistence::{
-    PersistenceError, ProjectDocumentPersistence, RecentProjectError, RecentProjectStore,
-    AUTOSAVE_FILE,
+    GlobalKeybindingError, GlobalKeybindingStore, PersistenceError, ProjectDocumentPersistence,
+    RecentProjectError, RecentProjectStore, AUTOSAVE_FILE,
 };
-pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent};
+pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent, GlobalShortcutRegistration};
 pub use typst::{
     AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewError, PreviewHandle,
     PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,
