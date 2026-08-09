@@ -296,6 +296,7 @@ fn build_ui(application: &Application) {
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
+    connect_editor_autoscroll(&source_view, &source_buffer);
     connect_preview_scale(&project_ui);
     connect_project_tree(&project_ui);
     connect_runtime_results(&project_ui);
@@ -1379,6 +1380,28 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
     });
 }
 
+fn connect_editor_autoscroll(view: &sourceview::View, buffer: &sourceview::Buffer) {
+    let key = gtk::EventControllerKey::new();
+    let view_for_key = view.clone();
+    let buffer_for_key = buffer.clone();
+    key.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Return {
+            scroll_cursor_to_lower_quarter(&view_for_key, &buffer_for_key);
+        }
+        glib::Propagation::Proceed
+    });
+    view.add_controller(key);
+}
+
+fn scroll_cursor_to_lower_quarter(view: &sourceview::View, buffer: &sourceview::Buffer) {
+    let view = view.clone();
+    let buffer = buffer.clone();
+    glib::idle_add_local_once(move || {
+        let mut cursor = buffer.iter_at_mark(&buffer.get_insert());
+        view.scroll_to_iter(&mut cursor, 0.2, true, 0.0, 0.75);
+    });
+}
+
 fn undo_or_redo(project_ui: &ProjectUi, redo: bool) {
     let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
         if redo {
@@ -2157,6 +2180,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let editor_key = gtk::EventControllerKey::new();
     let confirm_for_editor = confirm.clone();
     let cancel_for_editor = cancel.clone();
+    let code_view_for_editor = code_view.clone();
+    let code_buffer_for_editor = code_buffer.clone();
     editor_key.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::Escape {
             cancel_for_editor.emit_clicked();
@@ -2165,6 +2190,9 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         if annotation_confirms_on_enter(key, state) {
             confirm_for_editor.emit_clicked();
             return glib::Propagation::Stop;
+        }
+        if key == gtk::gdk::Key::Return {
+            scroll_cursor_to_lower_quarter(&code_view_for_editor, &code_buffer_for_editor);
         }
         glib::Propagation::Proceed
     });
