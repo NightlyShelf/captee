@@ -2853,7 +2853,7 @@ fn queue_preview_resize(
     let project_ui = project_ui.clone();
     let pending = Rc::clone(pending);
     let last_preview_size = Rc::clone(last_preview_size);
-    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+    glib::timeout_add_local_once(Duration::from_millis(200), move || {
         pending.set(false);
         let size = (project_ui.preview_scroller.width(), project_ui.preview_scroller.height());
         if last_preview_size.replace(Some(size)) == Some(size) {
