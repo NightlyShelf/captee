@@ -99,6 +99,7 @@ fn build_ui(application: &Application) {
     let pending_annotation = Rc::new(RefCell::new(None));
     let pending_review = Rc::new(RefCell::new(None));
     let scroll_preview_to_end = Rc::new(Cell::new(false));
+    let preview_scroll_generation = Rc::new(Cell::new(0));
     let global_keybindings = Rc::new(RefCell::new(
         global_keybinding_store().load().unwrap_or_else(|_| KeybindingSettings::default()),
     ));
@@ -282,6 +283,7 @@ fn build_ui(application: &Application) {
         pending_annotation,
         pending_review,
         scroll_preview_to_end,
+        preview_scroll_generation,
         global_keybindings,
         global_capture_shortcut: Rc::new(RefCell::new(None)),
         background_sender,
@@ -718,6 +720,7 @@ struct ProjectUi {
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     pending_review: Rc<RefCell<Option<CaptureReview>>>,
     scroll_preview_to_end: Rc<Cell<bool>>,
+    preview_scroll_generation: Rc<Cell<u64>>,
     global_keybindings: Rc<RefCell<KeybindingSettings>>,
     global_capture_shortcut: Rc<RefCell<Option<GlobalShortcutRegistration>>>,
     background_sender: Sender<BackgroundResult>,
@@ -2721,6 +2724,8 @@ fn scroll_preview_to_end(scroller: &ScrolledWindow) {
 }
 
 fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
+    let generation = project_ui.preview_scroll_generation.get().wrapping_add(1);
+    project_ui.preview_scroll_generation.set(generation);
     let Some(content_end) = project_ui.preview_content_end.get() else {
         scroll_preview_to_end(&project_ui.preview_scroller);
         return;
@@ -2730,7 +2735,11 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
         return;
     };
     let adjustment = project_ui.preview_scroller.vadjustment();
+    let scroll_generation = Rc::clone(&project_ui.preview_scroll_generation);
     glib::timeout_add_local_once(Duration::from_millis(16), move || {
+        if scroll_generation.get() != generation {
+            return;
+        }
         let allocation = page.allocation();
         if allocation.height() <= 0 {
             return;
