@@ -32,6 +32,14 @@ Keep each change small:
 
 Do not create unnecessary artifacts or speculate beyond user request.
 
+## Feature Workflow
+
+1. Ask for the user's proposal. Discuss it and ask needed clarification questions.
+2. After the user confirms the proposal, implement each task and subtask.
+3. Commit and push every completed subtask.
+4. After all tasks are done, ask the user to test and review.
+5. After the user confirms review, archive the OpenSpec change and open a pull request.
+
 ## Branches and Commits
 
 Use one dedicated branch per feature or bug fix.
