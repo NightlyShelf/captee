@@ -2034,6 +2034,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     code_view.set_monospace(true);
     code_view.set_hexpand(true);
     code_view.set_vexpand(true);
+    code_view.set_bottom_margin(112);
     code_view.add_css_class("typst-editor");
     code_view.set_tooltip_text(Some("Typst annotation at the insertion point"));
 
