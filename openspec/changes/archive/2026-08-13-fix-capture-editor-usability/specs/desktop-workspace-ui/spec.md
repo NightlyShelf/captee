@@ -19,6 +19,8 @@ The application SHALL expose menu and keyboard commands for save, capture, forma
 - **WHEN** a setting value fails validation
 - **THEN** the UI explains the constraint, retains the prior value, and does not persist the invalid value
 
+## ADDED Requirements
+
 ### Requirement: Global capture shortcut
 
 The application SHALL register the configured user-global capture shortcut only while a project is open. The default capture shortcut SHALL be Ctrl+~. Changing its keybinding SHALL replace the active system registration.
