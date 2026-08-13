@@ -61,7 +61,8 @@ COPY crates/captee-ui/Cargo.toml crates/captee-ui/Cargo.toml
 
 RUN mkdir -p crates/captee-core/src crates/captee-platform/src crates/captee-ui/src \
     && touch crates/captee-core/src/lib.rs crates/captee-platform/src/lib.rs \
-        crates/captee-ui/src/lib.rs crates/captee-ui/src/main.rs
+        crates/captee-ui/src/lib.rs \
+    && printf 'fn main() {}\n' > crates/captee-ui/src/main.rs
 
 RUN cargo build --locked --release --package captee-ui
 
