@@ -37,7 +37,7 @@
 
 ## 7. Validation
 
-- [ ] 7.1 Add focused protocol tests for initialization, document synchronization, completion edits, diagnostics, stale responses, and unavailable or terminated Tinymist.
-- [ ] 7.2 Add focused UI/state tests for popup keyboard and pointer behavior, diagnostic marker refresh, scrollable collapsed trees, menu placement, About metadata, and every dirty-exit choice including save failure.
+- [x] 7.1 Add focused protocol tests for initialization, document synchronization, completion edits, diagnostics, stale responses, and unavailable or terminated Tinymist.
+- [x] 7.2 Add focused UI/state tests for popup keyboard and pointer behavior, diagnostic marker refresh, scrollable collapsed trees, menu placement, About metadata, and every dirty-exit choice including save failure.
 - [ ] 7.3 Run formatting, Clippy, workspace tests, OpenSpec validation, dependency/license checks, and the AppImage packaging check.
 - [ ] 7.4 Manually verify keyboard-only completion, accessible diagnostic feedback, large project-tree scrolling, command placement, About dialog, and clean restart after Save and Discard exits.

@@ -64,6 +64,26 @@ pub fn has_typst_command_prefix(source: &str, cursor: usize) -> bool {
     source.get(command_prefix_range(source, cursor)).is_some_and(|prefix| prefix.starts_with('#'))
 }
 
+pub fn completion_response_is_current(
+    expected_uri: &str,
+    expected_version: i32,
+    latest_request: Option<u64>,
+    uri: &str,
+    version: i32,
+    request_id: u64,
+) -> bool {
+    expected_uri == uri && expected_version == version && latest_request == Some(request_id)
+}
+
+pub fn diagnostics_response_is_current(
+    expected_uri: &str,
+    expected_version: i32,
+    uri: &str,
+    version: Option<i32>,
+) -> bool {
+    expected_uri == uri && version.is_none_or(|version| version == expected_version)
+}
+
 fn lsp_position_to_byte(source: &str, position: LspPosition) -> Option<usize> {
     let mut line_start = 0;
     for _ in 0..position.line {
@@ -113,5 +133,15 @@ mod tests {
             TinymistCompletion { label: "image".into(), insert_text: "image".into(), range: None };
         let edit = tinymist_completion_edit("#im", 3, &item).expect("edit");
         assert_eq!(edit.range, 1..3);
+    }
+
+    #[test]
+    fn stale_lsp_responses_are_rejected() {
+        assert!(completion_response_is_current("main", 4, Some(8), "main", 4, 8));
+        assert!(!completion_response_is_current("main", 4, Some(9), "main", 3, 8));
+        assert!(!completion_response_is_current("main", 4, Some(9), "main", 4, 8));
+        assert!(diagnostics_response_is_current("main", 4, "main", Some(4)));
+        assert!(!diagnostics_response_is_current("main", 4, "main", Some(3)));
+        assert!(!diagnostics_response_is_current("main", 4, "capture", None));
     }
 }

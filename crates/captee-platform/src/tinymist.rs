@@ -182,26 +182,7 @@ impl TinymistSession {
             .ok_or_else(|| TinymistError::Protocol("Tinymist stdout unavailable".to_owned()))?;
         let mut reader = BufReader::new(stdout);
 
-        write_message(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": INITIALIZE_REQUEST_ID,
-                "method": "initialize",
-                "params": {
-                    "processId": std::process::id(),
-                    "rootUri": root_uri,
-                    "capabilities": {
-                        "textDocument": {
-                            "completion": {
-                                "completionItem": { "snippetSupport": false }
-                            },
-                            "publishDiagnostics": { "versionSupport": true }
-                        }
-                    }
-                }
-            }),
-        )?;
+        write_message(&mut stdin, &initialize_request(&root_uri))?;
         wait_for_initialize(&mut reader)?;
         write_message(&mut stdin, &json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
 
@@ -223,17 +204,7 @@ impl TinymistSession {
     }
 
     pub fn open_document(&self, uri: &str, version: i32, text: &str) -> Result<(), TinymistError> {
-        self.notify(
-            "textDocument/didOpen",
-            json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "typst",
-                    "version": version,
-                    "text": text
-                }
-            }),
-        )
+        self.notify("textDocument/didOpen", open_document_params(uri, version, text))
     }
 
     pub fn change_document(
@@ -242,13 +213,7 @@ impl TinymistSession {
         version: i32,
         text: &str,
     ) -> Result<(), TinymistError> {
-        self.notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": { "uri": uri, "version": version },
-                "contentChanges": [{ "text": text }]
-            }),
-        )
+        self.notify("textDocument/didChange", change_document_params(uri, version, text))
     }
 
     pub fn close_document(&self, uri: &str) -> Result<(), TinymistError> {
@@ -332,6 +297,44 @@ pub fn document_uri(path: &Path) -> Option<String> {
 
 pub fn capture_review_uri(project_root: &Path) -> Option<String> {
     document_uri(&project_root.join(".captee-capture-review.typ"))
+}
+
+fn initialize_request(root_uri: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": INITIALIZE_REQUEST_ID,
+        "method": "initialize",
+        "params": {
+            "processId": std::process::id(),
+            "rootUri": root_uri,
+            "capabilities": {
+                "textDocument": {
+                    "completion": {
+                        "completionItem": { "snippetSupport": false }
+                    },
+                    "publishDiagnostics": { "versionSupport": true }
+                }
+            }
+        }
+    })
+}
+
+fn open_document_params(uri: &str, version: i32, text: &str) -> Value {
+    json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "typst",
+            "version": version,
+            "text": text
+        }
+    })
+}
+
+fn change_document_params(uri: &str, version: i32, text: &str) -> Value {
+    json!({
+        "textDocument": { "uri": uri, "version": version },
+        "contentChanges": [{ "text": text }]
+    })
 }
 
 fn wait_for_initialize<R: BufRead>(reader: &mut R) -> Result<(), TinymistError> {
@@ -499,6 +502,7 @@ fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Value>> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::mpsc::TryRecvError;
 
     #[test]
     fn lsp_frames_round_trip() {
@@ -554,5 +558,59 @@ mod tests {
             capture_review_uri(root).as_deref(),
             Some("file:///tmp/captee-project/.captee-capture-review.typ")
         );
+    }
+
+    #[test]
+    fn initialization_declares_project_and_editor_capabilities() {
+        let request = initialize_request("file:///tmp/project");
+        assert_eq!(request["method"], "initialize");
+        assert_eq!(request["params"]["rootUri"], "file:///tmp/project");
+        assert_eq!(
+            request["params"]["capabilities"]["textDocument"]["publishDiagnostics"]
+                ["versionSupport"],
+            true
+        );
+    }
+
+    #[test]
+    fn document_sync_uses_full_text_and_monotonic_versions() {
+        let opened = open_document_params("file:///tmp/main.typ", 4, "#let a = 1");
+        assert_eq!(opened["textDocument"]["languageId"], "typst");
+        assert_eq!(opened["textDocument"]["version"], 4);
+        let changed = change_document_params("file:///tmp/main.typ", 5, "#let a = 2");
+        assert_eq!(changed["textDocument"]["version"], 5);
+        assert_eq!(changed["contentChanges"][0]["text"], "#let a = 2");
+    }
+
+    #[test]
+    fn completion_response_retains_requested_document_version() {
+        let pending = Arc::new(Mutex::new(BTreeMap::from([(
+            9,
+            PendingCompletion { uri: "file:///tmp/main.typ".into(), version: 7 },
+        )])));
+        let event = parse_event(&json!({"jsonrpc":"2.0","id":9,"result":[]}), &pending)
+            .expect("completion event");
+        assert!(matches!(event, TinymistEvent::Completion { version: 7, request_id: 9, .. }));
+    }
+
+    #[test]
+    fn unavailable_runner_has_actionable_error() {
+        let error = TinymistSession::start_with_runner(
+            TinymistRunner::new("/definitely-missing-captee-tinymist"),
+            Path::new("/tmp/captee-project"),
+        )
+        .expect_err("missing runner");
+        assert!(error.to_string().contains("Tinymist not found"));
+    }
+
+    #[test]
+    fn terminated_server_reports_failed_event() {
+        let pending = Arc::new(Mutex::new(BTreeMap::new()));
+        let (sender, receiver) = mpsc::channel();
+        read_events(Cursor::new(Vec::<u8>::new()), pending, sender);
+        assert!(
+            matches!(receiver.try_recv(), Ok(TinymistEvent::Failed(message)) if message.contains("exited"))
+        );
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
     }
 }

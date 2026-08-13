@@ -1,7 +1,8 @@
 use crate::annotation_bridge::AnnotationDraft;
 use crate::capture_review::CaptureReview;
 use crate::editor_assistance::{
-    has_typst_command_prefix, lsp_position, lsp_range_to_bytes, tinymist_completion_edit,
+    completion_response_is_current, diagnostics_response_is_current, has_typst_command_prefix,
+    lsp_position, lsp_range_to_bytes, tinymist_completion_edit,
 };
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
@@ -132,6 +133,33 @@ enum ExitChoice {
     Save,
     Discard,
     Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionPopupAction {
+    Next,
+    Previous,
+    Accept,
+    Dismiss,
+    Ignore,
+}
+
+fn completion_popup_action(key: gtk::gdk::Key) -> CompletionPopupAction {
+    if key == gtk::gdk::Key::Down {
+        CompletionPopupAction::Next
+    } else if key == gtk::gdk::Key::Up {
+        CompletionPopupAction::Previous
+    } else if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab) {
+        CompletionPopupAction::Accept
+    } else if key == gtk::gdk::Key::Escape {
+        CompletionPopupAction::Dismiss
+    } else {
+        CompletionPopupAction::Ignore
+    }
+}
+
+fn completion_index(index: i32) -> usize {
+    index.max(0) as usize
 }
 
 impl ExitState {
@@ -1879,7 +1907,7 @@ fn request_tinymist_completion(project_ui: &ProjectUi, state: &EditorState) {
 fn connect_completion_popup(project_ui: &ProjectUi) {
     let row_ui = project_ui.clone();
     project_ui.completion_list.connect_row_activated(move |_, row| {
-        accept_main_completion(&row_ui, row.index().max(0) as usize);
+        accept_main_completion(&row_ui, completion_index(row.index()));
     });
 
     let key = gtk::EventControllerKey::new();
@@ -1890,27 +1918,24 @@ fn connect_completion_popup(project_ui: &ProjectUi) {
         }
         let selected = key_ui.completion_list.selected_row();
         let index = selected.as_ref().map_or(0, ListBoxRow::index);
-        if pressed == gtk::gdk::Key::Down {
-            if let Some(row) = key_ui.completion_list.row_at_index(index + 1) {
-                key_ui.completion_list.select_row(Some(&row));
+        match completion_popup_action(pressed) {
+            CompletionPopupAction::Next => {
+                if let Some(row) = key_ui.completion_list.row_at_index(index + 1) {
+                    key_ui.completion_list.select_row(Some(&row));
+                }
             }
-            return glib::Propagation::Stop;
-        }
-        if pressed == gtk::gdk::Key::Up {
-            if let Some(row) = key_ui.completion_list.row_at_index((index - 1).max(0)) {
-                key_ui.completion_list.select_row(Some(&row));
+            CompletionPopupAction::Previous => {
+                if let Some(row) = key_ui.completion_list.row_at_index((index - 1).max(0)) {
+                    key_ui.completion_list.select_row(Some(&row));
+                }
             }
-            return glib::Propagation::Stop;
+            CompletionPopupAction::Accept => {
+                accept_main_completion(&key_ui, completion_index(index));
+            }
+            CompletionPopupAction::Dismiss => key_ui.completion_popover.popdown(),
+            CompletionPopupAction::Ignore => return glib::Propagation::Proceed,
         }
-        if matches!(pressed, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab) {
-            accept_main_completion(&key_ui, index.max(0) as usize);
-            return glib::Propagation::Stop;
-        }
-        if pressed == gtk::gdk::Key::Escape {
-            key_ui.completion_popover.popdown();
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
+        glib::Propagation::Stop
     });
     project_ui.source_view.add_controller(key);
 }
@@ -3012,41 +3037,41 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     );
     let row_ui = project_ui.clone();
     completion_list.connect_row_activated(move |_, row| {
-        accept_capture_completion(&row_ui, row.index().max(0) as usize);
+        accept_capture_completion(&row_ui, completion_index(row.index()));
     });
     let completion_key = gtk::EventControllerKey::new();
     let completion_ui = project_ui.clone();
     completion_key.connect_key_pressed(move |_, key, _, _| {
-        let assistance = completion_ui.capture_assistance.borrow();
-        let Some(assistance) = assistance.as_ref() else {
+        let Some((popover, list)) = completion_ui
+            .capture_assistance
+            .borrow()
+            .as_ref()
+            .map(|assistance| (assistance.popover.clone(), assistance.list.clone()))
+        else {
             return glib::Propagation::Proceed;
         };
-        if !assistance.popover.is_visible() {
+        if !popover.is_visible() {
             return glib::Propagation::Proceed;
         }
-        let index = assistance.list.selected_row().as_ref().map_or(0, ListBoxRow::index);
-        if key == gtk::gdk::Key::Down {
-            if let Some(row) = assistance.list.row_at_index(index + 1) {
-                assistance.list.select_row(Some(&row));
+        let index = list.selected_row().as_ref().map_or(0, ListBoxRow::index);
+        match completion_popup_action(key) {
+            CompletionPopupAction::Next => {
+                if let Some(row) = list.row_at_index(index + 1) {
+                    list.select_row(Some(&row));
+                }
             }
-            return glib::Propagation::Stop;
-        }
-        if key == gtk::gdk::Key::Up {
-            if let Some(row) = assistance.list.row_at_index((index - 1).max(0)) {
-                assistance.list.select_row(Some(&row));
+            CompletionPopupAction::Previous => {
+                if let Some(row) = list.row_at_index((index - 1).max(0)) {
+                    list.select_row(Some(&row));
+                }
             }
-            return glib::Propagation::Stop;
+            CompletionPopupAction::Accept => {
+                accept_capture_completion(&completion_ui, completion_index(index));
+            }
+            CompletionPopupAction::Dismiss => popover.popdown(),
+            CompletionPopupAction::Ignore => return glib::Propagation::Proceed,
         }
-        if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab) {
-            let _ = assistance;
-            accept_capture_completion(&completion_ui, index.max(0) as usize);
-            return glib::Propagation::Stop;
-        }
-        if key == gtk::gdk::Key::Escape {
-            assistance.popover.popdown();
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
+        glib::Propagation::Stop
     });
     code_view.add_controller(completion_key);
     let editor_key = gtk::EventControllerKey::new();
@@ -4136,9 +4161,14 @@ fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
         }
         TinymistEvent::Completion { uri, version, request_id, items } => {
             let current = project_ui.tinymist_document.borrow().as_ref().is_some_and(|document| {
-                document.uri == uri
-                    && document.version == version
-                    && document.latest_completion_request == Some(request_id)
+                completion_response_is_current(
+                    &document.uri,
+                    document.version,
+                    document.latest_completion_request,
+                    &uri,
+                    version,
+                    request_id,
+                )
             });
             if current {
                 show_main_completions(project_ui, items);
@@ -4146,9 +4176,14 @@ fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
             }
             let capture_current =
                 project_ui.capture_assistance.borrow().as_ref().is_some_and(|assistance| {
-                    assistance.uri == uri
-                        && assistance.version == version
-                        && assistance.latest_completion_request == Some(request_id)
+                    completion_response_is_current(
+                        &assistance.uri,
+                        assistance.version,
+                        assistance.latest_completion_request,
+                        &uri,
+                        version,
+                        request_id,
+                    )
                 });
             if capture_current {
                 show_capture_completions(project_ui, items);
@@ -4156,7 +4191,7 @@ fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
         }
         TinymistEvent::Diagnostics { uri, version, items } => {
             let current = project_ui.tinymist_document.borrow().as_ref().is_some_and(|document| {
-                document.uri == uri && version.is_none_or(|version| version == document.version)
+                diagnostics_response_is_current(&document.uri, document.version, &uri, version)
             });
             if current {
                 apply_main_diagnostics(project_ui, items);
@@ -4164,8 +4199,12 @@ fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
             }
             let capture_current =
                 project_ui.capture_assistance.borrow().as_ref().is_some_and(|assistance| {
-                    assistance.uri == uri
-                        && version.is_none_or(|version| version == assistance.version)
+                    diagnostics_response_is_current(
+                        &assistance.uri,
+                        assistance.version,
+                        &uri,
+                        version,
+                    )
                 });
             if capture_current {
                 apply_capture_diagnostics(project_ui, items);
@@ -5277,11 +5316,11 @@ fn close_project(project_ui: &ProjectUi) {
 mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
-        capture_placeholder_top, insertion_end_offset, is_active_tree_file, preview_scroll_end,
-        preview_width, project_parent_folder, recovery_draft, tree_entry_visible,
-        validate_project_name, ExitChoice, ExitDecision, ExitState, PreviewScale,
-        ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
-        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        capture_placeholder_top, completion_index, completion_popup_action, insertion_end_offset,
+        is_active_tree_file, preview_scroll_end, preview_width, project_parent_folder,
+        recovery_draft, tree_entry_visible, validate_project_name, CompletionPopupAction,
+        ExitChoice, ExitDecision, ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
+        ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5374,6 +5413,17 @@ mod tests {
         assert_eq!(ExitState::Discarding.operation_finished(false), ExitState::Idle);
         assert_eq!(ExitState::Saving.operation_finished(true), ExitState::Approved);
         assert_eq!(ExitState::Discarding.operation_finished(true), ExitState::Approved);
+    }
+
+    #[test]
+    fn completion_popup_maps_keyboard_and_pointer_selection() {
+        assert_eq!(completion_popup_action(gtk4::gdk::Key::Down), CompletionPopupAction::Next);
+        assert_eq!(completion_popup_action(gtk4::gdk::Key::Up), CompletionPopupAction::Previous);
+        assert_eq!(completion_popup_action(gtk4::gdk::Key::Tab), CompletionPopupAction::Accept);
+        assert_eq!(completion_popup_action(gtk4::gdk::Key::Escape), CompletionPopupAction::Dismiss);
+        assert_eq!(completion_popup_action(gtk4::gdk::Key::a), CompletionPopupAction::Ignore);
+        assert_eq!(completion_index(3), 3);
+        assert_eq!(completion_index(-1), 0);
     }
 
     #[test]

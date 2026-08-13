@@ -8,7 +8,7 @@ description = "Captee filesystem, compiler, capture, and Linux adapters"
 [dependencies]
 ashpd.workspace = true
 async-io.workspace = true
-captee-core = { path = "../captee-core" }
+captee-core = { version = "0.1.0", path = "../captee-core" }
 futures-util.workspace = true
 png.workspace = true
 serde_json.workspace = true
