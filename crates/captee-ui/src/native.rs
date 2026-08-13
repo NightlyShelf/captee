@@ -280,6 +280,11 @@ fn build_ui(application: &Application) {
            background-color: #292a2d; color: #9aa0a6;\
          }\
          .typst-editor border { background-color: #3c4043; }\
+         .completion-popup > contents { padding: 0; border-radius: 2px; }\
+         .completion-list { background-color: #292a2d; }\
+         .completion-list row { min-height: 0; padding: 0; }\
+         .completion-list row:selected { background-color: #4a3520; color: #ffffff; }\
+         .completion-label { font-size: 11px; }\
          .workspace-header { background-color: #0a0705; }\
          .compact-menu-button, .compact-menu-button > button {\
            margin: 0; padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
@@ -329,11 +334,24 @@ fn build_ui(application: &Application) {
     source_view.set_tooltip_text(Some("Typst source editor"));
     let completion_popover = Popover::new();
     completion_popover.set_parent(&source_view);
-    completion_popover.set_autohide(true);
+    completion_popover.set_autohide(false);
+    completion_popover.set_has_arrow(false);
+    completion_popover.set_focusable(false);
+    completion_popover.add_css_class("completion-popup");
     let completion_list = ListBox::new();
     completion_list.set_selection_mode(gtk::SelectionMode::Single);
     completion_list.set_activate_on_single_click(true);
-    completion_popover.set_child(Some(&completion_list));
+    completion_list.set_focusable(false);
+    completion_list.set_size_request(180, -1);
+    completion_list.add_css_class("completion-list");
+    let completion_scroller = ScrolledWindow::builder()
+        .child(&completion_list)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .max_content_height(160)
+        .propagate_natural_height(true)
+        .build();
+    completion_popover.set_child(Some(&completion_scroller));
 
     let status = Label::new(Some("Ready. Create or open a project to begin."));
     status.set_xalign(0.0);
@@ -1946,15 +1964,7 @@ fn show_main_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>)
     }
     *project_ui.completion_items.borrow_mut() = items;
     for item in project_ui.completion_items.borrow().iter() {
-        let row = ListBoxRow::new();
-        let label = Label::new(Some(&item.label));
-        label.set_xalign(0.0);
-        label.set_margin_top(4);
-        label.set_margin_bottom(4);
-        label.set_margin_start(8);
-        label.set_margin_end(8);
-        row.set_child(Some(&label));
-        project_ui.completion_list.append(&row);
+        project_ui.completion_list.append(&completion_row(&item.label));
     }
     let Some(first) = project_ui.completion_list.row_at_index(0) else {
         project_ui.completion_popover.popdown();
@@ -1975,6 +1985,23 @@ fn show_main_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>)
         location.height().max(1),
     )));
     project_ui.completion_popover.popup();
+    project_ui.source_view.grab_focus();
+}
+
+fn completion_row(text: &str) -> ListBoxRow {
+    let row = ListBoxRow::new();
+    row.set_focusable(false);
+    let label = Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_max_width_chars(32);
+    label.set_margin_top(1);
+    label.set_margin_bottom(1);
+    label.set_margin_start(5);
+    label.set_margin_end(5);
+    label.add_css_class("completion-label");
+    row.set_child(Some(&label));
+    row
 }
 
 fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
@@ -1990,15 +2017,35 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
     let Some(edit) = tinymist_completion_edit(&current.text, cursor, &item) else {
         return;
     };
+    let start_chars = current.text[..edit.range.start].chars().count() as i32;
+    let end_chars = current.text[..edit.range.end].chars().count() as i32;
+    let replacement = edit.replacement;
     let state = project_ui
         .editor
         .borrow_mut()
         .as_mut()
-        .and_then(|editor| editor.replace_range(edit.range, &edit.replacement).ok());
+        .and_then(|editor| editor.replace_range(edit.range, &replacement).ok());
     if let Some(state) = state {
         project_ui.suppress_completion.set(true);
         project_ui.completion_popover.popdown();
-        apply_editor_state(project_ui, &state, true);
+        let scroll = project_ui.source_view.vadjustment().map(|adjustment| {
+            let value = adjustment.value();
+            (adjustment, value)
+        });
+        project_ui.syncing_buffer.set(true);
+        let mut start = project_ui.source_buffer.iter_at_offset(start_chars);
+        let mut end = project_ui.source_buffer.iter_at_offset(end_chars);
+        project_ui.source_buffer.delete(&mut start, &mut end);
+        let mut insert = project_ui.source_buffer.iter_at_offset(start_chars);
+        project_ui.source_buffer.insert(&mut insert, &replacement);
+        project_ui.source_buffer.place_cursor(&insert);
+        project_ui.syncing_buffer.set(false);
+        apply_editor_state(project_ui, &state, false);
+        if let Some((adjustment, value)) = scroll {
+            adjustment.set_value(value);
+            glib::idle_add_local_once(move || adjustment.set_value(value));
+        }
+        project_ui.source_view.grab_focus();
         project_ui.status.set_text(&format!("Inserted {}.", item.label));
     }
 }
@@ -2253,15 +2300,7 @@ fn show_capture_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletio
     }
     assistance.items = items;
     for item in &assistance.items {
-        let row = ListBoxRow::new();
-        let label = Label::new(Some(&item.label));
-        label.set_xalign(0.0);
-        label.set_margin_top(4);
-        label.set_margin_bottom(4);
-        label.set_margin_start(8);
-        label.set_margin_end(8);
-        row.set_child(Some(&label));
-        assistance.list.append(&row);
+        assistance.list.append(&completion_row(&item.label));
     }
     let Some(first) = assistance.list.row_at_index(0) else {
         assistance.popover.popdown();
@@ -2282,6 +2321,7 @@ fn show_capture_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletio
         location.height().max(1),
     )));
     assistance.popover.popup();
+    assistance.view.grab_focus();
 }
 
 fn accept_capture_completion(project_ui: &ProjectUi, index: usize) {
@@ -3008,11 +3048,24 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     review_window.set_default_size(640, 360);
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
-    completion_popover.set_autohide(true);
+    completion_popover.set_autohide(false);
+    completion_popover.set_has_arrow(false);
+    completion_popover.set_focusable(false);
+    completion_popover.add_css_class("completion-popup");
     let completion_list = ListBox::new();
     completion_list.set_selection_mode(gtk::SelectionMode::Single);
     completion_list.set_activate_on_single_click(true);
-    completion_popover.set_child(Some(&completion_list));
+    completion_list.set_focusable(false);
+    completion_list.set_size_request(180, -1);
+    completion_list.add_css_class("completion-list");
+    let completion_scroller = ScrolledWindow::builder()
+        .child(&completion_list)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .max_content_height(160)
+        .propagate_natural_height(true)
+        .build();
+    completion_popover.set_child(Some(&completion_scroller));
     let diagnostic_error_tag = gtk::TextTag::builder()
         .name("tinymist-capture-error")
         .underline(gtk::pango::Underline::Error)

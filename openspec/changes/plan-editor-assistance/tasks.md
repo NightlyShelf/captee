@@ -12,6 +12,7 @@
 - [x] 2.2 Show a cursor-anchored popup with Up/Down selection, Enter/Tab or pointer acceptance, and Escape or unrelated-input dismissal.
 - [x] 2.3 Apply only Tinymist's returned text edit or replacement range and preserve source when the request is stale, dismissed, or empty.
 - [x] 2.4 Remove the built-in completion provider, manual completion command and button, and completion keybinding from defaults, persistence, migration, and Settings.
+- [x] 2.5 Keep keyboard focus in the editor while showing a compact, bounded rectangular suggestion list, and preserve the editor scroll position when accepting a suggestion.
 
 ## 3. Diagnostic markers
 
