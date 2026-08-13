@@ -15,6 +15,14 @@ pub struct WorkspaceViewState {
     pub editor_scroll: f64,
     pub preview_page: usize,
     pub preview_y_ratio: f64,
+    #[serde(default = "default_capture_before_image")]
+    pub capture_before_image: bool,
+    #[serde(default)]
+    pub auto_scroll_preview: bool,
+}
+
+fn default_capture_before_image() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -387,10 +395,28 @@ mod tests {
             editor_scroll: 640.0,
             preview_page: 3,
             preview_y_ratio: 0.75,
+            capture_before_image: false,
+            auto_scroll_preview: true,
         };
         store.save(&state).expect("save view");
 
         assert_eq!(store.load().expect("load view"), Some(state));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn older_workspace_view_defaults_capture_and_autoscroll_preferences() {
+        let root = test_root("legacy-workspace-view");
+        let path = root.join(WORKSPACE_VIEW_FILE);
+        fs::write(
+            &path,
+            r#"{"document":"main.typ","cursor_offset":4,"editor_scroll":2.0,"preview_page":1,"preview_y_ratio":0.0}"#,
+        )
+        .expect("legacy view");
+
+        let state = WorkspaceViewStore::new(path).load().expect("load view").expect("state");
+        assert!(state.capture_before_image);
+        assert!(!state.auto_scroll_preview);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

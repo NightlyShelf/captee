@@ -44,6 +44,10 @@ impl CaptureReview {
         self.before_image = !self.before_image;
     }
 
+    pub fn set_before_image(&mut self, before_image: bool) {
+        self.before_image = before_image;
+    }
+
     pub fn confirm(&self) -> ConfirmedCapture {
         ConfirmedCapture {
             image: self.image.clone(),
@@ -92,6 +96,16 @@ mod tests {
         assert_eq!(confirmed.annotation, "#line(length: 1em)");
         assert_eq!(confirmed.image.bytes(), b"capture");
         assert_eq!(review.image().bytes(), b"capture");
+    }
+
+    #[test]
+    fn placement_can_be_restored_from_project_state() {
+        let mut review = CaptureReview::new(image());
+        review.set_before_image(false);
+        assert!(!review.confirm().before_image);
+
+        review.set_before_image(true);
+        assert!(review.confirm().before_image);
     }
 
     #[test]

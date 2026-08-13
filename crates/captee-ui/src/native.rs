@@ -251,6 +251,7 @@ fn build_ui(application: &Application) {
     let pending_capture = Rc::new(RefCell::new(None));
     let pending_annotation = Rc::new(RefCell::new(None));
     let pending_review = Rc::new(RefCell::new(None));
+    let capture_before_image = Rc::new(Cell::new(true));
     let scroll_preview_to_end = Rc::new(Cell::new(false));
     let preview_scroll_generation = Rc::new(Cell::new(0));
     let global_keybindings = Rc::new(RefCell::new(
@@ -518,6 +519,7 @@ fn build_ui(application: &Application) {
         pending_capture,
         pending_annotation,
         pending_review,
+        capture_before_image,
         scroll_preview_to_end,
         preview_scroll_generation,
         global_keybindings,
@@ -987,6 +989,7 @@ struct ProjectUi {
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     pending_review: Rc<RefCell<Option<CaptureReview>>>,
+    capture_before_image: Rc<Cell<bool>>,
     scroll_preview_to_end: Rc<Cell<bool>>,
     preview_scroll_generation: Rc<Cell<u64>>,
     global_keybindings: Rc<RefCell<KeybindingSettings>>,
@@ -3161,11 +3164,14 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     ));
     let placement_for_toggle = placement.clone();
     let review_for_toggle = Rc::clone(&review);
+    let placement_ui = project_ui.clone();
     placement.connect_toggled(move |button| {
         let mut review = review_for_toggle.borrow_mut();
-        if review.before_image() == button.is_active() {
-            review.toggle_placement();
+        if review.before_image() != button.is_active() {
+            review.set_before_image(button.is_active());
         }
+        placement_ui.capture_before_image.set(button.is_active());
+        let _ = save_workspace_view(&placement_ui);
         if button.is_active() {
             placement_for_toggle.set_label("Insert annotation before image");
         } else {
@@ -3226,6 +3232,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     code_placeholder.set_valign(Align::Start);
     code_placeholder.set_margin_start(48);
     code_placeholder.add_css_class("capture-context");
+    code_placeholder.set_visible(annotation_placeholder_visible(review.borrow().annotation()));
     code_editor.add_overlay(&code_placeholder);
     let update_placeholder_position = Rc::new({
         let code_buffer = code_buffer.clone();
@@ -3251,7 +3258,10 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let code_view_for_change = code_view.clone();
     let assistance_ui = project_ui.clone();
     code_buffer.connect_changed(move |buffer| {
-        code_placeholder_for_change.set_visible(buffer.char_count() == annotation_offset);
+        let annotation =
+            buffer.text(&buffer.iter_at_offset(annotation_offset), &buffer.end_iter(), true);
+        code_placeholder_for_change
+            .set_visible(annotation_placeholder_visible(annotation.as_str()));
         scroll_editor_to_latest_edit(&code_view_for_change, buffer);
         sync_capture_assistance(&assistance_ui);
     });
@@ -3475,6 +3485,10 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     review_window.present();
 
     Ok(())
+}
+
+fn annotation_placeholder_visible(annotation: &str) -> bool {
+    annotation.trim().is_empty()
 }
 
 fn start_capture_storage_with_review(
@@ -4692,7 +4706,11 @@ fn apply_operation_result(
                         review.replace_image(image.clone());
                         review
                     })
-                    .unwrap_or_else(|| CaptureReview::new(image));
+                    .unwrap_or_else(|| {
+                        let mut review = CaptureReview::new(image);
+                        review.set_before_image(project_ui.capture_before_image.get());
+                        review
+                    });
                 match show_capture_review_dialog(project_ui, review) {
                     Ok(()) => {
                         let _ = project_ui
@@ -5178,6 +5196,8 @@ fn save_workspace_view(project_ui: &ProjectUi) -> Result<(), String> {
         editor_scroll,
         preview_page: preview_anchor.page,
         preview_y_ratio: preview_anchor.y_ratio,
+        capture_before_image: project_ui.capture_before_image.get(),
+        auto_scroll_preview: project_ui.auto_scroll_to_content_end.is_active(),
     };
     WorkspaceViewStore::new(PathBuf::from(project.root).join(WORKSPACE_VIEW_FILE))
         .save(&state)
@@ -5203,10 +5223,18 @@ fn restore_workspace_view(project_ui: &ProjectUi, state: Option<&WorkspaceViewSt
     if let Some(adjustment) = project_ui.source_view.vadjustment() {
         restore_scroll_value(&adjustment, state.editor_scroll, 30);
     }
-    project_ui.pending_preview_restore.set(Some(PreviewScrollAnchor {
-        page: state.preview_page,
-        y_ratio: state.preview_y_ratio,
-    }));
+    project_ui.capture_before_image.set(state.capture_before_image);
+    project_ui.auto_scroll_to_content_end.set_active(state.auto_scroll_preview);
+    project_ui.pending_preview_restore.set((!state.auto_scroll_preview).then_some(
+        PreviewScrollAnchor { page: state.preview_page, y_ratio: state.preview_y_ratio },
+    ));
+}
+
+fn focus_editor_after_open(project_ui: &ProjectUi) {
+    let source_view = project_ui.source_view.clone();
+    glib::idle_add_local_once(move || {
+        source_view.grab_focus();
+    });
 }
 
 fn refresh_recent_projects(project_ui: &ProjectUi) {
@@ -5566,7 +5594,11 @@ fn open_loaded_project(
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
+            project_ui.capture_before_image.set(true);
+            project_ui.auto_scroll_to_content_end.set_active(false);
+            project_ui.pending_preview_restore.set(None);
             restore_workspace_view(project_ui, project.view_state.as_ref());
+            focus_editor_after_open(project_ui);
             project_ui.status.set_text(if created {
                 "Project created. Ready to edit."
             } else {
@@ -5723,13 +5755,14 @@ fn close_project(project_ui: &ProjectUi) {
 #[cfg(test)]
 mod tests {
     use super::{
-        annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
-        capture_placeholder_top, clamped_scroll_value, completion_anchor_x, completion_index,
-        completion_popup_action, diagnostic_summary_text, insertion_end_offset,
-        is_active_tree_file, preview_scroll_end, preview_width, project_parent_folder,
-        recovery_draft, tree_entry_visible, validate_project_name, CompletionPopupAction,
-        ExitChoice, ExitDecision, ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
-        ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        annotation_confirms_on_enter, annotation_placeholder_visible, byte_offset_for_character,
+        capture_insertion_expression, capture_placeholder_top, clamped_scroll_value,
+        completion_anchor_x, completion_index, completion_popup_action, diagnostic_summary_text,
+        insertion_end_offset, is_active_tree_file, preview_scroll_end, preview_width,
+        project_parent_folder, recovery_draft, tree_entry_visible, validate_project_name,
+        CompletionPopupAction, ExitChoice, ExitDecision, ExitState, PreviewScale,
+        ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
+        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5896,6 +5929,14 @@ mod tests {
         assert_eq!(capture_placeholder_top(96, 0.0), 96);
         assert_eq!(capture_placeholder_top(96, 48.0), 48);
         assert_eq!(capture_placeholder_top(48, 96.0), 0);
+    }
+
+    #[test]
+    fn capture_placeholder_is_hidden_for_existing_annotation() {
+        assert!(annotation_placeholder_visible(""));
+        assert!(annotation_placeholder_visible("  \n"));
+        assert!(!annotation_placeholder_visible("foo"));
+        assert!(!annotation_placeholder_visible("#text[annotation]"));
     }
 
     #[test]

@@ -36,6 +36,7 @@
 - [x] 4.3 Before application exit with dirty source, show Save, Discard, and Cancel; exit only after a successful save or explicit discard, and remain open after cancellation or save failure.
 - [x] 4.4 Clear the autosave after successful Save or Discard so a clean exit does not show recovery on the next run; retain autosave recovery for crashes or interrupted sessions.
 - [x] 4.5 Persist the caret plus editor and preview scroll positions in a project-local hidden view file, restore them only when reopening that project, and preserve the current viewport instead of forcing scroll after edits or renders.
+- [x] 4.6 Focus the restored source caret when a project opens, hide the capture placeholder when annotation text exists, make before/after placement effective, and remember placement plus preview auto-scroll per project.
 
 ## 5. Menu organization and About
 

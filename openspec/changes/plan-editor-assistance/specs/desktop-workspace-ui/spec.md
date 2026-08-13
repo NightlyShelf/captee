@@ -42,8 +42,20 @@ The application SHALL use the bundled Tinymist language server to provide contex
 
 - **WHEN** the user closes and later reopens a project
 - **THEN** the editor restores the saved caret and editor viewport from project-local hidden view state
+- **AND** keyboard focus returns to the restored source caret
 - **AND** the preview restores its saved viewport after the first rendered page layout is ready
 - **AND** ordinary edits and renders do not force either pane to a different position
+
+#### Scenario: Reuse project capture and preview preferences
+
+- **WHEN** the user changes capture insertion between before and after the image or toggles preview auto-scroll
+- **THEN** the selected behavior takes effect immediately and is saved in project-local view state
+- **AND** the next capture and the next project reopen reuse those choices
+
+#### Scenario: Modify an annotated capture
+
+- **WHEN** the user modifies a capture after typing annotation text
+- **THEN** that text remains editable without the annotation placeholder overlapping it
 
 #### Scenario: Tinymist unavailable
 
