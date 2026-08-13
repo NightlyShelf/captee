@@ -47,7 +47,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -105,6 +107,62 @@ enum BackgroundResult {
     Autosave { source: SourceIdentity, result: Result<(), String> },
     RecentProject { project: ProjectIdentity, result: Result<(), String> },
     TinymistStarted { project: ProjectIdentity, result: Result<TinymistSession, String> },
+    ExitDiscarded { source: SourceIdentity, result: Result<(), String> },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ExitState {
+    #[default]
+    Idle,
+    DialogOpen,
+    Saving,
+    Discarding,
+    Approved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitDecision {
+    Allow,
+    Prompt,
+    Wait,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
+impl ExitState {
+    fn request(self, dirty: bool) -> ExitDecision {
+        if self == Self::Approved || !dirty {
+            ExitDecision::Allow
+        } else if self == Self::Idle {
+            ExitDecision::Prompt
+        } else {
+            ExitDecision::Wait
+        }
+    }
+
+    fn choose(self, choice: ExitChoice) -> Self {
+        if self != Self::DialogOpen {
+            return self;
+        }
+        match choice {
+            ExitChoice::Save => Self::Saving,
+            ExitChoice::Discard => Self::Discarding,
+            ExitChoice::Cancel => Self::Idle,
+        }
+    }
+
+    fn operation_finished(self, success: bool) -> Self {
+        if matches!(self, Self::Saving | Self::Discarding) && success {
+            Self::Approved
+        } else {
+            Self::Idle
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -153,7 +211,8 @@ fn build_ui(application: &Application) {
     let editor = Rc::new(RefCell::new(None));
     let coordinator = Rc::new(RefCell::new(OperationCoordinator::new()));
     let syncing_buffer = Rc::new(Cell::new(false));
-    let autosave_sequence = Rc::new(Cell::new(0));
+    let autosave_sequence = Arc::new(AtomicU64::new(0));
+    let autosave_io = Arc::new(Mutex::new(()));
     let preview_sequence = Rc::new(Cell::new(0));
     let render_state = Rc::new(RefCell::new(RenderState::new(0)));
     let pending_capture = Rc::new(RefCell::new(None));
@@ -363,6 +422,7 @@ fn build_ui(application: &Application) {
         coordinator,
         syncing_buffer,
         autosave_sequence,
+        autosave_io,
         preview_sequence,
         render_state,
         pending_capture,
@@ -375,6 +435,7 @@ fn build_ui(application: &Application) {
         tinymist_session: Rc::new(RefCell::new(None)),
         tinymist_document: Rc::new(RefCell::new(None)),
         capture_assistance: Rc::new(RefCell::new(None)),
+        exit_state: Rc::new(Cell::new(ExitState::Idle)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -406,6 +467,7 @@ fn build_ui(application: &Application) {
     connect_preview_scale(&project_ui);
     connect_preview_content_navigation(&project_ui);
     connect_project_tree(&project_ui);
+    connect_exit_guard(&project_ui);
     connect_runtime_results(&project_ui);
     connect_global_capture_shortcut(&project_ui);
     connect_cancel_button(&cancel_button, &project_ui);
@@ -724,7 +786,9 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let action = application.lookup_action("save").expect("installed save action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let save_ui = project_ui.clone();
-    action.connect_activate(move |_, _| start_save(&save_ui));
+    action.connect_activate(move |_, _| {
+        start_save(&save_ui);
+    });
 
     let action = application.lookup_action("format").expect("installed format action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
@@ -818,7 +882,8 @@ struct ProjectUi {
     editor: Rc<RefCell<Option<EditorBridge>>>,
     coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
-    autosave_sequence: Rc<Cell<u64>>,
+    autosave_sequence: Arc<AtomicU64>,
+    autosave_io: Arc<Mutex<()>>,
     preview_sequence: Rc<Cell<u64>>,
     render_state: Rc<RefCell<RenderState>>,
     pending_capture: Rc<RefCell<Option<CapturedImage>>>,
@@ -831,6 +896,7 @@ struct ProjectUi {
     tinymist_session: Rc<RefCell<Option<TinymistSession>>>,
     tinymist_document: Rc<RefCell<Option<TinymistDocumentState>>>,
     capture_assistance: Rc<RefCell<Option<CaptureAssistanceState>>>,
+    exit_state: Rc<Cell<ExitState>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -842,6 +908,114 @@ impl ProjectUi {
 
     fn window(&self) -> Option<ApplicationWindow> {
         self.window.upgrade()
+    }
+}
+
+fn connect_exit_guard(project_ui: &ProjectUi) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let exit_ui = project_ui.clone();
+    window.connect_close_request(move |_| {
+        let dirty = exit_ui.editor.borrow().as_ref().is_some_and(|editor| editor.state().dirty);
+        match exit_ui.exit_state.get().request(dirty) {
+            ExitDecision::Allow => {
+                exit_ui.exit_state.set(ExitState::Approved);
+                stop_tinymist(&exit_ui);
+                glib::Propagation::Proceed
+            }
+            ExitDecision::Prompt => {
+                exit_ui.exit_state.set(ExitState::DialogOpen);
+                show_exit_dialog(&exit_ui);
+                glib::Propagation::Stop
+            }
+            ExitDecision::Wait => glib::Propagation::Stop,
+        }
+    });
+}
+
+fn show_exit_dialog(project_ui: &ProjectUi) {
+    let Some(window) = project_ui.window() else {
+        project_ui.exit_state.set(ExitState::Idle);
+        return;
+    };
+    let dialog = Dialog::builder()
+        .title("Save changes before exiting?")
+        .transient_for(&window)
+        .modal(true)
+        .build();
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Discard", ResponseType::Other(1));
+    dialog.add_button("Save", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
+    let message = Label::new(Some(
+        "The current Typst source has unsaved changes. Save them, discard them, or keep editing.",
+    ));
+    message.set_wrap(true);
+    message.set_margin_top(16);
+    message.set_margin_bottom(16);
+    message.set_margin_start(16);
+    message.set_margin_end(16);
+    dialog.content_area().append(&message);
+
+    let exit_ui = project_ui.clone();
+    dialog.connect_response(move |dialog, response| {
+        let choice = match response {
+            ResponseType::Accept => ExitChoice::Save,
+            ResponseType::Other(1) => ExitChoice::Discard,
+            _ => ExitChoice::Cancel,
+        };
+        exit_ui.exit_state.set(exit_ui.exit_state.get().choose(choice));
+        dialog.close();
+        match choice {
+            ExitChoice::Save => {
+                if !start_save(&exit_ui) {
+                    exit_ui.exit_state.set(ExitState::Idle);
+                }
+            }
+            ExitChoice::Discard => start_discard_exit(&exit_ui),
+            ExitChoice::Cancel => {}
+        }
+    });
+    dialog.present();
+}
+
+fn start_discard_exit(project_ui: &ProjectUi) {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let Some(project) = snapshot.app.project else {
+        project_ui.exit_state.set(ExitState::Idle);
+        return;
+    };
+    let Some(entry) =
+        project_ui.editor.borrow().as_ref().map(|editor| editor.entry_document().to_path_buf())
+    else {
+        project_ui.exit_state.set(ExitState::Idle);
+        return;
+    };
+    let Some(source) = project_ui.coordinator.borrow().active_source() else {
+        project_ui.exit_state.set(ExitState::Idle);
+        return;
+    };
+    project_ui.autosave_sequence.fetch_add(1, Ordering::AcqRel);
+    project_ui.status.set_text("Discarding autosaved draft…");
+    let sender = project_ui.background_sender.clone();
+    let root = PathBuf::from(project.root);
+    let autosave_io = Arc::clone(&project_ui.autosave_io);
+    let _ = thread::Builder::new().name("captee-exit-discard".to_owned()).spawn(move || {
+        let result = (|| {
+            let _guard = autosave_io.lock().map_err(|_| "autosave lock failed".to_owned())?;
+            ProjectDocumentPersistence::open(root, entry)
+                .and_then(|persistence| persistence.clear_autosave())
+                .map_err(|error| error.to_string())
+        })();
+        let _ = sender.send(BackgroundResult::ExitDiscarded { source, result });
+    });
+}
+
+fn complete_exit(project_ui: &ProjectUi) {
+    project_ui.exit_state.set(ExitState::Approved);
+    if let Some(window) = project_ui.window() {
+        window.close();
     }
 }
 
@@ -2170,15 +2344,16 @@ fn schedule_preview(project_ui: &ProjectUi, state: &EditorState) {
 }
 
 fn schedule_autosave(project_ui: &ProjectUi, state: &EditorState) {
-    let sequence = project_ui.autosave_sequence.get().saturating_add(1);
-    project_ui.autosave_sequence.set(sequence);
+    let sequence = project_ui.autosave_sequence.fetch_add(1, Ordering::AcqRel).saturating_add(1);
     if !state.dirty {
         return;
     }
     let state = state.clone();
     let project_ui = project_ui.clone();
     glib::timeout_add_local_once(Duration::from_millis(750), move || {
-        if project_ui.autosave_sequence.get() != sequence || project_ui.window().is_none() {
+        if project_ui.autosave_sequence.load(Ordering::Acquire) != sequence
+            || project_ui.window().is_none()
+        {
             return;
         }
         let Some(source) = project_ui.coordinator.borrow().active_source() else {
@@ -2200,32 +2375,46 @@ fn schedule_autosave(project_ui: &ProjectUi, state: &EditorState) {
         };
         let root = PathBuf::from(project.root);
         let sender = project_ui.background_sender.clone();
+        let autosave_sequence = Arc::clone(&project_ui.autosave_sequence);
+        let autosave_io = Arc::clone(&project_ui.autosave_io);
         let _ = thread::Builder::new().name("captee-autosave".to_owned()).spawn(move || {
-            let result = ProjectDocumentPersistence::open(root, entry)
-                .and_then(|persistence| persistence.autosave(state.revision, &state.text))
-                .map_err(|error| error.to_string());
+            let result = (|| {
+                let _guard = autosave_io.lock().map_err(|_| "autosave lock failed".to_owned())?;
+                let persistence = ProjectDocumentPersistence::open(root, entry)
+                    .map_err(|error| error.to_string())?;
+                if autosave_sequence.load(Ordering::Acquire) != sequence {
+                    return persistence.clear_autosave().map_err(|error| error.to_string());
+                }
+                persistence
+                    .autosave(state.revision, &state.text)
+                    .map_err(|error| error.to_string())?;
+                if autosave_sequence.load(Ordering::Acquire) != sequence {
+                    persistence.clear_autosave().map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            })();
             let _ = sender.send(BackgroundResult::Autosave { source, result });
         });
     });
 }
 
-fn start_save(project_ui: &ProjectUi) {
+fn start_save(project_ui: &ProjectUi) -> bool {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
         project_ui.status.set_text("Open a project before saving.");
-        return;
+        return false;
     };
     let Some(editor) = project_ui.editor.borrow().as_ref().cloned() else {
         project_ui.status.set_text("No entry document is active.");
-        return;
+        return false;
     };
     if !editor.state().dirty {
         project_ui.status.set_text("Document is already saved.");
-        return;
+        return false;
     }
     if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Save) {
         project_ui.status.set_text(&format!("Error: {error}"));
-        return;
+        return false;
     }
     let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Save, false) {
         Ok(task) => task,
@@ -2235,14 +2424,16 @@ fn start_save(project_ui: &ProjectUi) {
                 .borrow_mut()
                 .dispatch(UiCommand::Fail { message: error.to_string() });
             project_ui.status.set_text(&format!("Error: {error}"));
-            return;
+            return false;
         }
     };
     project_ui.status.set_text("Saving…");
+    project_ui.autosave_sequence.fetch_add(1, Ordering::AcqRel);
     let root = PathBuf::from(project.root);
     let entry = editor.entry_document().to_path_buf();
     let mut document = editor.document_snapshot();
     let format_on_save = snapshot.app.settings.formatting.format_on_save;
+    let autosave_io = Arc::clone(&project_ui.autosave_io);
     let _ = thread::Builder::new().name("captee-save".to_owned()).spawn(move || {
         let result: Result<SourceDocument, String> = (|| {
             if format_on_save {
@@ -2256,6 +2447,7 @@ fn start_save(project_ui: &ProjectUi) {
                     })?;
                 }
             }
+            let _guard = autosave_io.lock().map_err(|_| "autosave lock failed".to_owned())?;
             let persistence =
                 ProjectDocumentPersistence::open(root, entry).map_err(|error| error.to_string())?;
             document.save(&persistence).map_err(|error| error.to_string())?;
@@ -2271,6 +2463,7 @@ fn start_save(project_ui: &ProjectUi) {
         };
         let _ = task.finish(outcome);
     });
+    true
 }
 
 fn start_format(project_ui: &ProjectUi) {
@@ -4016,6 +4209,12 @@ fn apply_operation_result(
                         "Document saved."
                     });
                     apply_editor_state(project_ui, &state, formatted);
+                    if project_ui.exit_state.get() == ExitState::Saving {
+                        project_ui
+                            .exit_state
+                            .set(project_ui.exit_state.get().operation_finished(true));
+                        complete_exit(project_ui);
+                    }
                 } else {
                     let message =
                             "Save completed for an older source revision; current edits remain unsaved.";
@@ -4024,6 +4223,11 @@ fn apply_operation_result(
                         .borrow_mut()
                         .dispatch(UiCommand::Warn { message: message.to_owned() });
                     project_ui.status.set_text(message);
+                    if project_ui.exit_state.get() == ExitState::Saving {
+                        project_ui
+                            .exit_state
+                            .set(project_ui.exit_state.get().operation_finished(false));
+                    }
                 }
             }
             OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted)) => {
@@ -4255,10 +4459,20 @@ fn apply_operation_result(
                 project_ui.status.set_text(&format!("Error: {message}"));
             }
             OperationOutcome::Cancelled => {
+                if project_ui.exit_state.get() == ExitState::Saving {
+                    project_ui
+                        .exit_state
+                        .set(project_ui.exit_state.get().operation_finished(false));
+                }
                 let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
                 project_ui.status.set_text("Operation cancelled.");
             }
             OperationOutcome::Failed(message) => {
+                if project_ui.exit_state.get() == ExitState::Saving {
+                    project_ui
+                        .exit_state
+                        .set(project_ui.exit_state.get().operation_finished(false));
+                }
                 let _ = project_ui
                     .shell
                     .borrow_mut()
@@ -4271,10 +4485,16 @@ fn apply_operation_result(
                 && project_ui.coordinator.borrow().active_source().as_ref()
                     == Some(result.context.source()) =>
         {
+            if project_ui.exit_state.get() == ExitState::Saving {
+                project_ui.exit_state.set(project_ui.exit_state.get().operation_finished(false));
+            }
             // Explicitly cancelled work is expected to report late. Keep the
             // user's cancellation status instead of replacing it with a warning.
         }
         ResultDisposition::Stale(_) => {
+            if project_ui.exit_state.get() == ExitState::Saving {
+                project_ui.exit_state.set(project_ui.exit_state.get().operation_finished(false));
+            }
             let message = "Background result ignored because the project or source changed.";
             let _ = project_ui
                 .shell
@@ -4332,6 +4552,26 @@ fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult)
                 }
                 Err(message) => {
                     project_ui.status.set_text(&format!("Tinymist unavailable: {message}"));
+                }
+            }
+        }
+        BackgroundResult::ExitDiscarded { source, result } => {
+            if project_ui.coordinator.borrow().active_source().as_ref() != Some(&source) {
+                project_ui.exit_state.set(ExitState::Idle);
+                return;
+            }
+            match result {
+                Ok(()) => {
+                    project_ui.exit_state.set(project_ui.exit_state.get().operation_finished(true));
+                    complete_exit(project_ui);
+                }
+                Err(message) => {
+                    project_ui
+                        .exit_state
+                        .set(project_ui.exit_state.get().operation_finished(false));
+                    project_ui
+                        .status
+                        .set_text(&format!("Could not discard the autosaved draft: {message}"));
                 }
             }
         }
@@ -4846,7 +5086,7 @@ fn open_loaded_project(
     match result {
         Ok(()) => {
             stop_tinymist(project_ui);
-            project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
+            project_ui.autosave_sequence.fetch_add(1, Ordering::AcqRel);
             *project_ui.editor.borrow_mut() = Some(EditorBridge::new_at_revision(
                 project.session.entry_document.clone(),
                 project.source.clone(),
@@ -5006,7 +5246,7 @@ fn close_project(project_ui: &ProjectUi) {
     match closed {
         Ok(()) => {
             stop_tinymist(project_ui);
-            project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
+            project_ui.autosave_sequence.fetch_add(1, Ordering::AcqRel);
             project_ui.coordinator.borrow_mut().deactivate_project();
             *project_ui.editor.borrow_mut() = None;
             project_ui.stack.set_visible_child_name("home");
@@ -5039,8 +5279,9 @@ mod tests {
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
         capture_placeholder_top, insertion_end_offset, is_active_tree_file, preview_scroll_end,
         preview_width, project_parent_folder, recovery_draft, tree_entry_visible,
-        validate_project_name, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
-        ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        validate_project_name, ExitChoice, ExitDecision, ExitState, PreviewScale,
+        ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
+        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5109,6 +5350,30 @@ mod tests {
         assert_eq!(ABOUT_REPOSITORY, "https://github.com/NightlyShelf/captee");
         assert!(ABOUT_ACKNOWLEDGEMENTS.contains("Typst 0.14.2"));
         assert!(ABOUT_ACKNOWLEDGEMENTS.contains("Tinymist 0.14.6"));
+    }
+
+    #[test]
+    fn clean_or_approved_exit_is_allowed_without_a_prompt() {
+        assert_eq!(ExitState::Idle.request(false), ExitDecision::Allow);
+        assert_eq!(ExitState::Approved.request(true), ExitDecision::Allow);
+    }
+
+    #[test]
+    fn dirty_exit_supports_save_discard_and_cancel() {
+        assert_eq!(ExitState::Idle.request(true), ExitDecision::Prompt);
+        assert_eq!(ExitState::DialogOpen.choose(ExitChoice::Save), ExitState::Saving);
+        assert_eq!(ExitState::DialogOpen.choose(ExitChoice::Discard), ExitState::Discarding);
+        assert_eq!(ExitState::DialogOpen.choose(ExitChoice::Cancel), ExitState::Idle);
+    }
+
+    #[test]
+    fn exit_waits_for_io_and_save_failure_keeps_window_open() {
+        assert_eq!(ExitState::Saving.request(true), ExitDecision::Wait);
+        assert_eq!(ExitState::Discarding.request(true), ExitDecision::Wait);
+        assert_eq!(ExitState::Saving.operation_finished(false), ExitState::Idle);
+        assert_eq!(ExitState::Discarding.operation_finished(false), ExitState::Idle);
+        assert_eq!(ExitState::Saving.operation_finished(true), ExitState::Approved);
+        assert_eq!(ExitState::Discarding.operation_finished(true), ExitState::Approved);
     }
 
     #[test]

@@ -22,8 +22,8 @@
 
 - [x] 4.1 Put the project file list in a vertical scroller without adding horizontal scrolling.
 - [x] 4.2 Start each opened project with every folder collapsed while preserving normal expand/collapse behavior during the session.
-- [ ] 4.3 Before application exit with dirty source, show Save, Discard, and Cancel; exit only after a successful save or explicit discard, and remain open after cancellation or save failure.
-- [ ] 4.4 Clear the autosave after successful Save or Discard so a clean exit does not show recovery on the next run; retain autosave recovery for crashes or interrupted sessions.
+- [x] 4.3 Before application exit with dirty source, show Save, Discard, and Cancel; exit only after a successful save or explicit discard, and remain open after cancellation or save failure.
+- [x] 4.4 Clear the autosave after successful Save or Discard so a clean exit does not show recovery on the next run; retain autosave recovery for crashes or interrupted sessions.
 
 ## 5. Menu organization and About
 
