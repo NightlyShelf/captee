@@ -13,6 +13,7 @@
 - [x] 2.3 Apply only Tinymist's returned text edit or replacement range and preserve source when the request is stale, dismissed, or empty.
 - [x] 2.4 Remove the built-in completion provider, manual completion command and button, and completion keybinding from defaults, persistence, migration, and Settings.
 - [x] 2.5 Keep keyboard focus in the editor while showing a compact, bounded rectangular suggestion list, and preserve the editor scroll position when accepting a suggestion.
+- [x] 2.6 Do not request completion merely because a project opened; show the borderless list inline with the caret after an actual editing trigger.
 
 ## 3. Diagnostic markers
 

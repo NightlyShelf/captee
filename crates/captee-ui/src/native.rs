@@ -59,6 +59,7 @@ const ABOUT_LICENSE: &str = "GNU General Public License v3.0 or later (GPL-3.0-o
 const ABOUT_REPOSITORY: &str = "https://github.com/NightlyShelf/captee";
 const ABOUT_ACKNOWLEDGEMENTS: &str =
     "Includes Typst 0.14.2 and Tinymist 0.14.6, licensed under Apache-2.0.";
+const COMPLETION_POPUP_WIDTH: i32 = 190;
 const FILE_MENU_ACTIONS: &[(&str, &str)] = &[
     ("New project", "app.new-project"),
     ("Open project", "app.open-project"),
@@ -280,7 +281,9 @@ fn build_ui(application: &Application) {
            background-color: #292a2d; color: #9aa0a6;\
          }\
          .typst-editor border { background-color: #3c4043; }\
-         .completion-popup > contents { padding: 0; border-radius: 2px; }\
+         .completion-popup.background { background: transparent; border: none; box-shadow: none; }\
+         .completion-popup > contents { padding: 0; border: none; border-radius: 0; outline: none; box-shadow: none; background-color: #202124; }\
+         .completion-popup > contents > scrolledwindow { border: none; outline: none; box-shadow: none; }\
          .completion-list { background-color: #292a2d; }\
          .completion-list row { min-height: 0; padding: 0; }\
          .completion-list row:selected { background-color: #4a3520; color: #ffffff; }\
@@ -338,11 +341,12 @@ fn build_ui(application: &Application) {
     completion_popover.set_has_arrow(false);
     completion_popover.set_focusable(false);
     completion_popover.add_css_class("completion-popup");
+    completion_popover.set_offset(COMPLETION_POPUP_WIDTH / 2, 0);
     let completion_list = ListBox::new();
     completion_list.set_selection_mode(gtk::SelectionMode::Single);
     completion_list.set_activate_on_single_click(true);
     completion_list.set_focusable(false);
-    completion_list.set_size_request(180, -1);
+    completion_list.set_size_request(COMPLETION_POPUP_WIDTH, -1);
     completion_list.add_css_class("completion-list");
     let completion_scroller = ScrolledWindow::builder()
         .child(&completion_list)
@@ -1854,7 +1858,7 @@ fn stop_tinymist(project_ui: &ProjectUi) {
 }
 
 fn open_tinymist_document(project_ui: &ProjectUi) {
-    let opened = {
+    {
         let mut document = project_ui.tinymist_document.borrow_mut();
         let Some(document) = document.as_mut() else {
             return;
@@ -1866,18 +1870,11 @@ fn open_tinymist_document(project_ui: &ProjectUi) {
         match result {
             Some(Ok(())) => {
                 document.opened = true;
-                true
             }
             Some(Err(error)) => {
                 project_ui.status.set_text(&format!("Tinymist document setup failed: {error}"));
-                false
             }
-            None => false,
-        }
-    };
-    if opened {
-        if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
-            request_tinymist_completion(project_ui, &state);
+            None => {}
         }
     }
     open_capture_assistance(project_ui);
@@ -1994,7 +1991,8 @@ fn completion_row(text: &str) -> ListBoxRow {
     let label = Label::new(Some(text));
     label.set_xalign(0.0);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    label.set_max_width_chars(32);
+    label.set_width_chars(22);
+    label.set_max_width_chars(22);
     label.set_margin_top(1);
     label.set_margin_bottom(1);
     label.set_margin_start(5);
@@ -3052,11 +3050,12 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     completion_popover.set_has_arrow(false);
     completion_popover.set_focusable(false);
     completion_popover.add_css_class("completion-popup");
+    completion_popover.set_offset(COMPLETION_POPUP_WIDTH / 2, 0);
     let completion_list = ListBox::new();
     completion_list.set_selection_mode(gtk::SelectionMode::Single);
     completion_list.set_activate_on_single_click(true);
     completion_list.set_focusable(false);
-    completion_list.set_size_request(180, -1);
+    completion_list.set_size_request(COMPLETION_POPUP_WIDTH, -1);
     completion_list.add_css_class("completion-list");
     let completion_scroller = ScrolledWindow::builder()
         .child(&completion_list)
