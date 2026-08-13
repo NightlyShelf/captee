@@ -13,6 +13,8 @@ fn tinymist_completion_replaces_prefix_in_editor() {
             end: LspPosition { line: 0, character: 3 },
         }),
         is_snippet: false,
+        description: None,
+        detail: None,
     };
     let edit = tinymist_completion_edit(source, source.len(), &item).expect("completion edit");
     let mut editor = EditorBridge::new("main.typ", source);

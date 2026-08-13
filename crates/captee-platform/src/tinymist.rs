@@ -31,6 +31,8 @@ pub struct TinymistCompletion {
     pub insert_text: String,
     pub range: Option<LspRange>,
     pub is_snippet: bool,
+    pub description: Option<String>,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,7 +442,23 @@ fn parse_completion_items(result: &Value) -> Vec<TinymistCompletion> {
                 edit.get("range").or_else(|| edit.get("insert")).and_then(parse_range)
             });
             let is_snippet = item.get("insertTextFormat").and_then(Value::as_u64) == Some(2);
-            Some(TinymistCompletion { label, insert_text, range, is_snippet })
+            let description = item
+                .get("labelDetails")
+                .and_then(|details| details.get("description"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let detail = item
+                .get("detail")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    item.get("documentation").and_then(|documentation| {
+                        documentation
+                            .as_str()
+                            .or_else(|| documentation.get("value").and_then(Value::as_str))
+                    })
+                })
+                .map(str::to_owned);
+            Some(TinymistCompletion { label, insert_text, range, is_snippet, description, detail })
         })
         .collect()
 }
@@ -518,6 +536,8 @@ mod tests {
     fn parses_completion_list_and_text_edit() {
         let result = json!({"items":[{
             "label":"image",
+            "labelDetails":{"description":"function"},
+            "detail":"Loads an image from a file.",
             "insertTextFormat":2,
             "textEdit":{
                 "newText":"image(\"\")",
@@ -531,6 +551,8 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].insert_text, "image(\"\")");
         assert!(items[0].is_snippet);
+        assert_eq!(items[0].description.as_deref(), Some("function"));
+        assert_eq!(items[0].detail.as_deref(), Some("Loads an image from a file."));
         assert_eq!(items[0].range.expect("range").start, LspPosition { line: 2, character: 1 });
     }
 

@@ -1,8 +1,8 @@
 use crate::annotation_bridge::AnnotationDraft;
 use crate::capture_review::CaptureReview;
 use crate::editor_assistance::{
-    completion_response_is_current, diagnostics_response_is_current, has_typst_command_prefix,
-    lsp_position, tinymist_completion_edit, visible_lsp_range_to_bytes,
+    completion_response_is_current, diagnostics_response_is_current, lsp_position,
+    should_request_tinymist_completion, tinymist_completion_edit, visible_lsp_range_to_bytes,
 };
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
@@ -60,6 +60,7 @@ const ABOUT_REPOSITORY: &str = "https://github.com/NightlyShelf/captee";
 const ABOUT_ACKNOWLEDGEMENTS: &str =
     "Includes Typst 0.14.2 and Tinymist 0.14.6, licensed under Apache-2.0.";
 const COMPLETION_POPUP_WIDTH: i32 = 190;
+const COMPLETION_POPUP_Y_OFFSET: i32 = -10;
 const FILE_MENU_ACTIONS: &[(&str, &str)] = &[
     ("New project", "app.new-project"),
     ("Open project", "app.open-project"),
@@ -221,6 +222,7 @@ struct CaptureAssistanceState {
     popover: Popover,
     list: ListBox,
     items: Vec<TinymistCompletion>,
+    detail: Label,
     error_tag: gtk::TextTag,
     warning_tag: gtk::TextTag,
     markers: Vec<DiagnosticMarker>,
@@ -288,6 +290,7 @@ fn build_ui(application: &Application) {
          .completion-list row { min-height: 0; padding: 0; }\
          .completion-list row:selected { background-color: #4a3520; color: #ffffff; }\
          .completion-label { font-size: 11px; }\
+         .completion-detail { padding: 3px 5px; border-top: 1px solid #3c4043; color: #9aa0a6; font-size: 10px; }\
          .workspace-header { background-color: #0a0705; }\
          .compact-menu-button, .compact-menu-button > button {\
            margin: 0; padding: 0 2px; min-height: 0; min-width: 0; font-size: 12px;\
@@ -341,7 +344,7 @@ fn build_ui(application: &Application) {
     completion_popover.set_has_arrow(false);
     completion_popover.set_focusable(false);
     completion_popover.add_css_class("completion-popup");
-    completion_popover.set_offset(COMPLETION_POPUP_WIDTH / 2, 0);
+    completion_popover.set_offset(COMPLETION_POPUP_WIDTH / 2, COMPLETION_POPUP_Y_OFFSET);
     let completion_list = ListBox::new();
     completion_list.set_selection_mode(gtk::SelectionMode::Single);
     completion_list.set_activate_on_single_click(true);
@@ -355,7 +358,11 @@ fn build_ui(application: &Application) {
         .max_content_height(160)
         .propagate_natural_height(true)
         .build();
-    completion_popover.set_child(Some(&completion_scroller));
+    let completion_detail = completion_detail_label();
+    let completion_content = GtkBox::new(Orientation::Vertical, 0);
+    completion_content.append(&completion_scroller);
+    completion_content.append(&completion_detail);
+    completion_popover.set_child(Some(&completion_content));
 
     let status = Label::new(Some("Ready. Create or open a project to begin."));
     status.set_xalign(0.0);
@@ -446,6 +453,7 @@ fn build_ui(application: &Application) {
         completion_popover,
         completion_list,
         completion_items: Rc::new(RefCell::new(Vec::new())),
+        completion_detail,
         suppress_completion: Rc::new(Cell::new(false)),
         diagnostic_error_tag,
         diagnostic_warning_tag,
@@ -907,6 +915,7 @@ struct ProjectUi {
     completion_popover: Popover,
     completion_list: ListBox,
     completion_items: Rc<RefCell<Vec<TinymistCompletion>>>,
+    completion_detail: Label,
     suppress_completion: Rc<Cell<bool>>,
     diagnostic_error_tag: gtk::TextTag,
     diagnostic_warning_tag: gtk::TextTag,
@@ -1887,7 +1896,7 @@ fn request_tinymist_completion(project_ui: &ProjectUi, state: &EditorState) {
     }
     let cursor_chars = project_ui.source_buffer.cursor_position().max(0) as usize;
     let cursor = byte_offset_for_character(&state.text, cursor_chars);
-    if !has_typst_command_prefix(&state.text, cursor) {
+    if !should_request_tinymist_completion(&state.text, cursor) {
         project_ui.completion_popover.popdown();
         project_ui.completion_items.borrow_mut().clear();
         if let Some(document) = project_ui.tinymist_document.borrow_mut().as_mut() {
@@ -1953,6 +1962,19 @@ fn connect_completion_popup(project_ui: &ProjectUi) {
         glib::Propagation::Stop
     });
     project_ui.source_view.add_controller(key);
+    connect_completion_scroll_tracking(
+        &project_ui.source_view,
+        &project_ui.source_buffer,
+        &project_ui.completion_popover,
+    );
+
+    let detail_ui = project_ui.clone();
+    project_ui.completion_list.connect_row_selected(move |_, row| {
+        let item = row.and_then(|row| {
+            detail_ui.completion_items.borrow().get(completion_index(row.index())).cloned()
+        });
+        update_completion_detail(&detail_ui.completion_detail, item.as_ref());
+    });
 }
 
 fn show_main_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>) {
@@ -1961,34 +1983,26 @@ fn show_main_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>)
     }
     *project_ui.completion_items.borrow_mut() = items;
     for item in project_ui.completion_items.borrow().iter() {
-        project_ui.completion_list.append(&completion_row(&item.label));
+        project_ui.completion_list.append(&completion_row(item));
     }
     let Some(first) = project_ui.completion_list.row_at_index(0) else {
         project_ui.completion_popover.popdown();
         return;
     };
     project_ui.completion_list.select_row(Some(&first));
-    let cursor = project_ui.source_buffer.iter_at_mark(&project_ui.source_buffer.get_insert());
-    let location = project_ui.source_view.iter_location(&cursor);
-    let (x, y) = project_ui.source_view.buffer_to_window_coords(
-        gtk::TextWindowType::Widget,
-        location.x(),
-        location.y() + location.height(),
+    position_completion_popover(
+        &project_ui.source_view,
+        &project_ui.source_buffer,
+        &project_ui.completion_popover,
     );
-    project_ui.completion_popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-        x,
-        y,
-        1,
-        location.height().max(1),
-    )));
     project_ui.completion_popover.popup();
     project_ui.source_view.grab_focus();
 }
 
-fn completion_row(text: &str) -> ListBoxRow {
+fn completion_row(item: &TinymistCompletion) -> ListBoxRow {
     let row = ListBoxRow::new();
     row.set_focusable(false);
-    let label = Label::new(Some(text));
+    let label = Label::new(Some(&item.label));
     label.set_xalign(0.0);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label.set_width_chars(22);
@@ -1999,7 +2013,72 @@ fn completion_row(text: &str) -> ListBoxRow {
     label.set_margin_end(5);
     label.add_css_class("completion-label");
     row.set_child(Some(&label));
+    row.set_tooltip_text(item.detail.as_deref());
     row
+}
+
+fn completion_detail_label() -> Label {
+    let label = Label::new(None);
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.set_lines(2);
+    label.set_width_chars(28);
+    label.set_max_width_chars(28);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_visible(false);
+    label.add_css_class("completion-detail");
+    label
+}
+
+fn update_completion_detail(label: &Label, item: Option<&TinymistCompletion>) {
+    let text = item.and_then(completion_summary);
+    label.set_text(text.as_deref().unwrap_or_default());
+    label.set_visible(text.is_some());
+}
+
+fn completion_summary(item: &TinymistCompletion) -> Option<String> {
+    let detail = item.detail.as_deref().and_then(|detail| {
+        let summary = detail.split("\n\n").next()?.replace('\n', " ");
+        (!summary.trim().is_empty()).then(|| summary.trim().to_owned())
+    });
+    match (item.description.as_deref(), detail) {
+        (Some(description), Some(detail)) => Some(format!("{description} — {detail}")),
+        (Some(description), None) => Some(description.to_owned()),
+        (None, detail) => detail,
+    }
+}
+
+fn connect_completion_scroll_tracking(
+    view: &sourceview::View,
+    buffer: &sourceview::Buffer,
+    popover: &Popover,
+) {
+    for adjustment in [view.vadjustment(), view.hadjustment()].into_iter().flatten() {
+        let view = view.clone();
+        let buffer = buffer.clone();
+        let popover = popover.clone();
+        adjustment.connect_value_changed(move |_| {
+            if popover.is_visible() {
+                position_completion_popover(&view, &buffer, &popover);
+            }
+        });
+    }
+}
+
+fn position_completion_popover(
+    view: &sourceview::View,
+    buffer: &sourceview::Buffer,
+    popover: &Popover,
+) {
+    let cursor = buffer.iter_at_mark(&buffer.get_insert());
+    let location = view.iter_location(&cursor);
+    let (x, y) =
+        view.buffer_to_window_coords(gtk::TextWindowType::Widget, location.x(), location.y());
+    if y < 0 || y > view.height() {
+        popover.popdown();
+        return;
+    }
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x, y, 1, location.height().max(1))));
 }
 
 fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
@@ -2042,6 +2121,7 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
         project_ui.source_buffer.place_cursor(&replacement_cursor);
         project_ui.syncing_buffer.set(false);
         apply_editor_state(project_ui, &state, false);
+        request_tinymist_completion(project_ui, &state);
         if let Some((adjustment, value)) = scroll {
             adjustment.set_value(value);
             glib::idle_add_local_once(move || adjustment.set_value(value));
@@ -2127,6 +2207,7 @@ fn start_capture_assistance(
     view: &sourceview::View,
     popover: &Popover,
     list: &ListBox,
+    detail: &Label,
     text: &str,
     error_tag: gtk::TextTag,
     warning_tag: gtk::TextTag,
@@ -2151,6 +2232,7 @@ fn start_capture_assistance(
         popover: popover.clone(),
         list: list.clone(),
         items: Vec::new(),
+        detail: detail.clone(),
         error_tag,
         warning_tag,
         markers: Vec::new(),
@@ -2270,7 +2352,7 @@ fn request_capture_completion(project_ui: &ProjectUi) {
     }
     let cursor_chars = assistance.buffer.cursor_position().max(0) as usize;
     let cursor = byte_offset_for_character(&assistance.text, cursor_chars);
-    if !has_typst_command_prefix(&assistance.text, cursor) {
+    if !should_request_tinymist_completion(&assistance.text, cursor) {
         assistance.latest_completion_request = None;
         assistance.items.clear();
         assistance.popover.popdown();
@@ -2301,26 +2383,14 @@ fn show_capture_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletio
     }
     assistance.items = items;
     for item in &assistance.items {
-        assistance.list.append(&completion_row(&item.label));
+        assistance.list.append(&completion_row(item));
     }
     let Some(first) = assistance.list.row_at_index(0) else {
         assistance.popover.popdown();
         return;
     };
     assistance.list.select_row(Some(&first));
-    let cursor = assistance.buffer.iter_at_mark(&assistance.buffer.get_insert());
-    let location = assistance.view.iter_location(&cursor);
-    let (x, y) = assistance.view.buffer_to_window_coords(
-        gtk::TextWindowType::Widget,
-        location.x(),
-        location.y() + location.height(),
-    );
-    assistance.popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-        x,
-        y,
-        1,
-        location.height().max(1),
-    )));
+    position_completion_popover(&assistance.view, &assistance.buffer, &assistance.popover);
     assistance.popover.popup();
     assistance.view.grab_focus();
 }
@@ -3062,7 +3132,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     completion_popover.set_has_arrow(false);
     completion_popover.set_focusable(false);
     completion_popover.add_css_class("completion-popup");
-    completion_popover.set_offset(COMPLETION_POPUP_WIDTH / 2, 0);
+    completion_popover.set_offset(COMPLETION_POPUP_WIDTH / 2, COMPLETION_POPUP_Y_OFFSET);
     let completion_list = ListBox::new();
     completion_list.set_selection_mode(gtk::SelectionMode::Single);
     completion_list.set_activate_on_single_click(true);
@@ -3076,7 +3146,11 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         .max_content_height(160)
         .propagate_natural_height(true)
         .build();
-    completion_popover.set_child(Some(&completion_scroller));
+    let completion_detail = completion_detail_label();
+    let completion_content = GtkBox::new(Orientation::Vertical, 0);
+    completion_content.append(&completion_scroller);
+    completion_content.append(&completion_detail);
+    completion_popover.set_child(Some(&completion_content));
     let diagnostic_error_tag = gtk::TextTag::builder()
         .name("tinymist-capture-error")
         .underline(gtk::pango::Underline::Error)
@@ -3095,6 +3169,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         &code_view,
         &completion_popover,
         &completion_list,
+        &completion_detail,
         &source_context,
         diagnostic_error_tag,
         diagnostic_warning_tag,
@@ -3103,6 +3178,16 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     completion_list.connect_row_activated(move |_, row| {
         accept_capture_completion(&row_ui, completion_index(row.index()));
     });
+    let detail_ui = project_ui.clone();
+    completion_list.connect_row_selected(move |_, row| {
+        let assistance = detail_ui.capture_assistance.borrow();
+        let Some(assistance) = assistance.as_ref() else {
+            return;
+        };
+        let item = row.and_then(|row| assistance.items.get(completion_index(row.index())));
+        update_completion_detail(&assistance.detail, item);
+    });
+    connect_completion_scroll_tracking(&code_view, &code_buffer, &completion_popover);
     let completion_key = gtk::EventControllerKey::new();
     let completion_ui = project_ui.clone();
     completion_key.connect_key_pressed(move |_, key, _, _| {

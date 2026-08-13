@@ -15,6 +15,7 @@
 - [x] 2.5 Keep keyboard focus in the editor while showing a compact, bounded rectangular suggestion list, and preserve the editor scroll position when accepting a suggestion.
 - [x] 2.6 Do not request completion merely because a project opened; show the borderless list inline with the caret after an actual editing trigger.
 - [x] 2.7 Convert Tinymist snippet placeholders to clean inserted text and place the caret at the first tab stop instead of exposing raw `${…}` syntax.
+- [x] 2.8 Keep the popup close to and synchronized with the scrolled caret, show Tinymist completion descriptions, and request argument-name/value options after function-call triggers and while refining the visible list.
 
 ## 3. Diagnostic markers
 

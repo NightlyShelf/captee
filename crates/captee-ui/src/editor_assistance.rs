@@ -145,6 +145,40 @@ pub fn has_typst_command_prefix(source: &str, cursor: usize) -> bool {
     source.get(command_prefix_range(source, cursor)).is_some_and(|prefix| prefix.starts_with('#'))
 }
 
+pub fn should_request_tinymist_completion(source: &str, cursor: usize) -> bool {
+    if cursor > source.len() || !source.is_char_boundary(cursor) {
+        return false;
+    }
+    if has_typst_command_prefix(source, cursor) {
+        return true;
+    }
+
+    let before_cursor = &source[..cursor];
+    let mut closed_parentheses = 0;
+    for (offset, character) in before_cursor.char_indices().rev() {
+        match character {
+            ')' => closed_parentheses += 1,
+            '(' if closed_parentheses > 0 => closed_parentheses -= 1,
+            '(' if is_typst_function_call(&before_cursor[..offset]) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_typst_function_call(before_parenthesis: &str) -> bool {
+    let trimmed = before_parenthesis.trim_end();
+    let name_start = trimmed
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| {
+            character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+        .last()
+        .map_or(trimmed.len(), |(offset, _)| offset);
+    name_start < trimmed.len() && trimmed[..name_start].ends_with('#')
+}
+
 pub fn completion_response_is_current(
     expected_uri: &str,
     expected_version: i32,
@@ -215,6 +249,8 @@ mod tests {
             insert_text: "image".into(),
             range: None,
             is_snippet: false,
+            description: None,
+            detail: None,
         };
         let edit = tinymist_completion_edit("#im", 3, &item).expect("edit");
         assert_eq!(edit.range, 1..3);
@@ -227,6 +263,8 @@ mod tests {
             insert_text: "align(${1:})$0".into(),
             range: None,
             is_snippet: true,
+            description: None,
+            detail: None,
         };
         let edit = tinymist_completion_edit("#ali", 4, &item).expect("edit");
         assert_eq!(edit.replacement, "align()");
@@ -240,6 +278,16 @@ mod tests {
             end: LspPosition { line: 0, character: 1 },
         };
         assert_eq!(visible_lsp_range_to_bytes("#", range), Some(0..1));
+    }
+
+    #[test]
+    fn completion_requests_continue_inside_typst_function_calls() {
+        for source in ["#image(", "#image(\n  wi", "#image(width: 2cm, fit: \"co"] {
+            assert!(should_request_tinymist_completion(source, source.len()));
+        }
+        for source in ["text (without command", "#image() text"] {
+            assert!(!should_request_tinymist_completion(source, source.len()));
+        }
     }
 
     #[test]
