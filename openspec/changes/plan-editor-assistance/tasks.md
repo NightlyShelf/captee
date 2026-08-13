@@ -17,6 +17,7 @@
 - [x] 2.7 Convert Tinymist snippet placeholders to clean inserted text and place the caret at the first tab stop instead of exposing raw `${…}` syntax.
 - [x] 2.8 Keep the popup close to and synchronized with the scrolled caret, show Tinymist completion descriptions, and request argument-name/value options after function-call triggers and while refining the visible list.
 - [x] 2.9 Merge Tinymist's plain and `.paren` variants for every function so acceptance inserts parentheses and signature-derived placeholder text for all required positional arguments, selects the first placeholder for replacement, and leaves optional arguments to follow-up completion.
+- [x] 2.10 After a top-level comma, show only unused optional parameters for the active function; insert type-derived editable value stubs for selected parameters and type-shaped placeholders such as `"image-path"` for required arguments.
 
 ## 3. Diagnostic markers
 

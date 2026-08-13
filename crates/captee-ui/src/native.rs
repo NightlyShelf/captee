@@ -1,8 +1,9 @@
 use crate::annotation_bridge::AnnotationDraft;
 use crate::capture_review::CaptureReview;
 use crate::editor_assistance::{
-    completion_response_is_current, diagnostics_response_is_current, lsp_position,
-    should_request_tinymist_completion, tinymist_completion_edit, visible_lsp_range_to_bytes,
+    completion_response_is_current, contextual_completion_items, diagnostics_response_is_current,
+    lsp_position, should_request_tinymist_completion, tinymist_completion_edit,
+    visible_lsp_range_to_bytes, FunctionArgumentCache,
 };
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
@@ -453,6 +454,7 @@ fn build_ui(application: &Application) {
         completion_popover,
         completion_list,
         completion_items: Rc::new(RefCell::new(Vec::new())),
+        completion_arguments: Rc::new(RefCell::new(FunctionArgumentCache::new())),
         completion_detail,
         suppress_completion: Rc::new(Cell::new(false)),
         diagnostic_error_tag,
@@ -915,6 +917,7 @@ struct ProjectUi {
     completion_popover: Popover,
     completion_list: ListBox,
     completion_items: Rc<RefCell<Vec<TinymistCompletion>>>,
+    completion_arguments: Rc<RefCell<FunctionArgumentCache>>,
     completion_detail: Label,
     suppress_completion: Rc<Cell<bool>>,
     diagnostic_error_tag: gtk::TextTag,
@@ -1860,6 +1863,7 @@ fn start_tinymist(project_ui: &ProjectUi, project: ProjectIdentity, root: PathBu
 
 fn stop_tinymist(project_ui: &ProjectUi) {
     close_capture_assistance(project_ui);
+    project_ui.completion_arguments.borrow_mut().clear();
     project_ui.tinymist_document.borrow_mut().take();
     if let Some(mut session) = project_ui.tinymist_session.borrow_mut().take() {
         session.shutdown();
@@ -1982,6 +1986,17 @@ fn connect_completion_popup(project_ui: &ProjectUi) {
 }
 
 fn show_main_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>) {
+    let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
+        return;
+    };
+    let cursor_chars = project_ui.source_buffer.cursor_position().max(0) as usize;
+    let cursor = byte_offset_for_character(&state.text, cursor_chars);
+    let items = contextual_completion_items(
+        &state.text,
+        cursor,
+        items,
+        &mut project_ui.completion_arguments.borrow_mut(),
+    );
     while let Some(child) = project_ui.completion_list.first_child() {
         project_ui.completion_list.remove(&child);
     }
@@ -2395,6 +2410,18 @@ fn request_capture_completion(project_ui: &ProjectUi) {
 }
 
 fn show_capture_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>) {
+    let Some((text, cursor)) = project_ui.capture_assistance.borrow().as_ref().map(|assistance| {
+        let cursor_chars = assistance.buffer.cursor_position().max(0) as usize;
+        (assistance.text.clone(), byte_offset_for_character(&assistance.text, cursor_chars))
+    }) else {
+        return;
+    };
+    let items = contextual_completion_items(
+        &text,
+        cursor,
+        items,
+        &mut project_ui.completion_arguments.borrow_mut(),
+    );
     let mut assistance = project_ui.capture_assistance.borrow_mut();
     let Some(assistance) = assistance.as_mut() else {
         return;

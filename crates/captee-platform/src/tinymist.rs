@@ -510,16 +510,27 @@ fn scaffold_required_arguments(snippet: &str, signature: Option<&str>) -> String
     let arguments = placeholders
         .iter()
         .enumerate()
-        .map(|(index, placeholder)| format!("${{{}:{placeholder}}}", index + 1))
+        .map(|(index, placeholder)| typed_value_snippet(placeholder, index + 1, true))
         .collect::<Vec<_>>()
         .join(", ");
     snippet.replacen("${1:}", &arguments, 1)
 }
 
 fn required_argument_placeholders(signature: &str) -> Option<Vec<String>> {
+    let mut placeholders = Vec::new();
+    for argument in signature_arguments(signature)? {
+        if argument.contains(':') || argument.contains('=') {
+            break;
+        }
+        placeholders.push(argument);
+    }
+    Some(placeholders)
+}
+
+fn signature_arguments(signature: &str) -> Option<Vec<String>> {
     let signature = signature.trim();
     let arguments = signature.strip_prefix('(')?.split_once(") =>")?.0;
-    let mut placeholders = Vec::new();
+    let mut parsed = Vec::new();
     let mut start = 0;
     let mut depth = 0;
     let mut quoted = false;
@@ -530,28 +541,79 @@ fn required_argument_placeholders(signature: &str) -> Option<Vec<String>> {
             ')' | ']' | '}' if !quoted => depth -= 1,
             ',' if !quoted && depth == 0 => {
                 let argument = arguments[start..offset].trim();
-                if argument.contains(':') || argument.contains('=') {
-                    break;
-                }
-                if let Some(placeholder) = argument_placeholder(argument) {
-                    placeholders.push(placeholder);
+                if !argument.is_empty() {
+                    parsed.push(argument.to_owned());
                 }
                 start = offset + 1;
             }
             _ => {}
         }
     }
-    Some(placeholders)
+    Some(parsed)
 }
 
-fn argument_placeholder(argument: &str) -> Option<String> {
-    let argument = argument.trim().trim_start_matches('[').trim_end_matches(']').trim();
-    if argument.is_empty() {
-        return None;
+pub fn tinymist_function_arguments(item: &TinymistCompletion) -> Vec<TinymistCompletion> {
+    let signature = item.description.as_deref().or(item.detail.as_deref());
+    let Some(arguments) = signature.and_then(signature_arguments) else {
+        return Vec::new();
+    };
+    arguments
+        .into_iter()
+        .filter_map(|argument| {
+            let (name, value_type) = argument.split_once(':')?;
+            let name = name.trim();
+            if name.is_empty() || name == ".." || argument.contains('=') {
+                return None;
+            }
+            let value_type = value_type.trim();
+            Some(TinymistCompletion {
+                label: name.to_owned(),
+                insert_text: format!("{name}: {}", typed_value_snippet(value_type, 1, false)),
+                range: None,
+                is_snippet: true,
+                description: Some(value_type.to_owned()),
+                detail: None,
+            })
+        })
+        .collect()
+}
+
+fn typed_value_snippet(value_type: &str, tab_stop: usize, required: bool) -> String {
+    let value_type = value_type.trim();
+    let bracketed = value_type.starts_with('[') && value_type.ends_with(']');
+    let types = value_type
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split('|')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if bracketed {
+        let kind = types.first().copied().unwrap_or("file");
+        return format!("\"${{{tab_stop}:{kind}-path}}\"");
     }
-    let placeholder = argument.split('|').next()?.trim();
-    let placeholder = if placeholder.starts_with('"') { "value" } else { placeholder };
-    Some(placeholder.chars().take(24).collect())
+    if types.contains(&"str") {
+        let placeholder = if required { "text" } else { "" };
+        return format!("\"${{{tab_stop}:{placeholder}}}\"");
+    }
+    if let Some(literal) = types.iter().find(|value| value.starts_with('"')) {
+        let literal = literal.trim_matches('"');
+        return format!("\"${{{tab_stop}:{literal}}}\"");
+    }
+    let placeholder = types
+        .iter()
+        .find(|value| !matches!(**value, "none" | "auto"))
+        .or_else(|| types.first())
+        .copied()
+        .unwrap_or("value");
+    let placeholder = match placeholder {
+        "bool" => "true",
+        "int" | "float" => "0",
+        "length" => "1pt",
+        "ratio" | "relative" => "100%",
+        "content" => "content",
+        value => value,
+    };
+    format!("${{{tab_stop}:{placeholder}}}")
 }
 
 fn parse_diagnostic(value: &Value) -> Option<TinymistDiagnostic> {
@@ -654,7 +716,7 @@ mod tests {
         let items = parse_completion_items(&result);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "image");
-        assert_eq!(items[0].insert_text, "image(${1:image})");
+        assert_eq!(items[0].insert_text, "image(\"${1:image-path}\")");
         assert!(items[0].is_snippet);
         assert_eq!(items[0].description.as_deref(), Some("([image], alt: none | str) => image"));
         assert_eq!(items[0].detail.as_deref(), Some("Loads an image from a file."));
@@ -666,14 +728,37 @@ mod tests {
         assert_eq!(
             scaffold_required_arguments(
                 "align(${1:})",
-                Some("(alignment, [body], scope: str) => content")
+                Some("(alignment, content, scope: str) => content")
             ),
-            "align(${1:alignment}, ${2:body})"
+            "align(${1:alignment}, ${2:content})"
         );
         assert_eq!(
             scaffold_required_arguments("line(${1:})", Some("(start: array, end: array) => line")),
             "line(${1:})"
         );
+    }
+
+    #[test]
+    fn builds_typed_optional_argument_stubs() {
+        let item = TinymistCompletion {
+            label: "image".into(),
+            insert_text: "image".into(),
+            range: None,
+            is_snippet: false,
+            description: Some(
+                "([image], alt: none | str, fit: \"contain\" | \"cover\", page: int) => image"
+                    .into(),
+            ),
+            detail: None,
+        };
+        let arguments = tinymist_function_arguments(&item);
+        assert_eq!(
+            arguments.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            ["alt", "fit", "page"]
+        );
+        assert_eq!(arguments[0].insert_text, "alt: \"${1:}\"");
+        assert_eq!(arguments[1].insert_text, "fit: \"${1:contain}\"");
+        assert_eq!(arguments[2].insert_text, "page: ${1:0}");
     }
 
     #[test]

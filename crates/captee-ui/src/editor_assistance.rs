@@ -1,5 +1,8 @@
-use captee_platform::{LspPosition, LspRange, TinymistCompletion};
+use captee_platform::{tinymist_function_arguments, LspPosition, LspRange, TinymistCompletion};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+
+pub type FunctionArgumentCache = BTreeMap<String, Vec<TinymistCompletion>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionEdit {
@@ -172,6 +175,115 @@ pub fn should_request_tinymist_completion(source: &str, cursor: usize) -> bool {
     false
 }
 
+pub fn contextual_completion_items(
+    source: &str,
+    cursor: usize,
+    items: Vec<TinymistCompletion>,
+    argument_cache: &mut FunctionArgumentCache,
+) -> Vec<TinymistCompletion> {
+    for item in &items {
+        let arguments = tinymist_function_arguments(item);
+        if !arguments.is_empty() {
+            argument_cache.insert(item.label.clone(), arguments);
+        }
+    }
+    let Some(context) = function_argument_context(source, cursor) else {
+        return items;
+    };
+    if !context.after_comma || context.in_value {
+        return items;
+    }
+    argument_cache
+        .get(&context.function)
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            !context.used_names.contains(&item.label) && item.label.starts_with(&context.prefix)
+        })
+        .cloned()
+        .collect()
+}
+
+struct FunctionArgumentContext {
+    function: String,
+    prefix: String,
+    used_names: BTreeSet<String>,
+    after_comma: bool,
+    in_value: bool,
+}
+
+fn function_argument_context(source: &str, cursor: usize) -> Option<FunctionArgumentContext> {
+    let before_cursor = source.get(..cursor)?;
+    let open = unmatched_call_parenthesis(before_cursor)?;
+    let function = function_name(&before_cursor[..open])?;
+    let segments = split_top_level_arguments(&before_cursor[open + 1..]);
+    let current = segments.last()?.trim();
+    let in_value = current.contains(':');
+    let prefix = (!in_value
+        && current.chars().all(|character| character.is_alphanumeric() || character == '-'))
+    .then(|| current.to_owned())?;
+    let used_names = segments
+        .iter()
+        .filter_map(|segment| segment.split_once(':').map(|(name, _)| name.trim()))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Some(FunctionArgumentContext {
+        function,
+        prefix,
+        used_names,
+        after_comma: segments.len() > 1,
+        in_value,
+    })
+}
+
+fn unmatched_call_parenthesis(source: &str) -> Option<usize> {
+    let mut closed = 0;
+    for (offset, character) in source.char_indices().rev() {
+        match character {
+            ')' => closed += 1,
+            '(' if closed > 0 => closed -= 1,
+            '(' if is_typst_function_call(&source[..offset]) => return Some(offset),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn function_name(before_parenthesis: &str) -> Option<String> {
+    let trimmed = before_parenthesis.trim_end();
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| {
+            character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+        .last()?
+        .0;
+    trimmed[..start].ends_with('#').then(|| trimmed[start..].to_owned())
+}
+
+fn split_top_level_arguments(arguments: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth = 0;
+    let mut quoted = false;
+    for (offset, character) in arguments.char_indices() {
+        match character {
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                result.push(&arguments[start..offset]);
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push(&arguments[start..]);
+    result
+}
+
 fn is_typst_function_call(before_parenthesis: &str) -> bool {
     let trimmed = before_parenthesis.trim_end();
     let name_start = trimmed
@@ -294,6 +406,22 @@ mod tests {
     }
 
     #[test]
+    fn empty_string_argument_stub_places_caret_between_quotes() {
+        let item = TinymistCompletion {
+            label: "alt".into(),
+            insert_text: "alt: \"${1:}\"".into(),
+            range: None,
+            is_snippet: true,
+            description: Some("none | str".into()),
+            detail: None,
+        };
+        let edit = tinymist_completion_edit("#image(\"x\", ", 12, &item).expect("edit");
+        assert_eq!(edit.replacement, "alt: \"\"");
+        assert_eq!(edit.cursor, 6);
+        assert_eq!(edit.selection, None);
+    }
+
+    #[test]
     fn zero_width_diagnostic_marks_the_previous_character() {
         let range = LspRange {
             start: LspPosition { line: 0, character: 1 },
@@ -310,6 +438,33 @@ mod tests {
         for source in ["text (without command", "#image() text"] {
             assert!(!should_request_tinymist_completion(source, source.len()));
         }
+    }
+
+    #[test]
+    fn comma_completion_contains_only_unused_optional_arguments() {
+        let function = TinymistCompletion {
+            label: "image".into(),
+            insert_text: "image(\"${1:image-path}\")".into(),
+            range: None,
+            is_snippet: true,
+            description: Some(
+                "([image], alt: none | str, fit: \"contain\" | \"cover\") => image".into(),
+            ),
+            detail: None,
+        };
+        let mut cache = FunctionArgumentCache::new();
+        contextual_completion_items("#image", 6, vec![function], &mut cache);
+
+        let source = "#image(\"image-path\", ";
+        let items = contextual_completion_items(source, source.len(), Vec::new(), &mut cache);
+        assert_eq!(
+            items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+            ["alt", "fit"]
+        );
+
+        let source = "#image(\"image-path\", alt: \"text\", f";
+        let items = contextual_completion_items(source, source.len(), Vec::new(), &mut cache);
+        assert_eq!(items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(), ["fit"]);
     }
 
     #[test]

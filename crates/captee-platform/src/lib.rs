@@ -31,9 +31,9 @@ pub use persistence::{
 };
 pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent, GlobalShortcutRegistration};
 pub use tinymist::{
-    capture_review_uri, document_uri, LspPosition, LspRange, TinymistCompletion,
-    TinymistDiagnostic, TinymistDiagnosticSeverity, TinymistError, TinymistEvent, TinymistRunner,
-    TinymistSession,
+    capture_review_uri, document_uri, tinymist_function_arguments, LspPosition, LspRange,
+    TinymistCompletion, TinymistDiagnostic, TinymistDiagnosticSeverity, TinymistError,
+    TinymistEvent, TinymistRunner, TinymistSession,
 };
 pub use typst::{
     AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewContentEnd, PreviewError,
