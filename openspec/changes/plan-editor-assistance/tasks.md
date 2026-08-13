@@ -20,19 +20,19 @@
 
 ## 4. Project navigation and exit safety
 
-- [ ] 4.1 Put the project file list in a vertical scroller without adding horizontal scrolling.
-- [ ] 4.2 Start each opened project with every folder collapsed while preserving normal expand/collapse behavior during the session.
+- [x] 4.1 Put the project file list in a vertical scroller without adding horizontal scrolling.
+- [x] 4.2 Start each opened project with every folder collapsed while preserving normal expand/collapse behavior during the session.
 - [ ] 4.3 Before application exit with dirty source, show Save, Discard, and Cancel; exit only after a successful save or explicit discard, and remain open after cancellation or save failure.
 - [ ] 4.4 Clear the autosave after successful Save or Discard so a clean exit does not show recovery on the next run; retain autosave recovery for crashes or interrupted sessions.
 
 ## 5. Menu organization and About
 
-- [ ] 5.1 Move Capture and Settings into Edit, move Export PDF into File, keep preview controls in View, and remove the separate Capture menu.
-- [ ] 5.2 Add About as its own top-level menu button opening the application About dialog with name, version, GPL-3.0-or-later license, repository link, and bundled Typst/Tinymist acknowledgements.
+- [x] 5.1 Move Capture and Settings into Edit, move Export PDF into File, keep preview controls in View, and remove the separate Capture menu.
+- [x] 5.2 Add About as its own top-level menu button opening the application About dialog with name, version, GPL-3.0-or-later license, repository link, and bundled Typst/Tinymist acknowledgements.
 
 ## 6. Licensing
 
-- [ ] 6.1 Change workspace package metadata to GPL-3.0-or-later to match the repository LICENSE.
+- [x] 6.1 Change workspace package metadata to GPL-3.0-or-later to match the repository LICENSE.
 - [x] 6.2 Document bundled Tinymist beside Typst with its version, source URL, checksum, Apache-2.0 license, and retained upstream notices.
 
 ## 7. Validation

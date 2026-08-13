@@ -52,6 +52,26 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APPLICATION_ID: &str = "com.nightlyshelf.captee";
+const ABOUT_LICENSE: &str = "GNU General Public License v3.0 or later (GPL-3.0-or-later)";
+const ABOUT_REPOSITORY: &str = "https://github.com/NightlyShelf/captee";
+const ABOUT_ACKNOWLEDGEMENTS: &str =
+    "Includes Typst 0.14.2 and Tinymist 0.14.6, licensed under Apache-2.0.";
+const FILE_MENU_ACTIONS: &[(&str, &str)] = &[
+    ("New project", "app.new-project"),
+    ("Open project", "app.open-project"),
+    ("Close project", "app.close-project"),
+    ("Save", "app.save"),
+    ("Export PDF", "app.export"),
+];
+const EDIT_MENU_ACTIONS: &[(&str, &str)] = &[
+    ("Format", "app.format"),
+    ("Find and Replace", "app.find-replace"),
+    ("Undo", "app.undo"),
+    ("Redo", "app.redo"),
+    ("Capture", "app.capture"),
+    ("Settings", "app.settings"),
+];
+const VIEW_MENU_ACTIONS: &[(&str, &str)] = &[("Preview", "app.preview")];
 
 #[derive(Debug)]
 enum WorkspaceOperationResult {
@@ -328,7 +348,6 @@ fn build_ui(application: &Application) {
         project_panel_title: project_panel_title.clone(),
         workspace_overlay: gtk::Overlay::new(),
         expanded_tree: Rc::new(RefCell::new(BTreeSet::new())),
-        tree_initialized: Rc::new(Cell::new(false)),
         status_row: status_row.clone(),
         status_bar_item: menus.status_bar_item.clone(),
         preview_pages,
@@ -428,7 +447,6 @@ fn build_home(new_button: &Button, open_button: &Button, recent_projects: &GtkBo
 struct WorkspaceMenus {
     file: gio::Menu,
     edit: gio::Menu,
-    capture: gio::Menu,
     view: gio::Menu,
     status_bar_item: gio::MenuItem,
 }
@@ -456,8 +474,7 @@ fn build_menu_header(
     for (label, menu, tooltip) in [
         ("File", &menus.file, "Project and document actions"),
         ("Edit", &menus.edit, "Editing actions"),
-        ("Capture", &menus.capture, "Capture actions"),
-        ("View", &menus.view, "Preview and export actions"),
+        ("View", &menus.view, "Preview actions"),
     ] {
         let button = MenuButton::new();
         button.set_label(label);
@@ -469,6 +486,14 @@ fn build_menu_header(
         button.set_valign(Align::Start);
         menu_box.append(&button);
     }
+    let about = Button::with_label("About");
+    about.set_action_name(Some("app.about"));
+    about.add_css_class("flat");
+    about.add_css_class("compact-menu-button");
+    about.set_tooltip_text(Some("About Captee"));
+    about.set_size_request(-1, 20);
+    about.set_valign(Align::Start);
+    menu_box.append(&about);
     let metadata = GtkBox::new(Orientation::Horizontal, 4);
     metadata.set_halign(Align::Center);
     metadata.set_hexpand(true);
@@ -545,7 +570,14 @@ fn build_workspace(
     tree_header.append(&add_file);
     tree_header.append(&add_folder);
     navigation.append(&tree_header);
-    navigation.append(project_tree);
+    let project_tree_scroller = ScrolledWindow::builder()
+        .child(project_tree)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    navigation.append(&project_tree_scroller);
 
     let editor_scroll =
         ScrolledWindow::builder().child(source_view).hexpand(true).vexpand(true).build();
@@ -609,24 +641,20 @@ fn build_workspace(
 
 fn install_actions(application: &Application) -> WorkspaceMenus {
     let file = gio::Menu::new();
-    append_menu_action(&file, "New project", "app.new-project");
-    append_menu_action(&file, "Open project", "app.open-project");
-    append_menu_action(&file, "Close project", "app.close-project");
-    append_menu_action(&file, "Save", "app.save");
+    for (label, action) in FILE_MENU_ACTIONS {
+        append_menu_action(&file, label, action);
+    }
     let edit = gio::Menu::new();
-    append_menu_action(&edit, "Format", "app.format");
-    append_menu_action(&edit, "Find and Replace", "app.find-replace");
-    append_menu_action(&edit, "Undo", "app.undo");
-    append_menu_action(&edit, "Redo", "app.redo");
-    let capture = gio::Menu::new();
-    append_menu_action(&capture, "Capture", "app.capture");
+    for (label, action) in EDIT_MENU_ACTIONS {
+        append_menu_action(&edit, label, action);
+    }
     let view = gio::Menu::new();
-    append_menu_action(&view, "Preview", "app.preview");
-    append_menu_action(&view, "Export PDF", "app.export");
+    for (label, action) in VIEW_MENU_ACTIONS {
+        append_menu_action(&view, label, action);
+    }
     let status_bar_item = gio::MenuItem::new(Some("Show status bar"), Some("app.status-bar"));
     status_bar_item.set_attribute_value("accel", Some(&"".to_variant()));
     view.append_item(&status_bar_item);
-    append_menu_action(&view, "Settings", "app.settings");
 
     for (name, accelerator) in [
         ("new-project", "<Primary>n"),
@@ -644,12 +672,13 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("export", "<Primary><Shift>e"),
         ("status-bar", ""),
         ("settings", "<Primary>comma"),
+        ("about", ""),
     ] {
         let action = gio::SimpleAction::new(name, None);
         application.add_action(&action);
         application.set_accels_for_action(&format!("app.{name}"), &[accelerator]);
     }
-    WorkspaceMenus { file, edit, capture, view, status_bar_item }
+    WorkspaceMenus { file, edit, view, status_bar_item }
 }
 
 fn append_menu_action(menu: &gio::Menu, label: &str, action: &str) {
@@ -722,6 +751,11 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let settings_ui = project_ui.clone();
     action.connect_activate(move |_, _| show_settings_dialog(&settings_ui));
 
+    let action = application.lookup_action("about").expect("installed about action");
+    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
+    let about_ui = project_ui.clone();
+    action.connect_activate(move |_, _| show_about_dialog(&about_ui));
+
     let action = application.lookup_action("status-bar").expect("installed status action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let status_ui = project_ui.clone();
@@ -770,7 +804,6 @@ struct ProjectUi {
     project_panel_title: Label,
     workspace_overlay: gtk::Overlay,
     expanded_tree: Rc<RefCell<BTreeSet<PathBuf>>>,
-    tree_initialized: Rc<Cell<bool>>,
     status_row: GtkBox,
     status_bar_item: gio::MenuItem,
     preview_pages: GtkBox,
@@ -1009,15 +1042,6 @@ fn refresh_project_tree(project_ui: &ProjectUi) {
             return;
         }
     };
-    if !project_ui.tree_initialized.get() {
-        project_ui.expanded_tree.borrow_mut().extend(
-            entries
-                .iter()
-                .filter(|entry| entry.is_directory)
-                .map(|entry| entry.relative_path.clone()),
-        );
-        project_ui.tree_initialized.set(true);
-    }
     for entry in entries {
         if tree_entry_visible(&project_ui.expanded_tree.borrow(), &entry.relative_path) {
             append_project_tree_row(project_ui, entry);
@@ -3059,6 +3083,24 @@ fn capture_insertion_expression(
     }
 }
 
+fn show_about_dialog(project_ui: &ProjectUi) {
+    let Some(window) = project_ui.window() else {
+        return;
+    };
+    let dialog = gtk::AboutDialog::builder()
+        .transient_for(&window)
+        .modal(true)
+        .program_name("Captee")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments(ABOUT_ACKNOWLEDGEMENTS)
+        .license_type(gtk::License::Custom)
+        .license(ABOUT_LICENSE)
+        .website(ABOUT_REPOSITORY)
+        .website_label("Captee repository")
+        .build();
+    dialog.present();
+}
+
 fn show_settings_dialog(project_ui: &ProjectUi) {
     let snapshot = project_ui.shell.borrow().snapshot();
     if snapshot.app.project.is_none() {
@@ -4832,7 +4874,6 @@ fn open_loaded_project(
             }
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
-            project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
             if let Some(application) = project_ui.application() {
                 apply_global_accelerators(&application, &project_ui.global_keybindings.borrow());
@@ -4979,7 +5020,6 @@ fn close_project(project_ui: &ProjectUi) {
             stop_global_capture_shortcut(project_ui);
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
-            project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
             if let Some(application) = project_ui.application() {
                 apply_global_accelerators(&application, &project_ui.global_keybindings.borrow());
@@ -4998,7 +5038,9 @@ mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
         capture_placeholder_top, insertion_end_offset, is_active_tree_file, preview_scroll_end,
-        preview_width, project_parent_folder, recovery_draft, validate_project_name, PreviewScale,
+        preview_width, project_parent_folder, recovery_draft, tree_entry_visible,
+        validate_project_name, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
+        ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5044,6 +5086,29 @@ mod tests {
 
         assert!(!is_active_tree_file(Some(&editor), std::path::Path::new("main.typ")));
         assert!(is_active_tree_file(Some(&editor), std::path::Path::new("test.typ")));
+    }
+
+    #[test]
+    fn project_tree_starts_with_nested_entries_collapsed() {
+        let expanded = std::collections::BTreeSet::new();
+        assert!(tree_entry_visible(&expanded, Path::new("notes")));
+        assert!(!tree_entry_visible(&expanded, Path::new("notes/today.typ")));
+    }
+
+    #[test]
+    fn commands_are_grouped_in_the_requested_menus() {
+        assert!(FILE_MENU_ACTIONS.contains(&("Export PDF", "app.export")));
+        assert!(EDIT_MENU_ACTIONS.contains(&("Capture", "app.capture")));
+        assert!(EDIT_MENU_ACTIONS.contains(&("Settings", "app.settings")));
+        assert_eq!(VIEW_MENU_ACTIONS, &[("Preview", "app.preview")]);
+    }
+
+    #[test]
+    fn about_metadata_identifies_license_repository_and_bundled_tools() {
+        assert!(ABOUT_LICENSE.contains("GPL-3.0-or-later"));
+        assert_eq!(ABOUT_REPOSITORY, "https://github.com/NightlyShelf/captee");
+        assert!(ABOUT_ACKNOWLEDGEMENTS.contains("Typst 0.14.2"));
+        assert!(ABOUT_ACKNOWLEDGEMENTS.contains("Tinymist 0.14.6"));
     }
 
     #[test]
