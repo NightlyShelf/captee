@@ -50,6 +50,7 @@ fn collect_tree(
             if name.to_str().is_some_and(|name| {
                 name == CONFIG_FILE
                     || name == ".captee-autosave"
+                    || name == ".captee-view.json"
                     || name.starts_with(".captee-preview-")
             }) {
                 continue;
@@ -415,6 +416,7 @@ mod tests {
         let root = test_root("tree-preview-files");
         fs::write(root.join(".captee-preview-1.typ"), "preview").expect("preview source");
         fs::write(root.join(".captee-preview-1.pdf"), "preview").expect("preview output");
+        fs::write(root.join(".captee-view.json"), "{}").expect("workspace view");
         fs::write(root.join("notes.typ"), "notes").expect("project source");
 
         let entries = list_project_tree(&root).expect("tree");

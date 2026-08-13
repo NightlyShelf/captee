@@ -35,7 +35,7 @@
 - [x] 4.2 Start each opened project with every folder collapsed while preserving normal expand/collapse behavior during the session.
 - [x] 4.3 Before application exit with dirty source, show Save, Discard, and Cancel; exit only after a successful save or explicit discard, and remain open after cancellation or save failure.
 - [x] 4.4 Clear the autosave after successful Save or Discard so a clean exit does not show recovery on the next run; retain autosave recovery for crashes or interrupted sessions.
-- [x] 4.5 Retain the exact latest-edit offset for the active session, move the source caret there, keep it onscreen, and scroll the preview to the corresponding source position once page layout is ready after live and programmatic edits and renders while preserving explicit bottom-follow behavior.
+- [x] 4.5 Persist the caret plus editor and preview scroll positions in a project-local hidden view file, restore them only when reopening that project, and preserve the current viewport instead of forcing scroll after edits or renders.
 
 ## 5. Menu organization and About
 

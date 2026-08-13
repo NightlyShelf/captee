@@ -29,7 +29,8 @@ use captee_platform::{
     GlobalShortcutRegistration, GrimSlurpCapture, PngAnnotationBackend, PreviewContentEnd,
     PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset,
     TinymistCompletion, TinymistDiagnosticSeverity, TinymistEvent, TinymistSession, TrashBackend,
-    TrashError, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
+    TrashError, TypstFormatter, TypstPreviewCompiler, TypstRunner, WorkspaceViewState,
+    WorkspaceViewStore, XdgPortalCapture, AUTOSAVE_FILE, WORKSPACE_VIEW_FILE,
 };
 use glib::value::ToValue;
 use glib::variant::ToVariant;
@@ -243,7 +244,6 @@ fn build_ui(application: &Application) {
     let editor = Rc::new(RefCell::new(None));
     let coordinator = Rc::new(RefCell::new(OperationCoordinator::new()));
     let syncing_buffer = Rc::new(Cell::new(false));
-    let latest_edit_offset = Rc::new(Cell::new(0));
     let autosave_sequence = Arc::new(AtomicU64::new(0));
     let autosave_io = Arc::new(Mutex::new(()));
     let preview_sequence = Rc::new(Cell::new(0));
@@ -503,7 +503,7 @@ fn build_ui(application: &Application) {
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
         preview_content_end: Rc::new(Cell::new(None)),
-        preview_edit_fraction: Rc::new(Cell::new(0.0)),
+        pending_preview_restore: Rc::new(Cell::new(None)),
         go_to_content_end,
         auto_scroll_to_content_end,
         progress_spinner,
@@ -511,7 +511,6 @@ fn build_ui(application: &Application) {
         editor,
         coordinator,
         syncing_buffer,
-        latest_edit_offset,
         autosave_sequence,
         autosave_io,
         preview_sequence,
@@ -554,7 +553,6 @@ fn build_ui(application: &Application) {
     connect_editor_buffer(&project_ui);
     connect_completion_popup(&project_ui);
     connect_diagnostic_hover(&project_ui);
-    connect_editor_autoscroll(&source_view, &source_buffer);
     connect_preview_scale(&project_ui);
     connect_preview_content_navigation(&project_ui);
     connect_project_tree(&project_ui);
@@ -974,7 +972,7 @@ struct ProjectUi {
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
     preview_content_end: Rc<Cell<Option<PreviewContentEnd>>>,
-    preview_edit_fraction: Rc<Cell<f64>>,
+    pending_preview_restore: Rc<Cell<Option<PreviewScrollAnchor>>>,
     go_to_content_end: Button,
     auto_scroll_to_content_end: CheckButton,
     progress_spinner: Spinner,
@@ -982,7 +980,6 @@ struct ProjectUi {
     editor: Rc<RefCell<Option<EditorBridge>>>,
     coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
-    latest_edit_offset: Rc<Cell<i32>>,
     autosave_sequence: Arc<AtomicU64>,
     autosave_io: Arc<Mutex<()>>,
     preview_sequence: Rc<Cell<u64>>,
@@ -1022,6 +1019,7 @@ fn connect_exit_guard(project_ui: &ProjectUi) {
         match exit_ui.exit_state.get().request(dirty) {
             ExitDecision::Allow => {
                 exit_ui.exit_state.set(ExitState::Approved);
+                let _ = save_workspace_view(&exit_ui);
                 stop_tinymist(&exit_ui);
                 glib::Propagation::Proceed
             }
@@ -1114,6 +1112,7 @@ fn start_discard_exit(project_ui: &ProjectUi) {
 }
 
 fn complete_exit(project_ui: &ProjectUi) {
+    let _ = save_workspace_view(project_ui);
     project_ui.exit_state.set(ExitState::Approved);
     if let Some(window) = project_ui.window() {
         window.close();
@@ -1474,8 +1473,6 @@ fn open_project_tree_file(project_ui: &ProjectUi, relative: &Path) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&source);
             project_ui.syncing_buffer.set(false);
-            project_ui.latest_edit_offset.set(0);
-            project_ui.preview_edit_fraction.set(0.0);
             refresh_project_tree(project_ui);
             project_ui.status.set_text(&format!("Opened {}.", relative.display()));
             if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
@@ -1766,20 +1763,6 @@ fn show_delete_project_item_dialog(project_ui: &ProjectUi, path: &Path) {
 }
 
 fn connect_editor_buffer(project_ui: &ProjectUi) {
-    let insert_ui = project_ui.clone();
-    project_ui.source_buffer.connect_insert_text(move |_, location, text| {
-        if !insert_ui.syncing_buffer.get() {
-            insert_ui
-                .latest_edit_offset
-                .set(inserted_edit_character_offset(location.offset(), text));
-        }
-    });
-    let delete_ui = project_ui.clone();
-    project_ui.source_buffer.connect_delete_range(move |_, start, _| {
-        if !delete_ui.syncing_buffer.get() {
-            delete_ui.latest_edit_offset.set(start.offset());
-        }
-    });
     let project_ui = project_ui.clone();
     let buffer = project_ui.source_buffer.clone();
     buffer.connect_changed(move |buffer| {
@@ -1787,7 +1770,6 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
             return;
         }
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-        follow_latest_edit(&project_ui);
         let update = project_ui
             .editor
             .borrow_mut()
@@ -1803,85 +1785,10 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
     });
 }
 
-fn inserted_edit_character_offset(location: i32, text: &str) -> i32 {
-    let inserted = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
-    location.saturating_add(inserted)
-}
-
-fn follow_latest_edit(project_ui: &ProjectUi) {
-    let project_ui = project_ui.clone();
-    glib::idle_add_local_once(move || {
-        let text = project_ui.source_buffer.text(
-            &project_ui.source_buffer.start_iter(),
-            &project_ui.source_buffer.end_iter(),
-            true,
-        );
-        let offset =
-            project_ui.latest_edit_offset.get().clamp(0, project_ui.source_buffer.char_count());
-        let cursor_iter = project_ui.source_buffer.iter_at_offset(offset);
-        project_ui.source_buffer.place_cursor(&cursor_iter);
-        let cursor = byte_offset_for_character(text.as_str(), offset as usize);
-        project_ui.preview_edit_fraction.set(source_edit_fraction(text.as_str(), cursor));
-        project_ui.source_view.scroll_to_mark(
-            &project_ui.source_buffer.get_insert(),
-            0.2,
-            false,
-            0.0,
-            0.0,
-        );
-        if !project_ui.auto_scroll_to_content_end.is_active() {
-            scroll_preview_to_latest_edit(&project_ui);
-        }
-    });
-}
-
 fn scroll_editor_to_latest_edit(view: &sourceview::View, buffer: &sourceview::Buffer) {
     let view = view.clone();
     let insert = buffer.get_insert();
     glib::idle_add_local_once(move || view.scroll_mark_onscreen(&insert));
-}
-
-fn source_edit_fraction(source: &str, cursor: usize) -> f64 {
-    if cursor > source.len() || !source.is_char_boundary(cursor) {
-        return 0.0;
-    }
-    let total_lines = source.bytes().filter(|byte| *byte == b'\n').count();
-    if total_lines == 0 {
-        return 0.0;
-    }
-    let cursor_line = source[..cursor].bytes().filter(|byte| *byte == b'\n').count();
-    cursor_line as f64 / total_lines as f64
-}
-
-fn latest_edit_character_offset(before: &str, after: &str, current: i32) -> i32 {
-    let before_chars = before.chars().count();
-    let after_chars = after.chars().count();
-    if before == after {
-        return current.clamp(0, i32::try_from(after_chars).unwrap_or(i32::MAX));
-    }
-    let prefix =
-        before.chars().zip(after.chars()).take_while(|(left, right)| left == right).count();
-    let suffix = before
-        .chars()
-        .rev()
-        .zip(after.chars().rev())
-        .take((before_chars - prefix).min(after_chars - prefix))
-        .take_while(|(left, right)| left == right)
-        .count();
-    i32::try_from(after_chars - suffix).unwrap_or(i32::MAX)
-}
-
-fn connect_editor_autoscroll(view: &sourceview::View, buffer: &sourceview::Buffer) {
-    let key = gtk::EventControllerKey::new();
-    let view_for_key = view.clone();
-    let buffer_for_key = buffer.clone();
-    key.connect_key_pressed(move |_, key, _, _| {
-        if key == gtk::gdk::Key::Return {
-            preserve_cursor_vertical_position(&view_for_key, &buffer_for_key);
-        }
-        glib::Propagation::Proceed
-    });
-    view.add_controller(key);
 }
 
 fn preserve_cursor_vertical_position(view: &sourceview::View, buffer: &sourceview::Buffer) {
@@ -1922,23 +1829,14 @@ fn undo_or_redo(project_ui: &ProjectUi, redo: bool) {
 
 fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer: bool) {
     if update_buffer {
-        let previous = project_ui.source_buffer.text(
-            &project_ui.source_buffer.start_iter(),
-            &project_ui.source_buffer.end_iter(),
-            true,
-        );
-        let latest_edit = latest_edit_character_offset(
-            previous.as_str(),
-            &state.text,
-            project_ui.source_buffer.cursor_position(),
-        );
+        let cursor_offset = project_ui.source_buffer.cursor_position();
         project_ui.syncing_buffer.set(true);
         project_ui.source_buffer.set_text(&state.text);
-        let cursor = project_ui.source_buffer.iter_at_offset(latest_edit);
+        let cursor = project_ui
+            .source_buffer
+            .iter_at_offset(cursor_offset.clamp(0, project_ui.source_buffer.char_count()));
         project_ui.source_buffer.place_cursor(&cursor);
-        project_ui.latest_edit_offset.set(latest_edit);
         project_ui.syncing_buffer.set(false);
-        follow_latest_edit(project_ui);
     }
     if let Err(error) = project_ui.coordinator.borrow_mut().set_source_revision(state.revision) {
         project_ui.status.set_text(&format!("Error: {error}"));
@@ -3949,6 +3847,8 @@ fn display_preview_pages(
     pages: Vec<Vec<u8>>,
     content_end: Option<PreviewContentEnd>,
 ) -> Result<(), String> {
+    let previous_anchor =
+        preview_scroll_anchor(&project_ui.preview_pages, &project_ui.preview_scroller);
     let mut pictures = Vec::with_capacity(pages.len());
     for png in pages {
         let bytes = glib::Bytes::from_owned(png);
@@ -3972,8 +3872,20 @@ fn display_preview_pages(
         || project_ui.scroll_preview_to_end.replace(false)
     {
         scroll_preview_to_content_end(project_ui);
-    } else {
-        scroll_preview_to_latest_edit_after_layout(project_ui);
+    } else if let Some(anchor) = project_ui.pending_preview_restore.take() {
+        restore_preview_scroll_anchor(
+            &project_ui.preview_pages,
+            &project_ui.preview_scroller,
+            anchor,
+            None,
+        );
+    } else if let Some(anchor) = previous_anchor {
+        restore_preview_scroll_anchor(
+            &project_ui.preview_pages,
+            &project_ui.preview_scroller,
+            anchor,
+            None,
+        );
     }
     Ok(())
 }
@@ -4018,50 +3930,6 @@ fn set_preview_to_content_end(project_ui: &ProjectUi) -> bool {
     true
 }
 
-fn scroll_preview_to_latest_edit(project_ui: &ProjectUi) {
-    schedule_preview_to_latest_edit(project_ui, 1);
-}
-
-fn scroll_preview_to_latest_edit_after_layout(project_ui: &ProjectUi) {
-    schedule_preview_to_latest_edit(project_ui, 10);
-}
-
-fn schedule_preview_to_latest_edit(project_ui: &ProjectUi, attempts: u8) {
-    let generation = project_ui.preview_scroll_generation.get().wrapping_add(1);
-    project_ui.preview_scroll_generation.set(generation);
-    let project_ui = project_ui.clone();
-    let scroll_generation = Rc::clone(&project_ui.preview_scroll_generation);
-    let mut remaining_attempts = attempts.max(1);
-    glib::timeout_add_local(Duration::from_millis(16), move || {
-        if scroll_generation.get() != generation {
-            return glib::ControlFlow::Break;
-        }
-        set_preview_to_latest_edit(&project_ui);
-        remaining_attempts -= 1;
-        if remaining_attempts == 0 {
-            return glib::ControlFlow::Break;
-        }
-        glib::ControlFlow::Continue
-    });
-}
-
-fn set_preview_to_latest_edit(project_ui: &ProjectUi) -> bool {
-    let adjustment = project_ui.preview_scroller.vadjustment();
-    let content_y = preview_content_y(project_ui)
-        .or_else(|| (adjustment.upper() > adjustment.lower()).then(|| adjustment.upper()));
-    let Some(content_y) = content_y else {
-        return false;
-    };
-    adjustment.set_value(preview_edit_scroll_value(
-        adjustment.lower(),
-        adjustment.upper(),
-        adjustment.page_size(),
-        content_y,
-        project_ui.preview_edit_fraction.get(),
-    ));
-    true
-}
-
 fn preview_content_y(project_ui: &ProjectUi) -> Option<f64> {
     let content_end = project_ui.preview_content_end.get()?;
     let page = preview_page(&project_ui.preview_pages, content_end.page)?;
@@ -4073,17 +3941,6 @@ fn preview_content_y(project_ui: &ProjectUi) -> Option<f64> {
         f64::from(bounds.y())
             + f64::from(bounds.height()) * content_end.y_pt / content_end.page_height_pt,
     )
-}
-
-fn preview_edit_scroll_value(
-    lower: f64,
-    upper: f64,
-    page_size: f64,
-    content_y: f64,
-    edit_fraction: f64,
-) -> f64 {
-    let edit_y = lower + (content_y - lower).max(0.0) * edit_fraction.clamp(0.0, 1.0);
-    (edit_y - page_size / 3.0).clamp(lower, preview_scroll_end(lower, upper, page_size))
 }
 
 fn preview_page(pages: &GtkBox, page_number: usize) -> Option<gtk::Widget> {
@@ -4105,6 +3962,33 @@ fn keep_last_editor_line_reachable(scroller: &ScrolledWindow, editor: &sourcevie
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
     (upper - page_size).max(lower)
+}
+
+fn clamped_scroll_value(lower: f64, upper: f64, page_size: f64, value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(lower, preview_scroll_end(lower, upper, page_size))
+    } else {
+        lower
+    }
+}
+
+fn restore_scroll_value(adjustment: &gtk::Adjustment, value: f64, attempts: u8) {
+    let adjustment = adjustment.clone();
+    let mut remaining_attempts = attempts.max(1);
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        adjustment.set_value(clamped_scroll_value(
+            adjustment.lower(),
+            adjustment.upper(),
+            adjustment.page_size(),
+            value,
+        ));
+        remaining_attempts -= 1;
+        if remaining_attempts == 0 {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
 }
 
 fn capture_placeholder_top(iter_y: i32, scroll_y: f64) -> i32 {
@@ -4283,8 +4167,6 @@ fn connect_preview_content_navigation(project_ui: &ProjectUi) {
     project_ui.auto_scroll_to_content_end.connect_toggled(move |toggle| {
         if toggle.is_active() {
             scroll_preview_to_content_end(&project_ui_for_toggle);
-        } else {
-            scroll_preview_to_latest_edit(&project_ui_for_toggle);
         }
     });
 }
@@ -5280,6 +5162,53 @@ fn global_keybinding_store() -> GlobalKeybindingStore {
     GlobalKeybindingStore::new(glib::user_data_dir().join("captee/keybindings.json"))
 }
 
+fn save_workspace_view(project_ui: &ProjectUi) -> Result<(), String> {
+    let snapshot = project_ui.shell.borrow().snapshot();
+    let project = snapshot.app.project.ok_or_else(|| "no active project".to_owned())?;
+    let editor = project_ui.editor.borrow();
+    let editor = editor.as_ref().ok_or_else(|| "no active editor".to_owned())?;
+    let editor_scroll =
+        project_ui.source_view.vadjustment().map_or(0.0, |adjustment| adjustment.value());
+    let preview_anchor =
+        preview_scroll_anchor(&project_ui.preview_pages, &project_ui.preview_scroller)
+            .unwrap_or(PreviewScrollAnchor { page: 1, y_ratio: 0.0 });
+    let state = WorkspaceViewState {
+        document: editor.entry_document().to_string_lossy().into_owned(),
+        cursor_offset: project_ui.source_buffer.cursor_position().max(0) as usize,
+        editor_scroll,
+        preview_page: preview_anchor.page,
+        preview_y_ratio: preview_anchor.y_ratio,
+    };
+    WorkspaceViewStore::new(PathBuf::from(project.root).join(WORKSPACE_VIEW_FILE))
+        .save(&state)
+        .map_err(|error| error.to_string())
+}
+
+fn restore_workspace_view(project_ui: &ProjectUi, state: Option<&WorkspaceViewState>) {
+    let Some(state) = state else {
+        return;
+    };
+    let is_current_document = project_ui
+        .editor
+        .borrow()
+        .as_ref()
+        .is_some_and(|editor| editor.entry_document() == Path::new(&state.document));
+    if !is_current_document {
+        return;
+    }
+    let offset = i32::try_from(state.cursor_offset)
+        .unwrap_or(i32::MAX)
+        .clamp(0, project_ui.source_buffer.char_count());
+    project_ui.source_buffer.place_cursor(&project_ui.source_buffer.iter_at_offset(offset));
+    if let Some(adjustment) = project_ui.source_view.vadjustment() {
+        restore_scroll_value(&adjustment, state.editor_scroll, 30);
+    }
+    project_ui.pending_preview_restore.set(Some(PreviewScrollAnchor {
+        page: state.preview_page,
+        y_ratio: state.preview_y_ratio,
+    }));
+}
+
 fn refresh_recent_projects(project_ui: &ProjectUi) {
     while let Some(child) = project_ui.recent_projects.first_child() {
         project_ui.recent_projects.remove(&child);
@@ -5491,6 +5420,7 @@ struct LoadedProject {
     source: String,
     recovery: Option<RecoveryDraft>,
     recovery_warning: Option<String>,
+    view_state: Option<WorkspaceViewState>,
 }
 
 struct RecoveryDraft {
@@ -5536,6 +5466,7 @@ fn load_project(path: &Path) -> Result<LoadedProject, String> {
         Ok(None) => (None, None),
         Err(error) => (None, Some(format!("Could not read the autosave: {error}"))),
     };
+    let view_state = WorkspaceViewStore::new(path.join(WORKSPACE_VIEW_FILE)).load().ok().flatten();
     Ok(LoadedProject {
         session: ProjectSession::new(
             path.to_string_lossy(),
@@ -5546,6 +5477,7 @@ fn load_project(path: &Path) -> Result<LoadedProject, String> {
         source,
         recovery,
         recovery_warning,
+        view_state,
     })
 }
 
@@ -5573,6 +5505,7 @@ fn open_loaded_project(
             .set_text("Wait for the active operation to finish before opening another project.");
         return false;
     }
+    let _ = save_workspace_view(project_ui);
     let project_identity = match project_ui.coordinator.borrow_mut().activate_project(path) {
         Ok(identity) => identity,
         Err(error) => {
@@ -5606,8 +5539,6 @@ fn open_loaded_project(
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
-            project_ui.latest_edit_offset.set(0);
-            project_ui.preview_edit_fraction.set(0.0);
             *project_ui.render_state.borrow_mut() = RenderState::new(1);
             let _ = project_ui.coordinator.borrow_mut().set_source_revision(1);
             *project_ui.pending_capture.borrow_mut() = None;
@@ -5635,6 +5566,7 @@ fn open_loaded_project(
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
+            restore_workspace_view(project_ui, project.view_state.as_ref());
             project_ui.status.set_text(if created {
                 "Project created. Ready to edit."
             } else {
@@ -5755,6 +5687,7 @@ fn show_recovery_dialog(project_ui: &ProjectUi, recovery: RecoveryDraft) {
 }
 
 fn close_project(project_ui: &ProjectUi) {
+    let _ = save_workspace_view(project_ui);
     let closed = project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject);
     match closed {
         Ok(()) => {
@@ -5766,8 +5699,7 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text("");
             project_ui.syncing_buffer.set(false);
-            project_ui.latest_edit_offset.set(0);
-            project_ui.preview_edit_fraction.set(0.0);
+            project_ui.pending_preview_restore.set(None);
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -5792,11 +5724,10 @@ fn close_project(project_ui: &ProjectUi) {
 mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
-        capture_placeholder_top, completion_anchor_x, completion_index, completion_popup_action,
-        diagnostic_summary_text, inserted_edit_character_offset, insertion_end_offset,
-        is_active_tree_file, latest_edit_character_offset, preview_edit_scroll_value,
-        preview_scroll_end, preview_width, project_parent_folder, recovery_draft,
-        source_edit_fraction, tree_entry_visible, validate_project_name, CompletionPopupAction,
+        capture_placeholder_top, clamped_scroll_value, completion_anchor_x, completion_index,
+        completion_popup_action, diagnostic_summary_text, insertion_end_offset,
+        is_active_tree_file, preview_scroll_end, preview_width, project_parent_folder,
+        recovery_draft, tree_entry_visible, validate_project_name, CompletionPopupAction,
         ExitChoice, ExitDecision, ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
         ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
@@ -5912,26 +5843,10 @@ mod tests {
     }
 
     #[test]
-    fn edit_position_maps_source_and_preview_progress() {
-        let source = "one\ntwo\nthree\nfour";
-        assert_eq!(source_edit_fraction(source, 0), 0.0);
-        assert!((source_edit_fraction(source, 8) - 2.0 / 3.0).abs() < f64::EPSILON);
-        assert_eq!(source_edit_fraction(source, source.len()), 1.0);
-
-        let middle = preview_edit_scroll_value(0.0, 1_000.0, 200.0, 800.0, 0.5);
-        assert!((middle - (400.0 - 200.0 / 3.0)).abs() < f64::EPSILON);
-        let end = preview_edit_scroll_value(0.0, 1_000.0, 200.0, 800.0, 2.0);
-        assert!((end - (800.0 - 200.0 / 3.0)).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn latest_edit_offset_tracks_insertions_replacements_and_unicode() {
-        assert_eq!(inserted_edit_character_offset(4, "two "), 8);
-        assert_eq!(inserted_edit_character_offset(1, "é"), 2);
-        assert_eq!(latest_edit_character_offset("one end", "one two end", 0), 8);
-        assert_eq!(latest_edit_character_offset("one two end", "one end", 0), 4);
-        assert_eq!(latest_edit_character_offset("aéz", "aêz", 0), 2);
-        assert_eq!(latest_edit_character_offset("same", "same", 2), 2);
+    fn restored_scroll_value_stays_inside_the_viewport_range() {
+        assert_eq!(clamped_scroll_value(0.0, 1_000.0, 200.0, -1.0), 0.0);
+        assert_eq!(clamped_scroll_value(0.0, 1_000.0, 200.0, 400.0), 400.0);
+        assert_eq!(clamped_scroll_value(0.0, 1_000.0, 200.0, 900.0), 800.0);
     }
 
     #[test]

@@ -38,11 +38,12 @@ The application SHALL use the bundled Tinymist language server to provide contex
 - **THEN** a tiny transparent indicator at the editor's bottom-right shows a centered white cross on red with the error count
 - **AND** when there are no current errors it shows a centered white tick on green with “No errors”
 
-#### Scenario: Follow the latest edit
+#### Scenario: Restore the reopened workspace view
 
-- **WHEN** source changes through typing or a programmatic edit
-- **THEN** the exact latest-edit offset is retained for the active session and the caret moves there and remains visible in the editor viewport
-- **AND** the preview scrolls to the corresponding source progress after the edit and once the next rendered page layout is ready
+- **WHEN** the user closes and later reopens a project
+- **THEN** the editor restores the saved caret and editor viewport from project-local hidden view state
+- **AND** the preview restores its saved viewport after the first rendered page layout is ready
+- **AND** ordinary edits and renders do not force either pane to a different position
 
 #### Scenario: Tinymist unavailable
 

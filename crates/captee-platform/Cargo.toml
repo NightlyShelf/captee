@@ -11,6 +11,7 @@ async-io.workspace = true
 captee-core = { version = "0.1.0", path = "../captee-core" }
 futures-util.workspace = true
 png.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
 

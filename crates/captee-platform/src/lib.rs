@@ -27,7 +27,8 @@ pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
 pub use persistence::{
     GlobalKeybindingError, GlobalKeybindingStore, PersistenceError, ProjectDocumentPersistence,
-    RecentProjectError, RecentProjectStore, AUTOSAVE_FILE,
+    RecentProjectError, RecentProjectStore, WorkspaceViewError, WorkspaceViewState,
+    WorkspaceViewStore, AUTOSAVE_FILE, WORKSPACE_VIEW_FILE,
 };
 pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent, GlobalShortcutRegistration};
 pub use tinymist::{

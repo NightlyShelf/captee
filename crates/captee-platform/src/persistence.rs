@@ -1,10 +1,101 @@
 use crate::{atomic_write, AtomicWriteError, AutosaveStore, PathError, ProjectPaths};
 use captee_core::{DocumentPersistence, KeybindingSettings, RecentProjects};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const AUTOSAVE_FILE: &str = ".captee-autosave";
+pub const WORKSPACE_VIEW_FILE: &str = ".captee-view.json";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceViewState {
+    pub document: String,
+    pub cursor_offset: usize,
+    pub editor_scroll: f64,
+    pub preview_page: usize,
+    pub preview_y_ratio: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceViewStore {
+    path: PathBuf,
+}
+
+impl WorkspaceViewStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn load(&self) -> Result<Option<WorkspaceViewState>, WorkspaceViewError> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&self.path).map_err(WorkspaceViewError::Io)?;
+        let state = serde_json::from_slice::<WorkspaceViewState>(&bytes)
+            .map_err(WorkspaceViewError::Serialization)?;
+        Ok(Some(state.normalized()))
+    }
+
+    pub fn save(&self, state: &WorkspaceViewState) -> Result<(), WorkspaceViewError> {
+        let parent = self.path.parent().ok_or_else(|| {
+            WorkspaceViewError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "workspace view path has no parent",
+            ))
+        })?;
+        fs::create_dir_all(parent).map_err(WorkspaceViewError::Io)?;
+        let payload = serde_json::to_vec_pretty(&state.clone().normalized())
+            .map_err(WorkspaceViewError::Serialization)?;
+        atomic_write(&self.path, &payload).map_err(WorkspaceViewError::Atomic)
+    }
+}
+
+impl WorkspaceViewState {
+    fn normalized(mut self) -> Self {
+        self.editor_scroll = nonnegative_value(self.editor_scroll);
+        self.preview_page = self.preview_page.max(1);
+        self.preview_y_ratio = normalized_value(self.preview_y_ratio);
+        self
+    }
+}
+
+fn nonnegative_value(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn normalized_value(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+#[derive(Debug)]
+pub enum WorkspaceViewError {
+    Io(std::io::Error),
+    Serialization(serde_json::Error),
+    Atomic(AtomicWriteError),
+}
+
+impl fmt::Display for WorkspaceViewError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "workspace view I/O failed: {error}"),
+            Self::Serialization(error) => {
+                write!(formatter, "workspace view data is invalid: {error}")
+            }
+            Self::Atomic(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceViewError {}
 
 #[derive(Debug, Clone)]
 pub struct GlobalKeybindingStore {
@@ -281,6 +372,25 @@ mod tests {
 
         assert!(store.exists());
         assert_eq!(store.load().expect("load"), keybindings);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn workspace_view_is_persisted_in_the_project() {
+        let root = test_root("workspace-view");
+        let store = WorkspaceViewStore::new(root.join(WORKSPACE_VIEW_FILE));
+        assert_eq!(store.load().expect("empty view"), None);
+
+        let state = WorkspaceViewState {
+            document: "main.typ".to_owned(),
+            cursor_offset: 42,
+            editor_scroll: 640.0,
+            preview_page: 3,
+            preview_y_ratio: 0.75,
+        };
+        store.save(&state).expect("save view");
+
+        assert_eq!(store.load().expect("load view"), Some(state));
         fs::remove_dir_all(root).expect("cleanup");
     }
 }
