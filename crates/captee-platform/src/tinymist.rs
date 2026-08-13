@@ -30,6 +30,7 @@ pub struct TinymistCompletion {
     pub label: String,
     pub insert_text: String,
     pub range: Option<LspRange>,
+    pub is_snippet: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,7 +439,8 @@ fn parse_completion_items(result: &Value) -> Vec<TinymistCompletion> {
             let range = text_edit.and_then(|edit| {
                 edit.get("range").or_else(|| edit.get("insert")).and_then(parse_range)
             });
-            Some(TinymistCompletion { label, insert_text, range })
+            let is_snippet = item.get("insertTextFormat").and_then(Value::as_u64) == Some(2);
+            Some(TinymistCompletion { label, insert_text, range, is_snippet })
         })
         .collect()
 }
@@ -516,6 +518,7 @@ mod tests {
     fn parses_completion_list_and_text_edit() {
         let result = json!({"items":[{
             "label":"image",
+            "insertTextFormat":2,
             "textEdit":{
                 "newText":"image(\"\")",
                 "range":{
@@ -527,6 +530,7 @@ mod tests {
         let items = parse_completion_items(&result);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].insert_text, "image(\"\")");
+        assert!(items[0].is_snippet);
         assert_eq!(items[0].range.expect("range").start, LspPosition { line: 2, character: 1 });
     }
 

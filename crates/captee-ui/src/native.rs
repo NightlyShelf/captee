@@ -2,7 +2,7 @@ use crate::annotation_bridge::AnnotationDraft;
 use crate::capture_review::CaptureReview;
 use crate::editor_assistance::{
     completion_response_is_current, diagnostics_response_is_current, has_typst_command_prefix,
-    lsp_position, lsp_range_to_bytes, tinymist_completion_edit,
+    lsp_position, tinymist_completion_edit, visible_lsp_range_to_bytes,
 };
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
@@ -2017,6 +2017,7 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
     };
     let start_chars = current.text[..edit.range.start].chars().count() as i32;
     let end_chars = current.text[..edit.range.end].chars().count() as i32;
+    let replacement_cursor_chars = edit.replacement[..edit.cursor].chars().count() as i32;
     let replacement = edit.replacement;
     let state = project_ui
         .editor
@@ -2036,7 +2037,9 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
         project_ui.source_buffer.delete(&mut start, &mut end);
         let mut insert = project_ui.source_buffer.iter_at_offset(start_chars);
         project_ui.source_buffer.insert(&mut insert, &replacement);
-        project_ui.source_buffer.place_cursor(&insert);
+        let replacement_cursor =
+            project_ui.source_buffer.iter_at_offset(start_chars + replacement_cursor_chars);
+        project_ui.source_buffer.place_cursor(&replacement_cursor);
         project_ui.syncing_buffer.set(false);
         apply_editor_state(project_ui, &state, false);
         if let Some((adjustment, value)) = scroll {
@@ -2067,7 +2070,7 @@ fn apply_main_diagnostics(
     };
     let mut markers = Vec::new();
     for diagnostic in diagnostics {
-        let Some(range) = lsp_range_to_bytes(&state.text, diagnostic.range) else {
+        let Some(range) = visible_lsp_range_to_bytes(&state.text, diagnostic.range) else {
             continue;
         };
         let start_offset = state.text[..range.start].chars().count() as i32;
@@ -2338,16 +2341,25 @@ fn accept_capture_completion(project_ui: &ProjectUi, index: usize) {
         };
         let start_chars = assistance.text[..edit.range.start].chars().count() as i32;
         let end_chars = assistance.text[..edit.range.end].chars().count() as i32;
+        let replacement_cursor_chars = edit.replacement[..edit.cursor].chars().count() as i32;
         assistance.suppress_completion = true;
         assistance.popover.popdown();
-        (assistance.buffer.clone(), start_chars, end_chars, edit.replacement)
+        (
+            assistance.buffer.clone(),
+            start_chars,
+            end_chars,
+            replacement_cursor_chars,
+            edit.replacement,
+        )
     };
-    let (buffer, start_chars, end_chars, replacement) = edit;
+    let (buffer, start_chars, end_chars, replacement_cursor_chars, replacement) = edit;
     let mut start = buffer.iter_at_offset(start_chars);
     let mut end = buffer.iter_at_offset(end_chars);
     buffer.delete(&mut start, &mut end);
     let mut insert = buffer.iter_at_offset(start_chars);
     buffer.insert(&mut insert, &replacement);
+    let replacement_cursor = buffer.iter_at_offset(start_chars + replacement_cursor_chars);
+    buffer.place_cursor(&replacement_cursor);
 }
 
 fn apply_capture_diagnostics(
@@ -2364,7 +2376,7 @@ fn apply_capture_diagnostics(
     assistance.buffer.remove_tag(&assistance.warning_tag, &start, &end);
     assistance.markers.clear();
     for diagnostic in diagnostics {
-        let Some(range) = lsp_range_to_bytes(&assistance.text, diagnostic.range) else {
+        let Some(range) = visible_lsp_range_to_bytes(&assistance.text, diagnostic.range) else {
             continue;
         };
         let start_offset = assistance.text[..range.start].chars().count() as i32;

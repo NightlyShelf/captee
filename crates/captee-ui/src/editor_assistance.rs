@@ -5,6 +5,7 @@ use std::ops::Range;
 pub struct CompletionEdit {
     pub range: Range<usize>,
     pub replacement: String,
+    pub cursor: usize,
 }
 
 /// Return byte range of the command prefix immediately before cursor.
@@ -42,6 +43,18 @@ pub fn lsp_range_to_bytes(source: &str, range: LspRange) -> Option<Range<usize>>
     (start <= end).then_some(start..end)
 }
 
+pub fn visible_lsp_range_to_bytes(source: &str, range: LspRange) -> Option<Range<usize>> {
+    let range = lsp_range_to_bytes(source, range)?;
+    if range.start != range.end {
+        return Some(range);
+    }
+    if range.start > 0 {
+        let start = source[..range.start].char_indices().next_back()?.0;
+        return Some(start..range.end);
+    }
+    source.chars().next().map(|character| range.start..character.len_utf8())
+}
+
 pub fn tinymist_completion_edit(
     source: &str,
     cursor: usize,
@@ -56,8 +69,76 @@ pub fn tinymist_completion_edit(
     {
         range.start += 1;
     }
-    (range.end <= source.len())
-        .then(|| CompletionEdit { range, replacement: item.insert_text.clone() })
+    if range.end > source.len() {
+        return None;
+    }
+    let (replacement, cursor) = if item.is_snippet {
+        plain_text_snippet(&item.insert_text)
+    } else {
+        (item.insert_text.clone(), item.insert_text.len())
+    };
+    Some(CompletionEdit { range, replacement, cursor })
+}
+
+fn plain_text_snippet(snippet: &str) -> (String, usize) {
+    let bytes = snippet.as_bytes();
+    let mut output = String::with_capacity(snippet.len());
+    let mut first_tab_stop = None;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 1 < bytes.len() {
+            output.push(bytes[index + 1] as char);
+            index += 2;
+            continue;
+        }
+        if bytes[index] != b'$' {
+            let character = snippet[index..].chars().next().expect("character boundary");
+            output.push(character);
+            index += character.len_utf8();
+            continue;
+        }
+        let start = index;
+        index += 1;
+        if index < bytes.len() && bytes[index].is_ascii_digit() {
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            first_tab_stop.get_or_insert(output.len());
+            continue;
+        }
+        if index < bytes.len() && bytes[index] == b'{' {
+            index += 1;
+            let number_start = index;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            if number_start == index {
+                output.push('$');
+                index = start + 1;
+                continue;
+            }
+            first_tab_stop.get_or_insert(output.len());
+            if index < bytes.len() && bytes[index] == b':' {
+                index += 1;
+                let default_start = index;
+                while index < bytes.len() && bytes[index] != b'}' {
+                    index += 1;
+                }
+                output.push_str(&snippet[default_start..index]);
+            } else {
+                while index < bytes.len() && bytes[index] != b'}' {
+                    index += 1;
+                }
+            }
+            if index < bytes.len() {
+                index += 1;
+            }
+            continue;
+        }
+        output.push('$');
+    }
+    let cursor = first_tab_stop.unwrap_or(output.len());
+    (output, cursor)
 }
 
 pub fn has_typst_command_prefix(source: &str, cursor: usize) -> bool {
@@ -129,10 +210,36 @@ mod tests {
 
     #[test]
     fn tinymist_edit_preserves_hash_for_plain_insert_text() {
-        let item =
-            TinymistCompletion { label: "image".into(), insert_text: "image".into(), range: None };
+        let item = TinymistCompletion {
+            label: "image".into(),
+            insert_text: "image".into(),
+            range: None,
+            is_snippet: false,
+        };
         let edit = tinymist_completion_edit("#im", 3, &item).expect("edit");
         assert_eq!(edit.range, 1..3);
+    }
+
+    #[test]
+    fn snippet_placeholders_are_hidden_and_cursor_uses_first_tab_stop() {
+        let item = TinymistCompletion {
+            label: "align".into(),
+            insert_text: "align(${1:})$0".into(),
+            range: None,
+            is_snippet: true,
+        };
+        let edit = tinymist_completion_edit("#ali", 4, &item).expect("edit");
+        assert_eq!(edit.replacement, "align()");
+        assert_eq!(edit.cursor, 6);
+    }
+
+    #[test]
+    fn zero_width_diagnostic_marks_the_previous_character() {
+        let range = LspRange {
+            start: LspPosition { line: 0, character: 1 },
+            end: LspPosition { line: 0, character: 1 },
+        };
+        assert_eq!(visible_lsp_range_to_bytes("#", range), Some(0..1));
     }
 
     #[test]

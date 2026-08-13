@@ -14,12 +14,14 @@
 - [x] 2.4 Remove the built-in completion provider, manual completion command and button, and completion keybinding from defaults, persistence, migration, and Settings.
 - [x] 2.5 Keep keyboard focus in the editor while showing a compact, bounded rectangular suggestion list, and preserve the editor scroll position when accepting a suggestion.
 - [x] 2.6 Do not request completion merely because a project opened; show the borderless list inline with the caret after an actual editing trigger.
+- [x] 2.7 Convert Tinymist snippet placeholders to clean inserted text and place the caret at the first tab stop instead of exposing raw `${…}` syntax.
 
 ## 3. Diagnostic markers
 
 - [x] 3.1 Map current Tinymist error and warning diagnostics with source ranges to severity-colored curvy source-view underlines.
 - [x] 3.2 Show the diagnostic message when the user hovers its underline, clear markers immediately after source changes, and apply only diagnostics for the current document version.
 - [x] 3.3 Keep the last successful preview visible when current Tinymist diagnostics contain errors.
+- [x] 3.4 Render zero-width Tinymist diagnostics on the adjacent source character so incomplete input such as a lone `#` remains visible.
 
 ## 4. Project navigation and exit safety
 
