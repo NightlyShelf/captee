@@ -474,6 +474,7 @@ fn build_ui(application: &Application) {
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
         preview_content_end: Rc::new(Cell::new(None)),
+        preview_edit_fraction: Rc::new(Cell::new(0.0)),
         go_to_content_end,
         auto_scroll_to_content_end,
         progress_spinner,
@@ -937,6 +938,7 @@ struct ProjectUi {
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
     preview_content_end: Rc<Cell<Option<PreviewContentEnd>>>,
+    preview_edit_fraction: Rc<Cell<f64>>,
     go_to_content_end: Button,
     auto_scroll_to_content_end: CheckButton,
     progress_spinner: Spinner,
@@ -1732,6 +1734,13 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
             return;
         }
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+        let cursor =
+            byte_offset_for_character(text.as_str(), buffer.cursor_position().max(0) as usize);
+        project_ui.preview_edit_fraction.set(source_edit_fraction(text.as_str(), cursor));
+        scroll_editor_to_latest_edit(&project_ui.source_view, buffer);
+        if !project_ui.auto_scroll_to_content_end.is_active() {
+            scroll_preview_to_latest_edit(&project_ui);
+        }
         let update = project_ui
             .editor
             .borrow_mut()
@@ -1745,6 +1754,24 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
             Some(Ok(None)) | None => {}
         }
     });
+}
+
+fn scroll_editor_to_latest_edit(view: &sourceview::View, buffer: &sourceview::Buffer) {
+    let view = view.clone();
+    let insert = buffer.get_insert();
+    glib::idle_add_local_once(move || view.scroll_mark_onscreen(&insert));
+}
+
+fn source_edit_fraction(source: &str, cursor: usize) -> f64 {
+    if cursor > source.len() || !source.is_char_boundary(cursor) {
+        return 0.0;
+    }
+    let total_lines = source.bytes().filter(|byte| *byte == b'\n').count();
+    if total_lines == 0 {
+        return 0.0;
+    }
+    let cursor_line = source[..cursor].bytes().filter(|byte| *byte == b'\n').count();
+    cursor_line as f64 / total_lines as f64
 }
 
 fn connect_editor_autoscroll(view: &sourceview::View, buffer: &sourceview::Buffer) {
@@ -3177,9 +3204,11 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let update_placeholder_when_ready = Rc::clone(&update_placeholder_position);
     glib::idle_add_local_once(move || update_placeholder_when_ready());
     let code_placeholder_for_change = code_placeholder.clone();
+    let code_view_for_change = code_view.clone();
     let assistance_ui = project_ui.clone();
     code_buffer.connect_changed(move |buffer| {
         code_placeholder_for_change.set_visible(buffer.char_count() == annotation_offset);
+        scroll_editor_to_latest_edit(&code_view_for_change, buffer);
         sync_capture_assistance(&assistance_ui);
     });
     panel.append(&code_editor);
@@ -3797,6 +3826,8 @@ fn display_preview_pages(
         || project_ui.scroll_preview_to_end.replace(false)
     {
         scroll_preview_to_content_end(project_ui);
+    } else {
+        scroll_preview_to_latest_edit(project_ui);
     }
     Ok(())
 }
@@ -3830,23 +3861,61 @@ fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
 }
 
 fn set_preview_to_content_end(project_ui: &ProjectUi) -> bool {
-    let Some(content_end) = project_ui.preview_content_end.get() else {
-        return false;
-    };
-    let Some(page) = preview_page(&project_ui.preview_pages, content_end.page) else {
-        return false;
-    };
-    let Some(bounds) = page.compute_bounds(&project_ui.preview_pages) else {
-        return false;
-    };
     let adjustment = project_ui.preview_scroller.vadjustment();
-    let content_y = f64::from(bounds.y())
-        + f64::from(bounds.height()) * content_end.y_pt / content_end.page_height_pt;
+    let Some(content_y) = preview_content_y(project_ui) else {
+        return false;
+    };
     adjustment.set_value((content_y - adjustment.page_size() / 3.0).clamp(
         adjustment.lower(),
         preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
     ));
     true
+}
+
+fn scroll_preview_to_latest_edit(project_ui: &ProjectUi) {
+    let generation = project_ui.preview_scroll_generation.get().wrapping_add(1);
+    project_ui.preview_scroll_generation.set(generation);
+    let project_ui = project_ui.clone();
+    let scroll_generation = Rc::clone(&project_ui.preview_scroll_generation);
+    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+        if scroll_generation.get() != generation {
+            return;
+        }
+        set_preview_to_latest_edit(&project_ui);
+    });
+}
+
+fn set_preview_to_latest_edit(project_ui: &ProjectUi) {
+    let adjustment = project_ui.preview_scroller.vadjustment();
+    let content_y = preview_content_y(project_ui).unwrap_or_else(|| adjustment.upper());
+    adjustment.set_value(preview_edit_scroll_value(
+        adjustment.lower(),
+        adjustment.upper(),
+        adjustment.page_size(),
+        content_y,
+        project_ui.preview_edit_fraction.get(),
+    ));
+}
+
+fn preview_content_y(project_ui: &ProjectUi) -> Option<f64> {
+    let content_end = project_ui.preview_content_end.get()?;
+    let page = preview_page(&project_ui.preview_pages, content_end.page)?;
+    let bounds = page.compute_bounds(&project_ui.preview_pages)?;
+    Some(
+        f64::from(bounds.y())
+            + f64::from(bounds.height()) * content_end.y_pt / content_end.page_height_pt,
+    )
+}
+
+fn preview_edit_scroll_value(
+    lower: f64,
+    upper: f64,
+    page_size: f64,
+    content_y: f64,
+    edit_fraction: f64,
+) -> f64 {
+    let edit_y = lower + (content_y - lower).max(0.0) * edit_fraction.clamp(0.0, 1.0);
+    (edit_y - page_size / 3.0).clamp(lower, preview_scroll_end(lower, upper, page_size))
 }
 
 fn preview_page(pages: &GtkBox, page_number: usize) -> Option<gtk::Widget> {
@@ -4046,6 +4115,8 @@ fn connect_preview_content_navigation(project_ui: &ProjectUi) {
     project_ui.auto_scroll_to_content_end.connect_toggled(move |toggle| {
         if toggle.is_active() {
             scroll_preview_to_content_end(&project_ui_for_toggle);
+        } else {
+            scroll_preview_to_latest_edit(&project_ui_for_toggle);
         }
     });
 }
@@ -5550,11 +5621,11 @@ mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
         capture_placeholder_top, completion_anchor_x, completion_index, completion_popup_action,
-        insertion_end_offset, is_active_tree_file, preview_scroll_end, preview_width,
-        project_parent_folder, recovery_draft, tree_entry_visible, validate_project_name,
-        CompletionPopupAction, ExitChoice, ExitDecision, ExitState, PreviewScale,
-        ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
-        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        insertion_end_offset, is_active_tree_file, preview_edit_scroll_value, preview_scroll_end,
+        preview_width, project_parent_folder, recovery_draft, source_edit_fraction,
+        tree_entry_visible, validate_project_name, CompletionPopupAction, ExitChoice, ExitDecision,
+        ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY,
+        EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5665,6 +5736,19 @@ mod tests {
         assert_eq!(completion_anchor_x(960, 300, 1100), 715);
         assert_eq!(completion_anchor_x(960, 300, 400), 400);
         assert_eq!(completion_anchor_x(960, 300, -20), 55);
+    }
+
+    #[test]
+    fn edit_position_maps_source_and_preview_progress() {
+        let source = "one\ntwo\nthree\nfour";
+        assert_eq!(source_edit_fraction(source, 0), 0.0);
+        assert!((source_edit_fraction(source, 8) - 2.0 / 3.0).abs() < f64::EPSILON);
+        assert_eq!(source_edit_fraction(source, source.len()), 1.0);
+
+        let middle = preview_edit_scroll_value(0.0, 1_000.0, 200.0, 800.0, 0.5);
+        assert!((middle - (400.0 - 200.0 / 3.0)).abs() < f64::EPSILON);
+        let end = preview_edit_scroll_value(0.0, 1_000.0, 200.0, 800.0, 2.0);
+        assert!((end - (800.0 - 200.0 / 3.0)).abs() < f64::EPSILON);
     }
 
     #[test]
