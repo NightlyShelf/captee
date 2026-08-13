@@ -4,6 +4,7 @@
 - [x] 1.2 Add a testable stdio JSON-RPC client that starts one Tinymist LSP process for the active project, initializes it with the project root, and stops it on project close or application exit.
 - [x] 1.3 Synchronize the main source and capture-review virtual Typst documents with Tinymist, and reject responses for stale document versions.
 - [x] 1.4 Keep editing, saving, formatting, preview, and export usable with a clear status message when Tinymist cannot start or exits unexpectedly.
+- [x] 1.5 Install the pinned Tinymist binary in source-development setup and reveal startup failures even when the status bar was hidden.
 
 ## 2. Completion popup
 

@@ -4157,7 +4157,7 @@ fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
     match event {
         TinymistEvent::Failed(message) => {
             project_ui.tinymist_session.borrow_mut().take();
-            project_ui.status.set_text(&message);
+            report_tinymist_unavailable(project_ui, &message);
         }
         TinymistEvent::Completion { uri, version, request_id, items } => {
             let current = project_ui.tinymist_document.borrow().as_ref().is_some_and(|document| {
@@ -4211,6 +4211,13 @@ fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
             }
         }
     }
+}
+
+fn report_tinymist_unavailable(project_ui: &ProjectUi, message: &str) {
+    let message = message.strip_prefix("Tinymist ").unwrap_or(message);
+    project_ui.status.set_text(&format!("Tinymist unavailable: {message}"));
+    project_ui.status_row.set_visible(true);
+    project_ui.status_bar_item.set_label(Some(status_bar_action_label(true)));
 }
 
 fn apply_operation_result(
@@ -4590,7 +4597,7 @@ fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult)
                     open_tinymist_document(project_ui);
                 }
                 Err(message) => {
-                    project_ui.status.set_text(&format!("Tinymist unavailable: {message}"));
+                    report_tinymist_unavailable(project_ui, &message);
                 }
             }
         }
@@ -5149,7 +5156,7 @@ fn open_loaded_project(
                 });
                 start_tinymist(project_ui, project_identity.clone(), path.to_path_buf());
             } else {
-                project_ui.status.set_text("Tinymist unavailable: invalid project source URI.");
+                report_tinymist_unavailable(project_ui, "invalid project source URI");
             }
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
