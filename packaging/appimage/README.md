@@ -18,8 +18,9 @@ when the embedded tool can provide a runtime. This keeps downloads and trust
 decisions outside the build script. The output is written below
 `dist/appimage/` and must be tested on a clean Ubuntu 22.04 VM before release.
 
-The script also fetches and verifies the pinned Typst archive into the AppDir
-using `tools/fetch-typst.sh`. Record the exact linuxdeploy, plugin,
+The script also fetches and verifies the pinned Typst and Tinymist archives
+into the AppDir using `tools/fetch-typst.sh` and `tools/fetch-tinymist.sh`.
+Record the exact linuxdeploy, plugin,
 appimagetool, and runtime versions and SHA-256 digests with each artifact.
 
 The desktop entry is `packaging/appimage/com.nightlyshelf.captee.desktop`.

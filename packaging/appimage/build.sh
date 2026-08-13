@@ -36,6 +36,7 @@ cargo build --release --manifest-path "$project_root/Cargo.toml" -p captee-ui
 cp "$project_root/target/release/captee-ui" "$appdir/usr/bin/captee-ui"
 cp "$desktop_file" "$appdir/usr/share/applications/com.nightlyshelf.captee.desktop"
 "$project_root/tools/fetch-typst.sh" "$appdir/usr/share/captee/typst"
+"$project_root/tools/fetch-tinymist.sh" "$appdir/usr/share/captee/tinymist"
 
 export PATH="$(dirname "$gtk_plugin"):$PATH"
 cd "$build_root"

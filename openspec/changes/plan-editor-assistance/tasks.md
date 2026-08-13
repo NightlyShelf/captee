@@ -1,6 +1,6 @@
 ## 1. Tinymist integration
 
-- [ ] 1.1 Pin the Tinymist 0.14.6 x86_64 Linux release matching Typst 0.14.2, verify its checksum, and bundle its binary, license, and applicable notices in the AppImage.
+- [x] 1.1 Pin the Tinymist 0.14.6 x86_64 Linux release matching Typst 0.14.2, verify its checksum, and bundle its binary, license, and applicable notices in the AppImage.
 - [ ] 1.2 Add a testable stdio JSON-RPC client that starts one Tinymist LSP process for the active project, initializes it with the project root, and stops it on project close or application exit.
 - [ ] 1.3 Synchronize the main source and capture-review virtual Typst documents with Tinymist, and reject responses for stale document versions.
 - [ ] 1.4 Keep editing, saving, formatting, preview, and export usable with a clear status message when Tinymist cannot start or exits unexpectedly.
