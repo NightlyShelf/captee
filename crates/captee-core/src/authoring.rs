@@ -1,4 +1,4 @@
-//! Formatter, completion, and literal search/replace boundaries.
+//! Formatter and literal search/replace boundaries.
 
 use std::fmt;
 use std::ops::Range;
@@ -9,12 +9,6 @@ pub trait Formatter {
     type Error;
 
     fn format(&self, source: &str) -> Result<String, Self::Error>;
-}
-
-pub trait CompletionProvider {
-    type Error;
-
-    fn complete(&self, source: &str, cursor: usize) -> Result<Vec<CompletionItem>, Self::Error>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -28,28 +22,6 @@ impl CancellationToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
-}
-
-pub fn request_completions<P: CompletionProvider>(
-    provider: &P,
-    source: &str,
-    cursor: usize,
-    cancellation: &CancellationToken,
-) -> Result<Operation<Vec<CompletionItem>>, P::Error> {
-    if cancellation.is_cancelled() {
-        return Ok(Operation::Cancelled);
-    }
-    let completions = provider.complete(source, cursor)?;
-    if cancellation.is_cancelled() {
-        return Ok(Operation::Cancelled);
-    }
-    Ok(Operation::Completed(completions))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionItem {
-    pub label: String,
-    pub insert_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,24 +92,9 @@ mod tests {
         }
     }
 
-    struct StaticCompleter;
-
-    impl CompletionProvider for StaticCompleter {
-        type Error = AuthoringError;
-
-        fn complete(
-            &self,
-            _source: &str,
-            _cursor: usize,
-        ) -> Result<Vec<CompletionItem>, Self::Error> {
-            Ok(vec![CompletionItem { label: "heading".to_owned(), insert_text: "= ".to_owned() }])
-        }
-    }
-
     #[test]
-    fn formatter_and_completion_are_trait_boundaries() {
+    fn formatter_is_a_trait_boundary() {
         assert_eq!(IdentityFormatter.format(" note ").expect("format"), "note");
-        assert_eq!(StaticCompleter.complete("#", 1).expect("completion").len(), 1);
     }
 
     #[test]
@@ -153,15 +110,5 @@ mod tests {
     #[test]
     fn cancelled_replace_does_not_mutate_source() {
         assert_eq!(replace_literal("a", "a", "b", false).expect("cancel"), Operation::Cancelled);
-    }
-
-    #[test]
-    fn cancelled_completion_is_not_applied() {
-        let cancellation = CancellationToken::default();
-        cancellation.cancel();
-        assert_eq!(
-            request_completions(&StaticCompleter, "#", 1, &cancellation).expect("cancel"),
-            Operation::Cancelled
-        );
     }
 }

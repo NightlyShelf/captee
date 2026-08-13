@@ -18,7 +18,6 @@ pub enum OperationKind {
     Save,
     Format,
     FindReplace,
-    Completion,
     Capture,
     Preview,
     Export,
@@ -337,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_preserves_project_state() {
+    fn completed_operation_preserves_project_state() {
         let mut store = opened_store();
         let project = store.state().project.clone();
         store

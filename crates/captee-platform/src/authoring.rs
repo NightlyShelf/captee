@@ -1,6 +1,5 @@
 use crate::{atomic_write, TypstRunner};
-use captee_core::{parse_diagnostics, CompletionItem, CompletionProvider, Diagnostic, Formatter};
-use std::convert::Infallible;
+use captee_core::{parse_diagnostics, Diagnostic, Formatter};
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
@@ -88,43 +87,6 @@ impl fmt::Display for TypstFormatError {
 
 impl std::error::Error for TypstFormatError {}
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TypstCompletionProvider;
-
-impl CompletionProvider for TypstCompletionProvider {
-    type Error = Infallible;
-
-    fn complete(&self, source: &str, cursor: usize) -> Result<Vec<CompletionItem>, Self::Error> {
-        if cursor > source.len() || !source.is_char_boundary(cursor) {
-            return Ok(Vec::new());
-        }
-        let prefix = source[..cursor]
-            .split(|character: char| {
-                !(character.is_alphanumeric() || character == '#' || character == '-')
-            })
-            .next_back()
-            .unwrap_or_default();
-        let items = [
-            ("#figure", "#figure(\n  ,\n  caption: [],\n)"),
-            ("#heading", "#heading[]"),
-            ("#image", "#image(\"img/\")"),
-            ("#let", "#let name = "),
-            ("#set", "#set "),
-            ("#show", "#show: "),
-            ("#table", "#table(\n  columns: (),\n)"),
-            ("#text", "#text[]"),
-        ];
-        Ok(items
-            .into_iter()
-            .filter(|(label, _)| prefix.is_empty() || label.starts_with(prefix))
-            .map(|(label, insert_text)| CompletionItem {
-                label: label.to_owned(),
-                insert_text: insert_text.to_owned(),
-            })
-            .collect())
-    }
-}
-
 fn diagnostics_from_output(output: &Output) -> Vec<Diagnostic> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -149,14 +111,6 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn completion_filters_known_typst_constructs_by_prefix() {
-        let completions = TypstCompletionProvider.complete("#im", 3).expect("completion");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].label, "#image");
-        assert!(TypstCompletionProvider.complete("#im", 99).expect("boundary").is_empty());
-    }
 
     #[cfg(unix)]
     #[test]

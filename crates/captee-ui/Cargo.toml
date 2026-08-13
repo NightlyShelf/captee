@@ -6,8 +6,8 @@ license.workspace = true
 description = "Captee GTK desktop application shell"
 
 [dependencies]
-captee-core = { path = "../captee-core" }
-captee-platform = { path = "../captee-platform" }
+captee-core = { version = "0.1.0", path = "../captee-core" }
+captee-platform = { version = "0.1.0", path = "../captee-platform" }
 gtk4 = { version = "0.11.4", features = ["v4_6"] }
 sourceview5 = "0.11.2"
 

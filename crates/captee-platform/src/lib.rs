@@ -12,12 +12,13 @@ mod export;
 mod paths;
 mod persistence;
 mod shortcuts;
+mod tinymist;
 mod typst;
 mod workspace;
 
 pub use assets::{insert_saved_asset, AssetError, AssetStore, SavedAsset};
 pub use atomic::{atomic_write, AtomicWriteError, AutosaveSnapshot, AutosaveStore};
-pub use authoring::{FormattedSource, TypstCompletionProvider, TypstFormatError, TypstFormatter};
+pub use authoring::{FormattedSource, TypstFormatError, TypstFormatter};
 pub use capture::{
     current_capture_origin, current_desktop_prefers_fallback_capture, place_capture_review_window,
     CaptureOrigin, CaptureSelector, GrimSlurpCapture, PngAnnotationBackend, XdgPortalCapture,
@@ -26,9 +27,15 @@ pub use export::{export_pdf, PdfExportError};
 pub use paths::{PathError, ProjectPaths};
 pub use persistence::{
     GlobalKeybindingError, GlobalKeybindingStore, PersistenceError, ProjectDocumentPersistence,
-    RecentProjectError, RecentProjectStore, AUTOSAVE_FILE,
+    RecentProjectError, RecentProjectStore, WorkspaceViewError, WorkspaceViewState,
+    WorkspaceViewStore, AUTOSAVE_FILE, WORKSPACE_VIEW_FILE,
 };
 pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent, GlobalShortcutRegistration};
+pub use tinymist::{
+    capture_review_uri, document_uri, tinymist_function_arguments, LspPosition, LspRange,
+    TinymistCompletion, TinymistDiagnostic, TinymistDiagnosticSeverity, TinymistError,
+    TinymistEvent, TinymistRunner, TinymistSession,
+};
 pub use typst::{
     AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewContentEnd, PreviewError,
     PreviewHandle, PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,

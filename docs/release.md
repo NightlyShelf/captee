@@ -41,6 +41,8 @@ development packages from the runner, and these downloaded tool inputs:
 
 Typst 0.14.2 is fetched and checked separately using the pinned archive and
 digest in [docs/third-party-typst.md](third-party-typst.md).
+Tinymist 0.14.6 is fetched and checked separately using the pinned archive and
+digest in [docs/third-party-tinymist.md](third-party-tinymist.md).
 
 ## Project layout and recovery
 
@@ -67,13 +69,19 @@ fallback setting is enabled. On Wayland, grant the desktop portal permission
 when prompted. On X11 or minimal compositors, install and test `grim` and
 `slurp` if the fallback is required.
 
-## Bundled Typst and licensing
+## Bundled authoring tools and licensing
 
 The release bundles Typst 0.14.2 from the pinned upstream archive. The archive
 digest, source URL, and retained upstream `LICENSE`/`NOTICE` files are recorded
 in [docs/third-party-typst.md](third-party-typst.md). Do not replace the
 compiler binary without updating that manifest and the preview/diagnostic
 fixtures.
+
+The release also bundles Tinymist 0.14.6 for local LSP completion and
+diagnostics. Its archive digest, source URL, and retained Apache-2.0 license
+are recorded in
+[docs/third-party-tinymist.md](third-party-tinymist.md). Do not replace the
+language-server binary without updating that manifest and LSP fixtures.
 
 ## Troubleshooting
 

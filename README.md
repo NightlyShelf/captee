@@ -26,6 +26,7 @@ sudo apt-get install libgtk-4-dev libgtksourceview-5-dev
 git clone https://github.com/NightlyShelf/captee.git
 cd captee
 ./tools/fetch-typst.sh
+./tools/fetch-tinymist.sh
 ```
 
 ## Build and run
