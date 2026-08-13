@@ -37,7 +37,6 @@ pub enum ShortcutAction {
     Save,
     Format,
     FindReplace,
-    Completion,
     Capture,
     Preview,
     Export,
@@ -54,7 +53,6 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { accelerator: "<Primary>s", action: ShortcutAction::Save },
     Shortcut { accelerator: "<Primary><Shift>f", action: ShortcutAction::Format },
     Shortcut { accelerator: "<Primary>f", action: ShortcutAction::FindReplace },
-    Shortcut { accelerator: "<Primary>space", action: ShortcutAction::Completion },
     Shortcut { accelerator: "<Primary>asciitilde", action: ShortcutAction::Capture },
     Shortcut { accelerator: "<Primary>r", action: ShortcutAction::Preview },
     Shortcut { accelerator: "<Primary><Shift>e", action: ShortcutAction::Export },
@@ -138,7 +136,6 @@ pub enum UiCommand {
     Save,
     Format,
     FindReplace,
-    Completion,
     Capture,
     StoreCapture,
     Preview,
@@ -268,9 +265,6 @@ impl UiShell {
             UiCommand::Format => self.start(OperationKind::Format, true, "Formatting")?,
             UiCommand::FindReplace => {
                 self.start(OperationKind::FindReplace, true, "Finding and replacing")?
-            }
-            UiCommand::Completion => {
-                self.start(OperationKind::Completion, true, "Finding completions")?
             }
             UiCommand::Capture => self.start(OperationKind::Capture, true, "Capturing")?,
             UiCommand::StoreCapture => {

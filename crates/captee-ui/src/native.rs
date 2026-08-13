@@ -1,6 +1,8 @@
 use crate::annotation_bridge::AnnotationDraft;
 use crate::capture_review::CaptureReview;
-use crate::editor_assistance::{completion_edit, typst_completions};
+use crate::editor_assistance::{
+    has_typst_command_prefix, lsp_position, lsp_range_to_bytes, tinymist_completion_edit,
+};
 use crate::editor_bridge::{EditorBridge, EditorInsertionBridge, EditorState};
 use crate::operation::{
     drain_ready_results, OperationCoordinator, OperationOutcome, ProjectIdentity,
@@ -11,21 +13,21 @@ use crate::{
     UiCommand, UiShell,
 };
 use captee_core::{
-    replace_literal, request_completions, Activity, AnnotatedImage, Annotation, AnnotationBackend,
-    AnnotationResult, CaptureBackend, CaptureResult, CapturedImage, CompletionItem, EditorInserter,
-    InsertionResult, KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession,
-    ProjectSettings, RecentProject, RenderState, SourceDocument,
+    replace_literal, Activity, AnnotatedImage, Annotation, AnnotationBackend, AnnotationResult,
+    CaptureBackend, CaptureResult, CapturedImage, EditorInserter, InsertionResult,
+    KeybindingSettings, Operation, OperationKind, ProjectConfig, ProjectSession, ProjectSettings,
+    RecentProject, RenderState, SourceDocument,
 };
 use captee_platform::{
-    confirm_and_trash, create_project, create_project_item,
-    current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
-    open_project, register_capture_shortcut, rename_project_item, save_project_settings,
-    AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
-    FormattedSource, GlobalKeybindingStore, GlobalShortcutEvent, GlobalShortcutRegistration,
-    GrimSlurpCapture, PngAnnotationBackend, PreviewContentEnd, PreviewOutcome,
-    ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
-    TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
-    XdgPortalCapture, AUTOSAVE_FILE,
+    capture_review_uri, confirm_and_trash, create_project, create_project_item,
+    current_desktop_prefers_fallback_capture, document_uri, export_pdf, list_project_tree,
+    move_project_item, open_project, register_capture_shortcut, rename_project_item,
+    save_project_settings, AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore,
+    CaptureSelector, FormattedSource, GlobalKeybindingStore, GlobalShortcutEvent,
+    GlobalShortcutRegistration, GrimSlurpCapture, PngAnnotationBackend, PreviewContentEnd,
+    PreviewOutcome, ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset,
+    TinymistCompletion, TinymistDiagnosticSeverity, TinymistEvent, TinymistSession, TrashBackend,
+    TrashError, TypstFormatter, TypstPreviewCompiler, TypstRunner, XdgPortalCapture, AUTOSAVE_FILE,
 };
 use glib::value::ToValue;
 use glib::variant::ToVariant;
@@ -55,7 +57,6 @@ const APPLICATION_ID: &str = "com.nightlyshelf.captee";
 enum WorkspaceOperationResult {
     Saved { document: SourceDocument, formatted: bool },
     Formatted(FormattedSource),
-    Completions { items: Vec<CompletionItem>, cursor: usize },
     AuthoringFailure { message: String },
     Preview(PreviewOutcome),
     Exported(PathBuf),
@@ -83,6 +84,40 @@ const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
 enum BackgroundResult {
     Autosave { source: SourceIdentity, result: Result<(), String> },
     RecentProject { project: ProjectIdentity, result: Result<(), String> },
+    TinymistStarted { project: ProjectIdentity, result: Result<TinymistSession, String> },
+}
+
+#[derive(Debug, Clone)]
+struct TinymistDocumentState {
+    uri: String,
+    version: i32,
+    text: String,
+    opened: bool,
+    latest_completion_request: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiagnosticMarker {
+    start: i32,
+    end: i32,
+    message: String,
+}
+
+struct CaptureAssistanceState {
+    uri: String,
+    version: i32,
+    text: String,
+    opened: bool,
+    latest_completion_request: Option<u64>,
+    buffer: sourceview::Buffer,
+    view: sourceview::View,
+    popover: Popover,
+    list: ListBox,
+    items: Vec<TinymistCompletion>,
+    error_tag: gtk::TextTag,
+    warning_tag: gtk::TextTag,
+    markers: Vec<DiagnosticMarker>,
+    suppress_completion: bool,
 }
 
 /// Starts the GTK application with a project home screen and workspace shell.
@@ -165,6 +200,18 @@ fn build_ui(application: &Application) {
 
     let source_buffer = sourceview::Buffer::builder().highlight_matching_brackets(true).build();
     configure_typst_buffer(&source_buffer);
+    let diagnostic_error_tag = gtk::TextTag::builder()
+        .name("tinymist-error")
+        .underline(gtk::pango::Underline::Error)
+        .underline_rgba(&gtk::gdk::RGBA::new(0.95, 0.28, 0.28, 1.0))
+        .build();
+    let diagnostic_warning_tag = gtk::TextTag::builder()
+        .name("tinymist-warning")
+        .underline(gtk::pango::Underline::Error)
+        .underline_rgba(&gtk::gdk::RGBA::new(0.95, 0.67, 0.20, 1.0))
+        .build();
+    source_buffer.tag_table().add(&diagnostic_error_tag);
+    source_buffer.tag_table().add(&diagnostic_warning_tag);
     let source_view = sourceview::View::with_buffer(&source_buffer);
     source_view.set_show_line_numbers(true);
     source_view.set_monospace(true);
@@ -173,6 +220,13 @@ fn build_ui(application: &Application) {
     source_view.set_bottom_margin(1);
     source_view.add_css_class("typst-editor");
     source_view.set_tooltip_text(Some("Typst source editor"));
+    let completion_popover = Popover::new();
+    completion_popover.set_parent(&source_view);
+    completion_popover.set_autohide(true);
+    let completion_list = ListBox::new();
+    completion_list.set_selection_mode(gtk::SelectionMode::Single);
+    completion_list.set_activate_on_single_click(true);
+    completion_popover.set_child(Some(&completion_list));
 
     let status = Label::new(Some("Ready. Create or open a project to begin."));
     status.set_xalign(0.0);
@@ -260,6 +314,13 @@ fn build_ui(application: &Application) {
         stack: stack.clone(),
         source_buffer: source_buffer.clone(),
         source_view: source_view.clone(),
+        completion_popover,
+        completion_list,
+        completion_items: Rc::new(RefCell::new(Vec::new())),
+        suppress_completion: Rc::new(Cell::new(false)),
+        diagnostic_error_tag,
+        diagnostic_warning_tag,
+        diagnostic_markers: Rc::new(RefCell::new(Vec::new())),
         project_label: project_label.clone(),
         recent_projects: recent_projects.clone(),
         project_tree: project_tree.clone(),
@@ -292,6 +353,9 @@ fn build_ui(application: &Application) {
         preview_scroll_generation,
         global_keybindings,
         global_capture_shortcut: Rc::new(RefCell::new(None)),
+        tinymist_session: Rc::new(RefCell::new(None)),
+        tinymist_document: Rc::new(RefCell::new(None)),
+        capture_assistance: Rc::new(RefCell::new(None)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -317,6 +381,8 @@ fn build_ui(application: &Application) {
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
+    connect_completion_popup(&project_ui);
+    connect_diagnostic_hover(&project_ui);
     connect_editor_autoscroll(&source_view, &source_buffer);
     connect_preview_scale(&project_ui);
     connect_preview_content_navigation(&project_ui);
@@ -550,7 +616,6 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
     let edit = gio::Menu::new();
     append_menu_action(&edit, "Format", "app.format");
     append_menu_action(&edit, "Find and Replace", "app.find-replace");
-    append_menu_action(&edit, "Completion", "app.completion");
     append_menu_action(&edit, "Undo", "app.undo");
     append_menu_action(&edit, "Redo", "app.redo");
     let capture = gio::Menu::new();
@@ -572,7 +637,6 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("save", "<Primary>s"),
         ("format", "<Primary><Shift>f"),
         ("find-replace", "<Primary>f"),
-        ("completion", "<Primary>space"),
         ("undo", "<Primary>z"),
         ("redo", "<Primary><Shift>z"),
         ("capture", "<Primary>asciitilde"),
@@ -643,11 +707,6 @@ fn connect_ui_actions(project_ui: &ProjectUi, application: &Application) {
     let find_ui = project_ui.clone();
     action.connect_activate(move |_, _| show_find_replace_dialog(&find_ui));
 
-    let action = application.lookup_action("completion").expect("installed completion action");
-    let action = action.downcast::<gio::SimpleAction>().expect("simple action");
-    let completion_ui = project_ui.clone();
-    action.connect_activate(move |_, _| start_completion(&completion_ui));
-
     let action = application.lookup_action("preview").expect("installed preview action");
     let action = action.downcast::<gio::SimpleAction>().expect("simple action");
     let preview_ui = project_ui.clone();
@@ -697,6 +756,13 @@ struct ProjectUi {
     stack: Stack,
     source_buffer: sourceview::Buffer,
     source_view: sourceview::View,
+    completion_popover: Popover,
+    completion_list: ListBox,
+    completion_items: Rc<RefCell<Vec<TinymistCompletion>>>,
+    suppress_completion: Rc<Cell<bool>>,
+    diagnostic_error_tag: gtk::TextTag,
+    diagnostic_warning_tag: gtk::TextTag,
+    diagnostic_markers: Rc<RefCell<Vec<DiagnosticMarker>>>,
     project_label: Label,
     recent_projects: GtkBox,
     project_tree: ListBox,
@@ -729,6 +795,9 @@ struct ProjectUi {
     preview_scroll_generation: Rc<Cell<u64>>,
     global_keybindings: Rc<RefCell<KeybindingSettings>>,
     global_capture_shortcut: Rc<RefCell<Option<GlobalShortcutRegistration>>>,
+    tinymist_session: Rc<RefCell<Option<TinymistSession>>>,
+    tinymist_document: Rc<RefCell<Option<TinymistDocumentState>>>,
+    capture_assistance: Rc<RefCell<Option<CaptureAssistanceState>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -880,7 +949,6 @@ fn sync_operation_feedback(project_ui: &ProjectUi) {
         "save",
         "format",
         "find-replace",
-        "completion",
         "undo",
         "redo",
         "capture",
@@ -1494,8 +1562,565 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
         return;
     }
     refresh_project_label(project_ui);
+    clear_diagnostic_markers(project_ui);
+    sync_tinymist_source(project_ui, state);
+    request_tinymist_completion(project_ui, state);
     schedule_autosave(project_ui, state);
     schedule_preview(project_ui, state);
+}
+
+fn tinymist_version(revision: u64) -> i32 {
+    i32::try_from(revision).unwrap_or(i32::MAX)
+}
+
+fn sync_tinymist_source(project_ui: &ProjectUi, state: &EditorState) {
+    let mut document = project_ui.tinymist_document.borrow_mut();
+    let Some(document) = document.as_mut() else {
+        return;
+    };
+    document.version = tinymist_version(state.revision);
+    document.text.clone_from(&state.text);
+    document.latest_completion_request = None;
+    if !document.opened {
+        return;
+    }
+    let result =
+        project_ui.tinymist_session.borrow().as_ref().map(|session| {
+            session.change_document(&document.uri, document.version, &document.text)
+        });
+    if let Some(Err(error)) = result {
+        project_ui.status.set_text(&format!("Tinymist synchronization failed: {error}"));
+    }
+}
+
+fn start_tinymist(project_ui: &ProjectUi, project: ProjectIdentity, root: PathBuf) {
+    let sender = project_ui.background_sender.clone();
+    let _ = thread::Builder::new().name("captee-tinymist-start".to_owned()).spawn(move || {
+        let result = TinymistSession::start(&root).map_err(|error| error.to_string());
+        let _ = sender.send(BackgroundResult::TinymistStarted { project, result });
+    });
+}
+
+fn stop_tinymist(project_ui: &ProjectUi) {
+    close_capture_assistance(project_ui);
+    project_ui.tinymist_document.borrow_mut().take();
+    if let Some(mut session) = project_ui.tinymist_session.borrow_mut().take() {
+        session.shutdown();
+    }
+}
+
+fn open_tinymist_document(project_ui: &ProjectUi) {
+    let opened = {
+        let mut document = project_ui.tinymist_document.borrow_mut();
+        let Some(document) = document.as_mut() else {
+            return;
+        };
+        let result =
+            project_ui.tinymist_session.borrow().as_ref().map(|session| {
+                session.open_document(&document.uri, document.version, &document.text)
+            });
+        match result {
+            Some(Ok(())) => {
+                document.opened = true;
+                true
+            }
+            Some(Err(error)) => {
+                project_ui.status.set_text(&format!("Tinymist document setup failed: {error}"));
+                false
+            }
+            None => false,
+        }
+    };
+    if opened {
+        if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
+            request_tinymist_completion(project_ui, &state);
+        }
+    }
+    open_capture_assistance(project_ui);
+}
+
+fn request_tinymist_completion(project_ui: &ProjectUi, state: &EditorState) {
+    if project_ui.suppress_completion.replace(false) {
+        project_ui.completion_popover.popdown();
+        return;
+    }
+    let cursor_chars = project_ui.source_buffer.cursor_position().max(0) as usize;
+    let cursor = byte_offset_for_character(&state.text, cursor_chars);
+    if !has_typst_command_prefix(&state.text, cursor) {
+        project_ui.completion_popover.popdown();
+        project_ui.completion_items.borrow_mut().clear();
+        if let Some(document) = project_ui.tinymist_document.borrow_mut().as_mut() {
+            document.latest_completion_request = None;
+        }
+        return;
+    }
+    let Some(position) = lsp_position(&state.text, cursor) else {
+        return;
+    };
+    let mut document = project_ui.tinymist_document.borrow_mut();
+    let Some(document) = document.as_mut() else {
+        return;
+    };
+    if !document.opened || document.version != tinymist_version(state.revision) {
+        return;
+    }
+    let request = project_ui
+        .tinymist_session
+        .borrow()
+        .as_ref()
+        .map(|session| session.request_completion(&document.uri, document.version, position));
+    match request {
+        Some(Ok(request_id)) => document.latest_completion_request = Some(request_id),
+        Some(Err(error)) => {
+            project_ui.status.set_text(&format!("Tinymist completion failed: {error}"));
+        }
+        None => {}
+    }
+}
+
+fn connect_completion_popup(project_ui: &ProjectUi) {
+    let row_ui = project_ui.clone();
+    project_ui.completion_list.connect_row_activated(move |_, row| {
+        accept_main_completion(&row_ui, row.index().max(0) as usize);
+    });
+
+    let key = gtk::EventControllerKey::new();
+    let key_ui = project_ui.clone();
+    key.connect_key_pressed(move |_, pressed, _, _| {
+        if !key_ui.completion_popover.is_visible() {
+            return glib::Propagation::Proceed;
+        }
+        let selected = key_ui.completion_list.selected_row();
+        let index = selected.as_ref().map_or(0, ListBoxRow::index);
+        if pressed == gtk::gdk::Key::Down {
+            if let Some(row) = key_ui.completion_list.row_at_index(index + 1) {
+                key_ui.completion_list.select_row(Some(&row));
+            }
+            return glib::Propagation::Stop;
+        }
+        if pressed == gtk::gdk::Key::Up {
+            if let Some(row) = key_ui.completion_list.row_at_index((index - 1).max(0)) {
+                key_ui.completion_list.select_row(Some(&row));
+            }
+            return glib::Propagation::Stop;
+        }
+        if matches!(pressed, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab) {
+            accept_main_completion(&key_ui, index.max(0) as usize);
+            return glib::Propagation::Stop;
+        }
+        if pressed == gtk::gdk::Key::Escape {
+            key_ui.completion_popover.popdown();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    project_ui.source_view.add_controller(key);
+}
+
+fn show_main_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>) {
+    while let Some(child) = project_ui.completion_list.first_child() {
+        project_ui.completion_list.remove(&child);
+    }
+    *project_ui.completion_items.borrow_mut() = items;
+    for item in project_ui.completion_items.borrow().iter() {
+        let row = ListBoxRow::new();
+        let label = Label::new(Some(&item.label));
+        label.set_xalign(0.0);
+        label.set_margin_top(4);
+        label.set_margin_bottom(4);
+        label.set_margin_start(8);
+        label.set_margin_end(8);
+        row.set_child(Some(&label));
+        project_ui.completion_list.append(&row);
+    }
+    let Some(first) = project_ui.completion_list.row_at_index(0) else {
+        project_ui.completion_popover.popdown();
+        return;
+    };
+    project_ui.completion_list.select_row(Some(&first));
+    let cursor = project_ui.source_buffer.iter_at_mark(&project_ui.source_buffer.get_insert());
+    let location = project_ui.source_view.iter_location(&cursor);
+    let (x, y) = project_ui.source_view.buffer_to_window_coords(
+        gtk::TextWindowType::Widget,
+        location.x(),
+        location.y() + location.height(),
+    );
+    project_ui.completion_popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+        x,
+        y,
+        1,
+        location.height().max(1),
+    )));
+    project_ui.completion_popover.popup();
+}
+
+fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
+    let Some(item) = project_ui.completion_items.borrow().get(index).cloned() else {
+        return;
+    };
+    let cursor_chars = project_ui.source_buffer.cursor_position().max(0) as usize;
+    let state = project_ui.editor.borrow().as_ref().map(EditorBridge::state);
+    let Some(current) = state else {
+        return;
+    };
+    let cursor = byte_offset_for_character(&current.text, cursor_chars);
+    let Some(edit) = tinymist_completion_edit(&current.text, cursor, &item) else {
+        return;
+    };
+    let state = project_ui
+        .editor
+        .borrow_mut()
+        .as_mut()
+        .and_then(|editor| editor.replace_range(edit.range, &edit.replacement).ok());
+    if let Some(state) = state {
+        project_ui.suppress_completion.set(true);
+        project_ui.completion_popover.popdown();
+        apply_editor_state(project_ui, &state, true);
+        project_ui.status.set_text(&format!("Inserted {}.", item.label));
+    }
+}
+
+fn clear_diagnostic_markers(project_ui: &ProjectUi) {
+    let start = project_ui.source_buffer.start_iter();
+    let end = project_ui.source_buffer.end_iter();
+    project_ui.source_buffer.remove_tag(&project_ui.diagnostic_error_tag, &start, &end);
+    project_ui.source_buffer.remove_tag(&project_ui.diagnostic_warning_tag, &start, &end);
+    project_ui.diagnostic_markers.borrow_mut().clear();
+    project_ui.source_view.set_tooltip_text(Some("Typst source editor"));
+}
+
+fn apply_main_diagnostics(
+    project_ui: &ProjectUi,
+    diagnostics: Vec<captee_platform::TinymistDiagnostic>,
+) {
+    clear_diagnostic_markers(project_ui);
+    let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
+        return;
+    };
+    let mut markers = Vec::new();
+    for diagnostic in diagnostics {
+        let Some(range) = lsp_range_to_bytes(&state.text, diagnostic.range) else {
+            continue;
+        };
+        let start_offset = state.text[..range.start].chars().count() as i32;
+        let end_offset = state.text[..range.end].chars().count() as i32;
+        let start = project_ui.source_buffer.iter_at_offset(start_offset);
+        let end = project_ui.source_buffer.iter_at_offset(end_offset);
+        let tag = match diagnostic.severity {
+            TinymistDiagnosticSeverity::Error => &project_ui.diagnostic_error_tag,
+            TinymistDiagnosticSeverity::Warning => &project_ui.diagnostic_warning_tag,
+        };
+        project_ui.source_buffer.apply_tag(tag, &start, &end);
+        markers.push(DiagnosticMarker {
+            start: start_offset,
+            end: end_offset.max(start_offset + 1),
+            message: diagnostic.message,
+        });
+    }
+    *project_ui.diagnostic_markers.borrow_mut() = markers;
+}
+
+fn connect_diagnostic_hover(project_ui: &ProjectUi) {
+    let motion = gtk::EventControllerMotion::new();
+    let hover_ui = project_ui.clone();
+    motion.connect_motion(move |_, x, y| {
+        let (buffer_x, buffer_y) = hover_ui.source_view.window_to_buffer_coords(
+            gtk::TextWindowType::Widget,
+            x as i32,
+            y as i32,
+        );
+        let message = hover_ui.source_view.iter_at_location(buffer_x, buffer_y).and_then(|iter| {
+            let offset = iter.offset();
+            hover_ui
+                .diagnostic_markers
+                .borrow()
+                .iter()
+                .find(|marker| marker.start <= offset && offset < marker.end)
+                .map(|marker| marker.message.clone())
+        });
+        hover_ui
+            .source_view
+            .set_tooltip_text(Some(message.as_deref().unwrap_or("Typst source editor")));
+    });
+    let leave_ui = project_ui.clone();
+    motion.connect_leave(move |_| {
+        leave_ui.source_view.set_tooltip_text(Some("Typst source editor"));
+    });
+    project_ui.source_view.add_controller(motion);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_capture_assistance(
+    project_ui: &ProjectUi,
+    buffer: &sourceview::Buffer,
+    view: &sourceview::View,
+    popover: &Popover,
+    list: &ListBox,
+    text: &str,
+    error_tag: gtk::TextTag,
+    warning_tag: gtk::TextTag,
+) {
+    close_capture_assistance(project_ui);
+    let Some(root) =
+        project_ui.shell.borrow().snapshot().app.project.map(|project| PathBuf::from(project.root))
+    else {
+        return;
+    };
+    let Some(uri) = capture_review_uri(&root) else {
+        return;
+    };
+    *project_ui.capture_assistance.borrow_mut() = Some(CaptureAssistanceState {
+        uri,
+        version: 1,
+        text: text.to_owned(),
+        opened: false,
+        latest_completion_request: None,
+        buffer: buffer.clone(),
+        view: view.clone(),
+        popover: popover.clone(),
+        list: list.clone(),
+        items: Vec::new(),
+        error_tag,
+        warning_tag,
+        markers: Vec::new(),
+        suppress_completion: false,
+    });
+    open_capture_assistance(project_ui);
+
+    let motion = gtk::EventControllerMotion::new();
+    let hover_ui = project_ui.clone();
+    motion.connect_motion(move |_, x, y| {
+        let assistance = hover_ui.capture_assistance.borrow();
+        let Some(assistance) = assistance.as_ref() else {
+            return;
+        };
+        let (buffer_x, buffer_y) = assistance.view.window_to_buffer_coords(
+            gtk::TextWindowType::Widget,
+            x as i32,
+            y as i32,
+        );
+        let message = assistance.view.iter_at_location(buffer_x, buffer_y).and_then(|iter| {
+            let offset = iter.offset();
+            assistance
+                .markers
+                .iter()
+                .find(|marker| marker.start <= offset && offset < marker.end)
+                .map(|marker| marker.message.as_str())
+        });
+        assistance
+            .view
+            .set_tooltip_text(Some(message.unwrap_or("Typst annotation at the insertion point")));
+    });
+    let leave_ui = project_ui.clone();
+    motion.connect_leave(move |_| {
+        if let Some(assistance) = leave_ui.capture_assistance.borrow().as_ref() {
+            assistance.view.set_tooltip_text(Some("Typst annotation at the insertion point"));
+        }
+    });
+    view.add_controller(motion);
+}
+
+fn open_capture_assistance(project_ui: &ProjectUi) {
+    let mut assistance = project_ui.capture_assistance.borrow_mut();
+    let Some(assistance) = assistance.as_mut() else {
+        return;
+    };
+    if assistance.opened {
+        return;
+    }
+    let result = project_ui.tinymist_session.borrow().as_ref().map(|session| {
+        session.open_document(&assistance.uri, assistance.version, &assistance.text)
+    });
+    if let Some(Ok(())) = result {
+        assistance.opened = true;
+    }
+}
+
+fn close_capture_assistance(project_ui: &ProjectUi) {
+    let assistance = project_ui.capture_assistance.borrow_mut().take();
+    if let Some(assistance) = assistance {
+        if assistance.opened {
+            if let Some(session) = project_ui.tinymist_session.borrow().as_ref() {
+                let _ = session.close_document(&assistance.uri);
+            }
+        }
+        assistance.popover.popdown();
+    }
+}
+
+fn sync_capture_assistance(project_ui: &ProjectUi) {
+    let changed = {
+        let mut assistance = project_ui.capture_assistance.borrow_mut();
+        let Some(assistance) = assistance.as_mut() else {
+            return;
+        };
+        let text = assistance
+            .buffer
+            .text(&assistance.buffer.start_iter(), &assistance.buffer.end_iter(), true)
+            .to_string();
+        if text == assistance.text {
+            return;
+        }
+        assistance.text = text;
+        assistance.version = assistance.version.saturating_add(1);
+        assistance.latest_completion_request = None;
+        let start = assistance.buffer.start_iter();
+        let end = assistance.buffer.end_iter();
+        assistance.buffer.remove_tag(&assistance.error_tag, &start, &end);
+        assistance.buffer.remove_tag(&assistance.warning_tag, &start, &end);
+        assistance.markers.clear();
+        if assistance.suppress_completion {
+            assistance.suppress_completion = false;
+            assistance.popover.popdown();
+        }
+        assistance
+            .opened
+            .then(|| (assistance.uri.clone(), assistance.version, assistance.text.clone()))
+    };
+    if let Some((uri, version, text)) = changed {
+        if let Some(session) = project_ui.tinymist_session.borrow().as_ref() {
+            if let Err(error) = session.change_document(&uri, version, &text) {
+                project_ui.status.set_text(&format!("Tinymist synchronization failed: {error}"));
+            }
+        }
+    }
+    request_capture_completion(project_ui);
+}
+
+fn request_capture_completion(project_ui: &ProjectUi) {
+    let mut assistance = project_ui.capture_assistance.borrow_mut();
+    let Some(assistance) = assistance.as_mut() else {
+        return;
+    };
+    if assistance.suppress_completion {
+        assistance.suppress_completion = false;
+        assistance.popover.popdown();
+        return;
+    }
+    let cursor_chars = assistance.buffer.cursor_position().max(0) as usize;
+    let cursor = byte_offset_for_character(&assistance.text, cursor_chars);
+    if !has_typst_command_prefix(&assistance.text, cursor) {
+        assistance.latest_completion_request = None;
+        assistance.items.clear();
+        assistance.popover.popdown();
+        return;
+    }
+    let Some(position) = lsp_position(&assistance.text, cursor) else {
+        return;
+    };
+    if !assistance.opened {
+        return;
+    }
+    let result =
+        project_ui.tinymist_session.borrow().as_ref().map(|session| {
+            session.request_completion(&assistance.uri, assistance.version, position)
+        });
+    if let Some(Ok(request_id)) = result {
+        assistance.latest_completion_request = Some(request_id);
+    }
+}
+
+fn show_capture_completions(project_ui: &ProjectUi, items: Vec<TinymistCompletion>) {
+    let mut assistance = project_ui.capture_assistance.borrow_mut();
+    let Some(assistance) = assistance.as_mut() else {
+        return;
+    };
+    while let Some(child) = assistance.list.first_child() {
+        assistance.list.remove(&child);
+    }
+    assistance.items = items;
+    for item in &assistance.items {
+        let row = ListBoxRow::new();
+        let label = Label::new(Some(&item.label));
+        label.set_xalign(0.0);
+        label.set_margin_top(4);
+        label.set_margin_bottom(4);
+        label.set_margin_start(8);
+        label.set_margin_end(8);
+        row.set_child(Some(&label));
+        assistance.list.append(&row);
+    }
+    let Some(first) = assistance.list.row_at_index(0) else {
+        assistance.popover.popdown();
+        return;
+    };
+    assistance.list.select_row(Some(&first));
+    let cursor = assistance.buffer.iter_at_mark(&assistance.buffer.get_insert());
+    let location = assistance.view.iter_location(&cursor);
+    let (x, y) = assistance.view.buffer_to_window_coords(
+        gtk::TextWindowType::Widget,
+        location.x(),
+        location.y() + location.height(),
+    );
+    assistance.popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+        x,
+        y,
+        1,
+        location.height().max(1),
+    )));
+    assistance.popover.popup();
+}
+
+fn accept_capture_completion(project_ui: &ProjectUi, index: usize) {
+    let edit = {
+        let mut assistance = project_ui.capture_assistance.borrow_mut();
+        let Some(assistance) = assistance.as_mut() else {
+            return;
+        };
+        let Some(item) = assistance.items.get(index) else {
+            return;
+        };
+        let cursor_chars = assistance.buffer.cursor_position().max(0) as usize;
+        let cursor = byte_offset_for_character(&assistance.text, cursor_chars);
+        let Some(edit) = tinymist_completion_edit(&assistance.text, cursor, item) else {
+            return;
+        };
+        let start_chars = assistance.text[..edit.range.start].chars().count() as i32;
+        let end_chars = assistance.text[..edit.range.end].chars().count() as i32;
+        assistance.suppress_completion = true;
+        assistance.popover.popdown();
+        (assistance.buffer.clone(), start_chars, end_chars, edit.replacement)
+    };
+    let (buffer, start_chars, end_chars, replacement) = edit;
+    let mut start = buffer.iter_at_offset(start_chars);
+    let mut end = buffer.iter_at_offset(end_chars);
+    buffer.delete(&mut start, &mut end);
+    let mut insert = buffer.iter_at_offset(start_chars);
+    buffer.insert(&mut insert, &replacement);
+}
+
+fn apply_capture_diagnostics(
+    project_ui: &ProjectUi,
+    diagnostics: Vec<captee_platform::TinymistDiagnostic>,
+) {
+    let mut assistance = project_ui.capture_assistance.borrow_mut();
+    let Some(assistance) = assistance.as_mut() else {
+        return;
+    };
+    let start = assistance.buffer.start_iter();
+    let end = assistance.buffer.end_iter();
+    assistance.buffer.remove_tag(&assistance.error_tag, &start, &end);
+    assistance.buffer.remove_tag(&assistance.warning_tag, &start, &end);
+    assistance.markers.clear();
+    for diagnostic in diagnostics {
+        let Some(range) = lsp_range_to_bytes(&assistance.text, diagnostic.range) else {
+            continue;
+        };
+        let start_offset = assistance.text[..range.start].chars().count() as i32;
+        let end_offset = assistance.text[..range.end].chars().count() as i32;
+        let start = assistance.buffer.iter_at_offset(start_offset);
+        let end = assistance.buffer.iter_at_offset(end_offset);
+        let tag = match diagnostic.severity {
+            TinymistDiagnosticSeverity::Error => &assistance.error_tag,
+            TinymistDiagnosticSeverity::Warning => &assistance.warning_tag,
+        };
+        assistance.buffer.apply_tag(tag, &start, &end);
+        assistance.markers.push(DiagnosticMarker {
+            start: start_offset,
+            end: end_offset.max(start_offset + 1),
+            message: diagnostic.message,
+        });
+    }
 }
 
 fn schedule_preview(project_ui: &ProjectUi, state: &EditorState) {
@@ -1668,47 +2293,6 @@ fn start_format(project_ui: &ProjectUi) {
                     })
                 }
             }
-        };
-        let _ = task.finish(outcome);
-    });
-}
-
-fn start_completion(project_ui: &ProjectUi) {
-    let Some(source) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
-        project_ui.status.set_text("No entry document is active.");
-        return;
-    };
-    let character_offset = project_ui.source_buffer.cursor_position().max(0) as usize;
-    let cursor = byte_offset_for_character(&source.text, character_offset);
-    if let Err(error) = project_ui.shell.borrow_mut().dispatch(UiCommand::Completion) {
-        project_ui.status.set_text(&format!("Error: {error}"));
-        return;
-    }
-    let task = match project_ui.coordinator.borrow_mut().begin(OperationKind::Completion, true) {
-        Ok(task) => task,
-        Err(error) => {
-            let _ = project_ui
-                .shell
-                .borrow_mut()
-                .dispatch(UiCommand::Fail { message: error.to_string() });
-            project_ui.status.set_text(&format!("Error: {error}"));
-            return;
-        }
-    };
-    let cancellation = task.cancellation();
-    project_ui.status.set_text("Finding completions…");
-    let _ = thread::Builder::new().name("captee-completion".to_owned()).spawn(move || {
-        let outcome = match request_completions(
-            &TypstCompletionProvider,
-            &source.text,
-            cursor,
-            &cancellation,
-        ) {
-            Ok(Operation::Completed(items)) => {
-                OperationOutcome::Completed(WorkspaceOperationResult::Completions { items, cursor })
-            }
-            Ok(Operation::Cancelled) => OperationOutcome::Cancelled,
-            Err(error) => match error {},
         };
         let _ = task.finish(outcome);
     });
@@ -2154,8 +2738,10 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let update_placeholder_when_ready = Rc::clone(&update_placeholder_position);
     glib::idle_add_local_once(move || update_placeholder_when_ready());
     let code_placeholder_for_change = code_placeholder.clone();
+    let assistance_ui = project_ui.clone();
     code_buffer.connect_changed(move |buffer| {
         code_placeholder_for_change.set_visible(buffer.char_count() == annotation_offset);
+        sync_capture_assistance(&assistance_ui);
     });
     panel.append(&code_editor);
     let bottom = GtkBox::new(Orientation::Horizontal, 8);
@@ -2180,54 +2766,67 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     review_window.set_default_size(640, 360);
     let completion_popover = Popover::new();
     completion_popover.set_parent(&code_view);
-    let completion_list = GtkBox::new(Orientation::Vertical, 2);
+    completion_popover.set_autohide(true);
+    let completion_list = ListBox::new();
+    completion_list.set_selection_mode(gtk::SelectionMode::Single);
+    completion_list.set_activate_on_single_click(true);
     completion_popover.set_child(Some(&completion_list));
+    let diagnostic_error_tag = gtk::TextTag::builder()
+        .name("tinymist-capture-error")
+        .underline(gtk::pango::Underline::Error)
+        .underline_rgba(&gtk::gdk::RGBA::new(0.95, 0.28, 0.28, 1.0))
+        .build();
+    let diagnostic_warning_tag = gtk::TextTag::builder()
+        .name("tinymist-capture-warning")
+        .underline(gtk::pango::Underline::Error)
+        .underline_rgba(&gtk::gdk::RGBA::new(0.95, 0.67, 0.20, 1.0))
+        .build();
+    code_buffer.tag_table().add(&diagnostic_error_tag);
+    code_buffer.tag_table().add(&diagnostic_warning_tag);
+    start_capture_assistance(
+        project_ui,
+        &code_buffer,
+        &code_view,
+        &completion_popover,
+        &completion_list,
+        &source_context,
+        diagnostic_error_tag,
+        diagnostic_warning_tag,
+    );
+    let row_ui = project_ui.clone();
+    completion_list.connect_row_activated(move |_, row| {
+        accept_capture_completion(&row_ui, row.index().max(0) as usize);
+    });
     let completion_key = gtk::EventControllerKey::new();
-    let completion_popover_for_key = completion_popover.clone();
-    let completion_list_for_key = completion_list.clone();
-    let code_buffer_for_key = code_buffer.clone();
-    completion_key.connect_key_pressed(move |_, key, _, state| {
-        if key == gtk::gdk::Key::space && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-            while let Some(child) = completion_list_for_key.first_child() {
-                completion_list_for_key.remove(&child);
+    let completion_ui = project_ui.clone();
+    completion_key.connect_key_pressed(move |_, key, _, _| {
+        let assistance = completion_ui.capture_assistance.borrow();
+        let Some(assistance) = assistance.as_ref() else {
+            return glib::Propagation::Proceed;
+        };
+        if !assistance.popover.is_visible() {
+            return glib::Propagation::Proceed;
+        }
+        let index = assistance.list.selected_row().as_ref().map_or(0, ListBoxRow::index);
+        if key == gtk::gdk::Key::Down {
+            if let Some(row) = assistance.list.row_at_index(index + 1) {
+                assistance.list.select_row(Some(&row));
             }
-            let text = code_buffer_for_key
-                .text(&code_buffer_for_key.start_iter(), &code_buffer_for_key.end_iter(), true)
-                .to_string();
-            let cursor_chars =
-                code_buffer_for_key.iter_at_mark(&code_buffer_for_key.get_insert()).offset().max(0)
-                    as usize;
-            let cursor = byte_offset_for_character(&text, cursor_chars);
-            for suggestion in typst_completions(&text, cursor) {
-                let item = Button::with_label(&suggestion.label);
-                let buffer = code_buffer_for_key.clone();
-                let popover = completion_popover_for_key.clone();
-                item.connect_clicked(move |_| {
-                    let text =
-                        buffer.text(&buffer.start_iter(), &buffer.end_iter(), true).to_string();
-                    let cursor_chars =
-                        buffer.iter_at_mark(&buffer.get_insert()).offset().max(0) as usize;
-                    let cursor = byte_offset_for_character(&text, cursor_chars);
-                    if let Some(edit) = typst_completions(&text, cursor)
-                        .into_iter()
-                        .find(|candidate| candidate.label == suggestion.label)
-                        .and_then(|candidate| completion_edit(&text, cursor, &candidate))
-                    {
-                        let start_chars = text[..edit.range.start].chars().count() as i32;
-                        let end_chars = text[..edit.range.end].chars().count() as i32;
-                        let mut start = buffer.iter_at_offset(start_chars);
-                        let mut end = buffer.iter_at_offset(end_chars);
-                        buffer.delete(&mut start, &mut end);
-                        let mut insert = buffer.iter_at_offset(start_chars);
-                        buffer.insert(&mut insert, &edit.replacement);
-                    }
-                    popover.popdown();
-                });
-                completion_list_for_key.append(&item);
+            return glib::Propagation::Stop;
+        }
+        if key == gtk::gdk::Key::Up {
+            if let Some(row) = assistance.list.row_at_index((index - 1).max(0)) {
+                assistance.list.select_row(Some(&row));
             }
-            if completion_list_for_key.first_child().is_some() {
-                completion_popover_for_key.popup();
-            }
+            return glib::Propagation::Stop;
+        }
+        if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab) {
+            let _ = assistance;
+            accept_capture_completion(&completion_ui, index.max(0) as usize);
+            return glib::Propagation::Stop;
+        }
+        if key == gtk::gdk::Key::Escape {
+            assistance.popover.popdown();
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -2291,6 +2890,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         review.set_annotation(annotation);
         *modify_ui.pending_review.borrow_mut() = Some(review.clone());
         drop(review);
+        close_capture_assistance(&modify_ui);
         modify_window.close();
         *modify_ui.pending_capture.borrow_mut() = None;
         modify_ui.status.set_text("Select a new capture region.");
@@ -2300,6 +2900,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let cancel_ui = project_ui.clone();
     let cancel_window = review_window.clone();
     cancel.connect_clicked(move |_| {
+        close_capture_assistance(&cancel_ui);
         cancel_window.close();
         *cancel_ui.pending_capture.borrow_mut() = None;
         *cancel_ui.pending_annotation.borrow_mut() = None;
@@ -2317,6 +2918,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         let mut review = review_for_confirm.borrow_mut();
         review.set_annotation(annotation);
         let confirmed = review.confirm();
+        close_capture_assistance(&confirm_ui);
         confirm_window.close();
         *confirm_ui.pending_capture.borrow_mut() = None;
         *confirm_ui.pending_annotation.borrow_mut() = None;
@@ -2544,8 +3146,6 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
     format_key.set_text(&global_keybindings.format);
     let find_key = Entry::new();
     find_key.set_text(&global_keybindings.find_replace);
-    let completion_key = Entry::new();
-    completion_key.set_text(&global_keybindings.completion);
     let capture_key = Entry::new();
     capture_key.set_text(&global_keybindings.capture);
     let preview_key = Entry::new();
@@ -2556,7 +3156,6 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         ("Save", &save_key),
         ("Format", &format_key),
         ("Find and Replace", &find_key),
-        ("Completion", &completion_key),
         ("Capture", &capture_key),
         ("Preview", &preview_key),
         ("Export PDF", &export_key),
@@ -2603,7 +3202,6 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
             save: save_key.text().to_string(),
             format: format_key.text().to_string(),
             find_replace: find_key.text().to_string(),
-            completion: completion_key.text().to_string(),
             capture: capture_key.text().to_string(),
             preview: preview_key.text().to_string(),
             export: export_key.text().to_string(),
@@ -2677,7 +3275,6 @@ fn apply_global_accelerators(application: &Application, keybindings: &Keybinding
         ("save", keybindings.save.as_str()),
         ("format", keybindings.format.as_str()),
         ("find-replace", keybindings.find_replace.as_str()),
-        ("completion", keybindings.completion.as_str()),
         ("capture", keybindings.capture.as_str()),
         ("preview", keybindings.preview.as_str()),
         ("export", keybindings.export.as_str()),
@@ -3279,9 +3876,67 @@ fn connect_runtime_results(project_ui: &ProjectUi) {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
+        loop {
+            let event =
+                project_ui.tinymist_session.borrow().as_ref().map(TinymistSession::try_recv);
+            match event {
+                Some(Ok(event)) => apply_tinymist_event(&project_ui, event),
+                Some(Err(TryRecvError::Empty)) | None => break,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    project_ui.tinymist_session.borrow_mut().take();
+                    break;
+                }
+            }
+        }
         sync_operation_feedback(&project_ui);
         glib::ControlFlow::Continue
     });
+}
+
+fn apply_tinymist_event(project_ui: &ProjectUi, event: TinymistEvent) {
+    match event {
+        TinymistEvent::Failed(message) => {
+            project_ui.tinymist_session.borrow_mut().take();
+            project_ui.status.set_text(&message);
+        }
+        TinymistEvent::Completion { uri, version, request_id, items } => {
+            let current = project_ui.tinymist_document.borrow().as_ref().is_some_and(|document| {
+                document.uri == uri
+                    && document.version == version
+                    && document.latest_completion_request == Some(request_id)
+            });
+            if current {
+                show_main_completions(project_ui, items);
+                return;
+            }
+            let capture_current =
+                project_ui.capture_assistance.borrow().as_ref().is_some_and(|assistance| {
+                    assistance.uri == uri
+                        && assistance.version == version
+                        && assistance.latest_completion_request == Some(request_id)
+                });
+            if capture_current {
+                show_capture_completions(project_ui, items);
+            }
+        }
+        TinymistEvent::Diagnostics { uri, version, items } => {
+            let current = project_ui.tinymist_document.borrow().as_ref().is_some_and(|document| {
+                document.uri == uri && version.is_none_or(|version| version == document.version)
+            });
+            if current {
+                apply_main_diagnostics(project_ui, items);
+                return;
+            }
+            let capture_current =
+                project_ui.capture_assistance.borrow().as_ref().is_some_and(|assistance| {
+                    assistance.uri == uri
+                        && version.is_none_or(|version| version == assistance.version)
+                });
+            if capture_current {
+                apply_capture_diagnostics(project_ui, items);
+            }
+        }
+    }
 }
 
 fn apply_operation_result(
@@ -3289,306 +3944,286 @@ fn apply_operation_result(
     disposition: ResultDisposition<WorkspaceOperationResult>,
 ) {
     match disposition {
-        ResultDisposition::Current(result) => {
-            let source_identity = result.context.source().clone();
-            match result.outcome {
-                OperationOutcome::Completed(WorkspaceOperationResult::Saved {
-                    document,
-                    formatted,
-                }) => {
-                    let mut editor = project_ui.editor.borrow_mut();
-                    if formatted
-                        && editor
-                            .as_ref()
-                            .is_some_and(|editor| editor.state().text != document.text())
-                    {
-                        let _ = editor
-                            .as_mut()
-                            .and_then(|editor| editor.update_from_buffer(document.text()).ok())
-                            .flatten();
-                    }
-                    let state =
-                        editor.as_mut().and_then(|editor| editor.apply_saved_document(document));
-                    drop(editor);
-                    if let Some(state) = state {
-                        let _ = project_ui
-                            .shell
-                            .borrow_mut()
-                            .dispatch(UiCommand::Complete { message: "Document saved".to_owned() });
-                        let _ = project_ui
-                            .shell
-                            .borrow_mut()
-                            .dispatch(UiCommand::SetDirty(state.dirty));
-                        project_ui.status.set_text(if formatted {
-                            "Document formatted and saved."
-                        } else {
-                            "Document saved."
-                        });
-                        apply_editor_state(project_ui, &state, formatted);
-                    } else {
-                        let message =
-                            "Save completed for an older source revision; current edits remain unsaved.";
-                        let _ = project_ui
-                            .shell
-                            .borrow_mut()
-                            .dispatch(UiCommand::Warn { message: message.to_owned() });
-                        project_ui.status.set_text(message);
-                    }
+        ResultDisposition::Current(result) => match result.outcome {
+            OperationOutcome::Completed(WorkspaceOperationResult::Saved {
+                document,
+                formatted,
+            }) => {
+                let mut editor = project_ui.editor.borrow_mut();
+                if formatted
+                    && editor.as_ref().is_some_and(|editor| editor.state().text != document.text())
+                {
+                    let _ = editor
+                        .as_mut()
+                        .and_then(|editor| editor.update_from_buffer(document.text()).ok())
+                        .flatten();
                 }
-                OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted)) => {
-                    let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
-                        editor.update_from_buffer(&formatted.source).ok().flatten()
-                    });
-                    if let Some(state) = state {
-                        apply_editor_state(project_ui, &state, true);
-                    }
-                    let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
-                        message: "Formatting complete".to_owned(),
-                    });
-                    project_ui.status.set_text("Formatting complete.");
-                }
-                OperationOutcome::Completed(WorkspaceOperationResult::Completions {
-                    items,
-                    cursor,
-                }) => {
+                let state =
+                    editor.as_mut().and_then(|editor| editor.apply_saved_document(document));
+                drop(editor);
+                if let Some(state) = state {
                     let _ = project_ui
                         .shell
                         .borrow_mut()
-                        .dispatch(UiCommand::Complete { message: "Completions ready".to_owned() });
-                    show_completion_dialog(project_ui, source_identity, items, cursor);
+                        .dispatch(UiCommand::Complete { message: "Document saved".to_owned() });
+                    let _ =
+                        project_ui.shell.borrow_mut().dispatch(UiCommand::SetDirty(state.dirty));
+                    project_ui.status.set_text(if formatted {
+                        "Document formatted and saved."
+                    } else {
+                        "Document saved."
+                    });
+                    apply_editor_state(project_ui, &state, formatted);
+                } else {
+                    let message =
+                            "Save completed for an older source revision; current edits remain unsaved.";
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Warn { message: message.to_owned() });
+                    project_ui.status.set_text(message);
                 }
-                OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)) => {
-                    let failure = outcome.result.as_ref().err().map(|error| error.message.clone());
-                    let (accepted, pages) =
-                        outcome.apply_to_with_pages(&mut project_ui.render_state.borrow_mut());
-                    if !accepted {
-                        let message = "Preview result ignored because its revision is stale.";
+            }
+            OperationOutcome::Completed(WorkspaceOperationResult::Formatted(formatted)) => {
+                let state =
+                    project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
+                        editor.update_from_buffer(&formatted.source).ok().flatten()
+                    });
+                if let Some(state) = state {
+                    apply_editor_state(project_ui, &state, true);
+                }
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Complete { message: "Formatting complete".to_owned() });
+                project_ui.status.set_text("Formatting complete.");
+            }
+            OperationOutcome::Completed(WorkspaceOperationResult::Preview(outcome)) => {
+                let failure = outcome.result.as_ref().err().map(|error| error.message.clone());
+                let (accepted, pages) =
+                    outcome.apply_to_with_pages(&mut project_ui.render_state.borrow_mut());
+                if !accepted {
+                    let message = "Preview result ignored because its revision is stale.";
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Warn { message: message.to_owned() });
+                    project_ui.status.set_text(message);
+                } else if let Some((pages, content_end)) = pages {
+                    match display_preview_pages(project_ui, pages, content_end) {
+                        Ok(()) => {
+                            let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
+                                message: "Preview rendered".to_owned(),
+                            });
+                            project_ui.status.set_text("Preview rendered.");
+                        }
+                        Err(error) => {
+                            let message = format!("Could not display preview image: {error}");
+                            let _ = project_ui
+                                .shell
+                                .borrow_mut()
+                                .dispatch(UiCommand::Fail { message: message.clone() });
+                            project_ui.status.set_text(&format!("Error: {message}"));
+                        }
+                    }
+                } else if let Some(message) = failure {
+                    let _ = project_ui
+                        .shell
+                        .borrow_mut()
+                        .dispatch(UiCommand::Fail { message: message.clone() });
+                    project_ui.status.set_text(&format!("Preview error: {message}"));
+                }
+            }
+            OperationOutcome::Completed(WorkspaceOperationResult::Exported(path)) => {
+                let message = format!("PDF exported to {}", path.display());
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Complete { message: message.clone() });
+                project_ui.status.set_text(&message);
+            }
+            OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
+                *project_ui.pending_capture.borrow_mut() = Some(image.clone());
+                *project_ui.pending_annotation.borrow_mut() = None;
+                let review = project_ui
+                    .pending_review
+                    .borrow_mut()
+                    .take()
+                    .map(|mut review| {
+                        review.replace_image(image.clone());
+                        review
+                    })
+                    .unwrap_or_else(|| CaptureReview::new(image));
+                match show_capture_review_dialog(project_ui, review) {
+                    Ok(()) => {
                         let _ = project_ui
                             .shell
                             .borrow_mut()
-                            .dispatch(UiCommand::Warn { message: message.to_owned() });
-                        project_ui.status.set_text(message);
-                    } else if let Some((pages, content_end)) = pages {
-                        match display_preview_pages(project_ui, pages, content_end) {
-                            Ok(()) => {
-                                let _ =
-                                    project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
-                                        message: "Preview rendered".to_owned(),
-                                    });
-                                project_ui.status.set_text("Preview rendered.");
-                            }
-                            Err(error) => {
-                                let message = format!("Could not display preview image: {error}");
-                                let _ = project_ui
-                                    .shell
-                                    .borrow_mut()
-                                    .dispatch(UiCommand::Fail { message: message.clone() });
-                                project_ui.status.set_text(&format!("Error: {message}"));
-                            }
-                        }
-                    } else if let Some(message) = failure {
+                            .dispatch(UiCommand::Complete { message: "Capture ready".to_owned() });
+                        project_ui.status.set_text("Capture ready for annotation.");
+                    }
+                    Err(message) => {
+                        *project_ui.pending_capture.borrow_mut() = None;
+                        *project_ui.pending_review.borrow_mut() = None;
                         let _ = project_ui
                             .shell
                             .borrow_mut()
                             .dispatch(UiCommand::Fail { message: message.clone() });
-                        project_ui.status.set_text(&format!("Preview error: {message}"));
+                        project_ui.status.set_text(&format!("Error: {message}"));
                     }
-                }
-                OperationOutcome::Completed(WorkspaceOperationResult::Exported(path)) => {
-                    let message = format!("PDF exported to {}", path.display());
-                    let _ = project_ui
-                        .shell
-                        .borrow_mut()
-                        .dispatch(UiCommand::Complete { message: message.clone() });
-                    project_ui.status.set_text(&message);
-                }
-                OperationOutcome::Completed(WorkspaceOperationResult::Captured(image)) => {
-                    *project_ui.pending_capture.borrow_mut() = Some(image.clone());
-                    *project_ui.pending_annotation.borrow_mut() = None;
-                    let review = project_ui
-                        .pending_review
-                        .borrow_mut()
-                        .take()
-                        .map(|mut review| {
-                            review.replace_image(image.clone());
-                            review
-                        })
-                        .unwrap_or_else(|| CaptureReview::new(image));
-                    match show_capture_review_dialog(project_ui, review) {
-                        Ok(()) => {
-                            let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
-                                message: "Capture ready".to_owned(),
-                            });
-                            project_ui.status.set_text("Capture ready for annotation.");
-                        }
-                        Err(message) => {
-                            *project_ui.pending_capture.borrow_mut() = None;
-                            *project_ui.pending_review.borrow_mut() = None;
-                            let _ = project_ui
-                                .shell
-                                .borrow_mut()
-                                .dispatch(UiCommand::Fail { message: message.clone() });
-                            project_ui.status.set_text(&format!("Error: {message}"));
-                        }
-                    }
-                }
-                OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored {
-                    asset,
-                    annotation,
-                    before_image,
-                }) => {
-                    let character_offset =
-                        project_ui.source_buffer.cursor_position().max(0) as usize;
-                    let mut editor = project_ui.editor.borrow_mut();
-                    let cursor = editor
-                        .as_ref()
-                        .map(EditorBridge::state)
-                        .map(|state| byte_offset_for_character(&state.text, character_offset))
-                        .unwrap_or_default();
-                    let expression = capture_insertion_expression(
-                        &asset.typst_image_expression(),
-                        &annotation,
-                        before_image,
-                    );
-                    let insertion = {
-                        let mut adapter = EditorInsertionBridge::new(editor.as_mut(), cursor);
-                        adapter.insert_image_expression(&expression)
-                    };
-                    let state = editor.as_ref().map(EditorBridge::state);
-                    drop(editor);
-                    match insertion {
-                        InsertionResult::Inserted => {
-                            if let Some(state) = state {
-                                apply_editor_state(project_ui, &state, true);
-                                let end = insertion_end_offset(cursor, &expression);
-                                if let Some(prefix) = state.text.get(..end) {
-                                    let offset = prefix.chars().count() as i32;
-                                    let source_buffer = project_ui.source_buffer.clone();
-                                    let source_view = project_ui.source_view.clone();
-                                    glib::idle_add_local_once(move || {
-                                        let mut insertion = source_buffer.iter_at_offset(offset);
-                                        source_buffer.place_cursor(&insertion);
-                                        source_view.scroll_to_iter(
-                                            &mut insertion,
-                                            0.2,
-                                            false,
-                                            0.0,
-                                            0.0,
-                                        );
-                                        source_view.grab_focus();
-                                    });
-                                }
-                                project_ui.scroll_preview_to_end.set(true);
-                            }
-                            let message = format!(
-                                "Capture saved and inserted from {}.",
-                                asset.relative_path().display()
-                            );
-                            let _ = project_ui
-                                .shell
-                                .borrow_mut()
-                                .dispatch(UiCommand::Complete { message: message.clone() });
-                            project_ui.status.set_text(&message);
-                        }
-                        InsertionResult::NoFocusedEditor => {
-                            let message = format!(
-                                "Capture saved to {}, but no source editor was focused.",
-                                asset.relative_path().display()
-                            );
-                            let _ = project_ui
-                                .shell
-                                .borrow_mut()
-                                .dispatch(UiCommand::Warn { message: message.clone() });
-                            project_ui.status.set_text(&message);
-                        }
-                        InsertionResult::Cancelled => {
-                            let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
-                            project_ui
-                                .status
-                                .set_text("Capture insertion cancelled; image was saved.");
-                        }
-                        InsertionResult::Failed(error) => {
-                            let message = format!(
-                                "Capture saved to {}, but insertion failed: {error}",
-                                asset.relative_path().display()
-                            );
-                            let _ = project_ui
-                                .shell
-                                .borrow_mut()
-                                .dispatch(UiCommand::Fail { message: message.clone() });
-                            project_ui.status.set_text(&format!("Error: {message}"));
-                        }
-                    }
-                }
-                OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
-                    settings,
-                    keybindings,
-                }) => {
-                    let _ = project_ui
-                        .shell
-                        .borrow_mut()
-                        .dispatch(UiCommand::Complete { message: "Settings saved".to_owned() });
-                    let applied = project_ui
-                        .shell
-                        .borrow_mut()
-                        .dispatch(UiCommand::ApplySettings((*settings).clone()));
-                    match applied {
-                        Ok(()) => {
-                            *project_ui.global_keybindings.borrow_mut() = keybindings;
-                            if let Some(application) = project_ui.application() {
-                                apply_global_accelerators(
-                                    &application,
-                                    &project_ui.global_keybindings.borrow(),
-                                );
-                            }
-                            if let Err(error) = rebind_global_capture_shortcut(project_ui) {
-                                project_ui.status.set_text(&format!(
-                                    "Settings saved, but global capture shortcut could not update: {error}"
-                                ));
-                                return;
-                            }
-                            apply_preview_zoom(project_ui);
-                            if settings.preview.auto_render {
-                                if let Some(state) =
-                                    project_ui.editor.borrow().as_ref().map(EditorBridge::state)
-                                {
-                                    schedule_preview(project_ui, &state);
-                                }
-                            }
-                            project_ui.status.set_text("Project settings saved and applied.");
-                        }
-                        Err(error) => {
-                            let message = format!("Saved settings could not be applied: {error}");
-                            let _ = project_ui
-                                .shell
-                                .borrow_mut()
-                                .dispatch(UiCommand::Fail { message: message.clone() });
-                            project_ui.status.set_text(&format!("Error: {message}"));
-                        }
-                    }
-                }
-                OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure {
-                    message,
-                }) => {
-                    let _ = project_ui
-                        .shell
-                        .borrow_mut()
-                        .dispatch(UiCommand::Fail { message: message.clone() });
-                    project_ui.status.set_text(&format!("Error: {message}"));
-                }
-                OperationOutcome::Cancelled => {
-                    let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
-                    project_ui.status.set_text("Operation cancelled.");
-                }
-                OperationOutcome::Failed(message) => {
-                    let _ = project_ui
-                        .shell
-                        .borrow_mut()
-                        .dispatch(UiCommand::Fail { message: message.clone() });
-                    project_ui.status.set_text(&format!("Error: {message}"));
                 }
             }
-        }
+            OperationOutcome::Completed(WorkspaceOperationResult::CaptureStored {
+                asset,
+                annotation,
+                before_image,
+            }) => {
+                let character_offset = project_ui.source_buffer.cursor_position().max(0) as usize;
+                let mut editor = project_ui.editor.borrow_mut();
+                let cursor = editor
+                    .as_ref()
+                    .map(EditorBridge::state)
+                    .map(|state| byte_offset_for_character(&state.text, character_offset))
+                    .unwrap_or_default();
+                let expression = capture_insertion_expression(
+                    &asset.typst_image_expression(),
+                    &annotation,
+                    before_image,
+                );
+                let insertion = {
+                    let mut adapter = EditorInsertionBridge::new(editor.as_mut(), cursor);
+                    adapter.insert_image_expression(&expression)
+                };
+                let state = editor.as_ref().map(EditorBridge::state);
+                drop(editor);
+                match insertion {
+                    InsertionResult::Inserted => {
+                        if let Some(state) = state {
+                            apply_editor_state(project_ui, &state, true);
+                            let end = insertion_end_offset(cursor, &expression);
+                            if let Some(prefix) = state.text.get(..end) {
+                                let offset = prefix.chars().count() as i32;
+                                let source_buffer = project_ui.source_buffer.clone();
+                                let source_view = project_ui.source_view.clone();
+                                glib::idle_add_local_once(move || {
+                                    let mut insertion = source_buffer.iter_at_offset(offset);
+                                    source_buffer.place_cursor(&insertion);
+                                    source_view.scroll_to_iter(
+                                        &mut insertion,
+                                        0.2,
+                                        false,
+                                        0.0,
+                                        0.0,
+                                    );
+                                    source_view.grab_focus();
+                                });
+                            }
+                            project_ui.scroll_preview_to_end.set(true);
+                        }
+                        let message = format!(
+                            "Capture saved and inserted from {}.",
+                            asset.relative_path().display()
+                        );
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Complete { message: message.clone() });
+                        project_ui.status.set_text(&message);
+                    }
+                    InsertionResult::NoFocusedEditor => {
+                        let message = format!(
+                            "Capture saved to {}, but no source editor was focused.",
+                            asset.relative_path().display()
+                        );
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Warn { message: message.clone() });
+                        project_ui.status.set_text(&message);
+                    }
+                    InsertionResult::Cancelled => {
+                        let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+                        project_ui.status.set_text("Capture insertion cancelled; image was saved.");
+                    }
+                    InsertionResult::Failed(error) => {
+                        let message = format!(
+                            "Capture saved to {}, but insertion failed: {error}",
+                            asset.relative_path().display()
+                        );
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Fail { message: message.clone() });
+                        project_ui.status.set_text(&format!("Error: {message}"));
+                    }
+                }
+            }
+            OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
+                settings,
+                keybindings,
+            }) => {
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Complete { message: "Settings saved".to_owned() });
+                let applied = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::ApplySettings((*settings).clone()));
+                match applied {
+                    Ok(()) => {
+                        *project_ui.global_keybindings.borrow_mut() = keybindings;
+                        if let Some(application) = project_ui.application() {
+                            apply_global_accelerators(
+                                &application,
+                                &project_ui.global_keybindings.borrow(),
+                            );
+                        }
+                        if let Err(error) = rebind_global_capture_shortcut(project_ui) {
+                            project_ui.status.set_text(&format!(
+                                    "Settings saved, but global capture shortcut could not update: {error}"
+                                ));
+                            return;
+                        }
+                        apply_preview_zoom(project_ui);
+                        if settings.preview.auto_render {
+                            if let Some(state) =
+                                project_ui.editor.borrow().as_ref().map(EditorBridge::state)
+                            {
+                                schedule_preview(project_ui, &state);
+                            }
+                        }
+                        project_ui.status.set_text("Project settings saved and applied.");
+                    }
+                    Err(error) => {
+                        let message = format!("Saved settings could not be applied: {error}");
+                        let _ = project_ui
+                            .shell
+                            .borrow_mut()
+                            .dispatch(UiCommand::Fail { message: message.clone() });
+                        project_ui.status.set_text(&format!("Error: {message}"));
+                    }
+                }
+            }
+            OperationOutcome::Completed(WorkspaceOperationResult::AuthoringFailure { message }) => {
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Fail { message: message.clone() });
+                project_ui.status.set_text(&format!("Error: {message}"));
+            }
+            OperationOutcome::Cancelled => {
+                let _ = project_ui.shell.borrow_mut().dispatch(UiCommand::Cancel);
+                project_ui.status.set_text("Operation cancelled.");
+            }
+            OperationOutcome::Failed(message) => {
+                let _ = project_ui
+                    .shell
+                    .borrow_mut()
+                    .dispatch(UiCommand::Fail { message: message.clone() });
+                project_ui.status.set_text(&format!("Error: {message}"));
+            }
+        },
         ResultDisposition::Stale(result)
             if project_ui.coordinator.borrow().active_context().is_none()
                 && project_ui.coordinator.borrow().active_source().as_ref()
@@ -3610,56 +4245,6 @@ fn apply_operation_result(
         }
     }
     refresh_project_label(project_ui);
-}
-
-fn show_completion_dialog(
-    project_ui: &ProjectUi,
-    source_identity: SourceIdentity,
-    items: Vec<CompletionItem>,
-    cursor: usize,
-) {
-    if items.is_empty() {
-        project_ui.status.set_text("No completions found.");
-        return;
-    }
-    let Some(window) = project_ui.window() else {
-        return;
-    };
-    let dialog =
-        Dialog::builder().title("Insert completion").transient_for(&window).modal(true).build();
-    dialog.add_button("Cancel", ResponseType::Cancel);
-    dialog.add_button("Insert", ResponseType::Accept);
-    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
-    let choices = gtk::DropDown::from_strings(&labels);
-    choices.set_margin_top(16);
-    choices.set_margin_bottom(16);
-    choices.set_margin_start(16);
-    choices.set_margin_end(16);
-    dialog.content_area().append(&choices);
-
-    let project_ui = project_ui.clone();
-    dialog.connect_response(move |dialog, response| {
-        if response == ResponseType::Accept
-            && project_ui.coordinator.borrow().active_source() == Some(source_identity.clone())
-        {
-            let selected = choices.selected() as usize;
-            if let Some(item) = items.get(selected) {
-                let state = project_ui.editor.borrow_mut().as_mut().and_then(|editor| {
-                    let current = editor.state();
-                    let edit = completion_edit(&current.text, cursor, item)?;
-                    editor.replace_range(edit.range, &edit.replacement).ok()
-                });
-                if let Some(state) = state {
-                    apply_editor_state(&project_ui, &state, true);
-                    project_ui.status.set_text(&format!("Inserted {}.", item.label));
-                }
-            }
-        } else if response == ResponseType::Accept {
-            project_ui.status.set_text("Completion ignored because the source changed.");
-        }
-        dialog.close();
-    });
-    dialog.present();
 }
 
 fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult) {
@@ -3687,6 +4272,25 @@ fn apply_background_result(project_ui: &ProjectUi, background: BackgroundResult)
                     project_ui.status.set_text(&format!("Recent-project warning: {message}"));
                 }
                 Err(_) => {}
+            }
+        }
+        BackgroundResult::TinymistStarted { project, result } => {
+            let is_current = project_ui
+                .coordinator
+                .borrow()
+                .active_source()
+                .is_some_and(|source| source.project() == &project);
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(session) => {
+                    *project_ui.tinymist_session.borrow_mut() = Some(session);
+                    open_tinymist_document(project_ui);
+                }
+                Err(message) => {
+                    project_ui.status.set_text(&format!("Tinymist unavailable: {message}"));
+                }
             }
         }
     }
@@ -4199,6 +4803,7 @@ fn open_loaded_project(
     });
     match result {
         Ok(()) => {
+            stop_tinymist(project_ui);
             project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
             *project_ui.editor.borrow_mut() = Some(EditorBridge::new_at_revision(
                 project.session.entry_document.clone(),
@@ -4213,6 +4818,18 @@ fn open_loaded_project(
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
             *project_ui.pending_review.borrow_mut() = None;
+            if let Some(uri) = document_uri(&path.join(&project.session.entry_document)) {
+                *project_ui.tinymist_document.borrow_mut() = Some(TinymistDocumentState {
+                    uri,
+                    version: 1,
+                    text: project.source.clone(),
+                    opened: false,
+                    latest_completion_request: None,
+                });
+                start_tinymist(project_ui, project_identity.clone(), path.to_path_buf());
+            } else {
+                project_ui.status.set_text("Tinymist unavailable: invalid project source URI.");
+            }
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
@@ -4347,6 +4964,7 @@ fn close_project(project_ui: &ProjectUi) {
     let closed = project_ui.shell.borrow_mut().dispatch(UiCommand::CloseProject);
     match closed {
         Ok(()) => {
+            stop_tinymist(project_ui);
             project_ui.autosave_sequence.set(project_ui.autosave_sequence.get().saturating_add(1));
             project_ui.coordinator.borrow_mut().deactivate_project();
             *project_ui.editor.borrow_mut() = None;

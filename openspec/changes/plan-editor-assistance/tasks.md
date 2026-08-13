@@ -1,22 +1,22 @@
 ## 1. Tinymist integration
 
 - [x] 1.1 Pin the Tinymist 0.14.6 x86_64 Linux release matching Typst 0.14.2, verify its checksum, and bundle its binary, license, and applicable notices in the AppImage.
-- [ ] 1.2 Add a testable stdio JSON-RPC client that starts one Tinymist LSP process for the active project, initializes it with the project root, and stops it on project close or application exit.
-- [ ] 1.3 Synchronize the main source and capture-review virtual Typst documents with Tinymist, and reject responses for stale document versions.
-- [ ] 1.4 Keep editing, saving, formatting, preview, and export usable with a clear status message when Tinymist cannot start or exits unexpectedly.
+- [x] 1.2 Add a testable stdio JSON-RPC client that starts one Tinymist LSP process for the active project, initializes it with the project root, and stops it on project close or application exit.
+- [x] 1.3 Synchronize the main source and capture-review virtual Typst documents with Tinymist, and reject responses for stale document versions.
+- [x] 1.4 Keep editing, saving, formatting, preview, and export usable with a clear status message when Tinymist cannot start or exits unexpectedly.
 
 ## 2. Completion popup
 
-- [ ] 2.1 Request Tinymist completion automatically after `#` and while its command prefix changes in either Typst editor.
-- [ ] 2.2 Show a cursor-anchored popup with Up/Down selection, Enter/Tab or pointer acceptance, and Escape or unrelated-input dismissal.
-- [ ] 2.3 Apply only Tinymist's returned text edit or replacement range and preserve source when the request is stale, dismissed, or empty.
-- [ ] 2.4 Remove the built-in completion provider, manual completion command and button, and completion keybinding from defaults, persistence, migration, and Settings.
+- [x] 2.1 Request Tinymist completion automatically after `#` and while its command prefix changes in either Typst editor.
+- [x] 2.2 Show a cursor-anchored popup with Up/Down selection, Enter/Tab or pointer acceptance, and Escape or unrelated-input dismissal.
+- [x] 2.3 Apply only Tinymist's returned text edit or replacement range and preserve source when the request is stale, dismissed, or empty.
+- [x] 2.4 Remove the built-in completion provider, manual completion command and button, and completion keybinding from defaults, persistence, migration, and Settings.
 
 ## 3. Diagnostic markers
 
-- [ ] 3.1 Map current Tinymist error and warning diagnostics with source ranges to severity-colored curvy source-view underlines.
-- [ ] 3.2 Show the diagnostic message when the user hovers its underline, clear markers immediately after source changes, and apply only diagnostics for the current document version.
-- [ ] 3.3 Keep the last successful preview visible when current Tinymist diagnostics contain errors.
+- [x] 3.1 Map current Tinymist error and warning diagnostics with source ranges to severity-colored curvy source-view underlines.
+- [x] 3.2 Show the diagnostic message when the user hovers its underline, clear markers immediately after source changes, and apply only diagnostics for the current document version.
+- [x] 3.3 Keep the last successful preview visible when current Tinymist diagnostics contain errors.
 
 ## 4. Project navigation and exit safety
 
@@ -33,7 +33,7 @@
 ## 6. Licensing
 
 - [ ] 6.1 Change workspace package metadata to GPL-3.0-or-later to match the repository LICENSE.
-- [ ] 6.2 Document bundled Tinymist beside Typst with its version, source URL, checksum, Apache-2.0 license, and retained upstream notices.
+- [x] 6.2 Document bundled Tinymist beside Typst with its version, source URL, checksum, Apache-2.0 license, and retained upstream notices.
 
 ## 7. Validation
 

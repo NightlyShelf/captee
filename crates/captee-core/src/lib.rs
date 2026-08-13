@@ -21,8 +21,8 @@ pub use app::{
     ProjectSession,
 };
 pub use authoring::{
-    find_literal, replace_literal, request_completions, AuthoringError, CancellationToken,
-    CompletionItem, CompletionProvider, Formatter, Operation, ReplaceError, ReplaceResult,
+    find_literal, replace_literal, AuthoringError, CancellationToken, Formatter, Operation,
+    ReplaceError, ReplaceResult,
 };
 pub use capture::{
     AnnotatedImage, Annotation, AnnotationBackend, AnnotationError, AnnotationResult,
