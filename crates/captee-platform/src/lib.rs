@@ -12,6 +12,7 @@ mod export;
 mod paths;
 mod persistence;
 mod shortcuts;
+mod tinymist;
 mod typst;
 mod workspace;
 
@@ -29,6 +30,11 @@ pub use persistence::{
     RecentProjectError, RecentProjectStore, AUTOSAVE_FILE,
 };
 pub use shortcuts::{register_capture_shortcut, GlobalShortcutEvent, GlobalShortcutRegistration};
+pub use tinymist::{
+    capture_review_uri, document_uri, LspPosition, LspRange, TinymistCompletion,
+    TinymistDiagnostic, TinymistDiagnosticSeverity, TinymistError, TinymistEvent, TinymistRunner,
+    TinymistSession,
+};
 pub use typst::{
     AsyncPreviewCompiler, PreviewArtifact, PreviewCompiler, PreviewContentEnd, PreviewError,
     PreviewHandle, PreviewOutcome, PreviewWorkerError, TypstPreviewCompiler, TypstRunner,
