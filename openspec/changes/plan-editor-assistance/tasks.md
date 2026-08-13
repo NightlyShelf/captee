@@ -27,6 +27,7 @@
 - [x] 3.2 Show the diagnostic message when the user hovers its underline, clear markers immediately after source changes, and apply only diagnostics for the current document version.
 - [x] 3.3 Keep the last successful preview visible when current Tinymist diagnostics contain errors.
 - [x] 3.4 Render zero-width Tinymist diagnostics on the adjacent source character so incomplete input such as a lone `#` remains visible.
+- [x] 3.5 Show a tiny transparent editor-bottom indicator with a white cross on red and the error count, or a white tick on green and “No errors”.
 
 ## 4. Project navigation and exit safety
 
@@ -34,7 +35,7 @@
 - [x] 4.2 Start each opened project with every folder collapsed while preserving normal expand/collapse behavior during the session.
 - [x] 4.3 Before application exit with dirty source, show Save, Discard, and Cancel; exit only after a successful save or explicit discard, and remain open after cancellation or save failure.
 - [x] 4.4 Clear the autosave after successful Save or Discard so a clean exit does not show recovery on the next run; retain autosave recovery for crashes or interrupted sessions.
-- [x] 4.5 Keep the source caret onscreen while editing and automatically scroll the preview to the latest edited source position, reapplying that position after renders while preserving explicit bottom-follow behavior.
+- [x] 4.5 Move the source caret to the latest edit, keep it onscreen, and automatically scroll the preview to the corresponding source position after live and programmatic edits and renders while preserving explicit bottom-follow behavior.
 
 ## 5. Menu organization and About
 

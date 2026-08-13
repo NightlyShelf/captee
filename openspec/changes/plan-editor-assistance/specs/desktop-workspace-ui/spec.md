@@ -32,6 +32,18 @@ The application SHALL use the bundled Tinymist language server to provide contex
 - **WHEN** source changes or a newer render replaces diagnostics
 - **THEN** markers from the older source revision are removed
 
+#### Scenario: Summarize current errors
+
+- **WHEN** current Tinymist diagnostics are displayed in the main editor
+- **THEN** a tiny transparent indicator at the editor's bottom-right shows a white cross on red with the error count
+- **AND** when there are no current errors it shows a white tick on green with “No errors”
+
+#### Scenario: Follow the latest edit
+
+- **WHEN** source changes through typing or a programmatic edit
+- **THEN** the caret moves to the latest edit and remains visible in the editor viewport
+- **AND** the preview scrolls to the corresponding source progress after the edit and after the next render
+
 #### Scenario: Tinymist unavailable
 
 - **WHEN** Tinymist cannot start or exits unexpectedly

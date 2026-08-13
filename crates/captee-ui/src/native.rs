@@ -284,6 +284,14 @@ fn build_ui(application: &Application) {
            background-color: #292a2d; color: #9aa0a6;\
          }\
          .typst-editor border { background-color: #3c4043; }\
+         .editor-diagnostics { background: transparent; }\
+         .editor-diagnostics-icon {\
+           min-width: 13px; min-height: 13px; border-radius: 999px; color: #ffffff;\
+           font-size: 9px; font-weight: bold;\
+         }\
+         .editor-diagnostics-icon.success { background-color: #2e9b47; }\
+         .editor-diagnostics-icon.error { background-color: #d93025; }\
+         .editor-diagnostics-count { color: #e8eaed; font-size: 10px; }\
          .completion-popup.background { background: transparent; border: none; box-shadow: none; }\
          .completion-popup > contents { padding: 0; border: none; border-radius: 0; outline: none; box-shadow: none; background-color: #202124; }\
          .completion-popup > contents > scrolledwindow { border: none; outline: none; box-shadow: none; }\
@@ -339,6 +347,21 @@ fn build_ui(application: &Application) {
     source_view.set_bottom_margin(1);
     source_view.add_css_class("typst-editor");
     source_view.set_tooltip_text(Some("Typst source editor"));
+    let diagnostic_summary = GtkBox::new(Orientation::Horizontal, 3);
+    diagnostic_summary.set_halign(Align::End);
+    diagnostic_summary.set_valign(Align::End);
+    diagnostic_summary.set_margin_end(7);
+    diagnostic_summary.set_margin_bottom(5);
+    diagnostic_summary.set_can_target(false);
+    diagnostic_summary.add_css_class("editor-diagnostics");
+    let diagnostic_summary_icon = Label::new(Some("✓"));
+    diagnostic_summary_icon.set_size_request(13, 13);
+    diagnostic_summary_icon.add_css_class("editor-diagnostics-icon");
+    diagnostic_summary_icon.add_css_class("success");
+    let diagnostic_summary_text = Label::new(Some("No errors"));
+    diagnostic_summary_text.add_css_class("editor-diagnostics-count");
+    diagnostic_summary.append(&diagnostic_summary_icon);
+    diagnostic_summary.append(&diagnostic_summary_text);
     let completion_popover = Popover::new();
     completion_popover.set_parent(&source_view);
     completion_popover.set_autohide(false);
@@ -429,6 +452,7 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
+            &diagnostic_summary,
             PreviewWidgets {
                 scroller: &preview_scroller,
                 scale: &preview_scale,
@@ -460,6 +484,8 @@ fn build_ui(application: &Application) {
         diagnostic_error_tag,
         diagnostic_warning_tag,
         diagnostic_markers: Rc::new(RefCell::new(Vec::new())),
+        diagnostic_summary_icon,
+        diagnostic_summary_text,
         project_label: project_label.clone(),
         recent_projects: recent_projects.clone(),
         project_tree: project_tree.clone(),
@@ -638,6 +664,7 @@ fn build_menu_header(
 
 fn build_workspace(
     source_view: &sourceview::View,
+    diagnostic_summary: &GtkBox,
     preview_widgets: PreviewWidgets<'_>,
     project_tree: &ListBox,
     project_name_label: &Label,
@@ -705,6 +732,9 @@ fn build_workspace(
     let editor_scroll =
         ScrolledWindow::builder().child(source_view).hexpand(true).vexpand(true).build();
     keep_last_editor_line_reachable(&editor_scroll, source_view);
+    let editor_overlay = gtk::Overlay::new();
+    editor_overlay.set_child(Some(&editor_scroll));
+    editor_overlay.add_overlay(diagnostic_summary);
 
     let preview = GtkBox::new(Orientation::Vertical, 12);
     preview.set_margin_top(16);
@@ -724,7 +754,7 @@ fn build_workspace(
     scale_row.append(go_to_content_end);
     preview.append(&scale_row);
     let editor_preview = Paned::new(Orientation::Horizontal);
-    editor_preview.set_start_child(Some(&editor_scroll));
+    editor_preview.set_start_child(Some(&editor_overlay));
     editor_preview.set_end_child(Some(&preview));
     editor_preview.set_resize_start_child(true);
     editor_preview.set_shrink_start_child(false);
@@ -924,6 +954,8 @@ struct ProjectUi {
     diagnostic_error_tag: gtk::TextTag,
     diagnostic_warning_tag: gtk::TextTag,
     diagnostic_markers: Rc<RefCell<Vec<DiagnosticMarker>>>,
+    diagnostic_summary_icon: Label,
+    diagnostic_summary_text: Label,
     project_label: Label,
     recent_projects: GtkBox,
     project_tree: ListBox,
@@ -1734,13 +1766,7 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
             return;
         }
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-        let cursor =
-            byte_offset_for_character(text.as_str(), buffer.cursor_position().max(0) as usize);
-        project_ui.preview_edit_fraction.set(source_edit_fraction(text.as_str(), cursor));
-        scroll_editor_to_latest_edit(&project_ui.source_view, buffer);
-        if !project_ui.auto_scroll_to_content_end.is_active() {
-            scroll_preview_to_latest_edit(&project_ui);
-        }
+        follow_latest_edit(&project_ui);
         let update = project_ui
             .editor
             .borrow_mut()
@@ -1752,6 +1778,26 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
                 project_ui.status.set_text("The editor produced an invalid text range.")
             }
             Some(Ok(None)) | None => {}
+        }
+    });
+}
+
+fn follow_latest_edit(project_ui: &ProjectUi) {
+    let project_ui = project_ui.clone();
+    glib::idle_add_local_once(move || {
+        let text = project_ui.source_buffer.text(
+            &project_ui.source_buffer.start_iter(),
+            &project_ui.source_buffer.end_iter(),
+            true,
+        );
+        let cursor = byte_offset_for_character(
+            text.as_str(),
+            project_ui.source_buffer.cursor_position().max(0) as usize,
+        );
+        project_ui.preview_edit_fraction.set(source_edit_fraction(text.as_str(), cursor));
+        project_ui.source_view.scroll_mark_onscreen(&project_ui.source_buffer.get_insert());
+        if !project_ui.auto_scroll_to_content_end.is_active() {
+            scroll_preview_to_latest_edit(&project_ui);
         }
     });
 }
@@ -1772,6 +1818,24 @@ fn source_edit_fraction(source: &str, cursor: usize) -> f64 {
     }
     let cursor_line = source[..cursor].bytes().filter(|byte| *byte == b'\n').count();
     cursor_line as f64 / total_lines as f64
+}
+
+fn latest_edit_character_offset(before: &str, after: &str, current: i32) -> i32 {
+    let before_chars = before.chars().count();
+    let after_chars = after.chars().count();
+    if before == after {
+        return current.clamp(0, i32::try_from(after_chars).unwrap_or(i32::MAX));
+    }
+    let prefix =
+        before.chars().zip(after.chars()).take_while(|(left, right)| left == right).count();
+    let suffix = before
+        .chars()
+        .rev()
+        .zip(after.chars().rev())
+        .take((before_chars - prefix).min(after_chars - prefix))
+        .take_while(|(left, right)| left == right)
+        .count();
+    i32::try_from(after_chars - suffix).unwrap_or(i32::MAX)
 }
 
 fn connect_editor_autoscroll(view: &sourceview::View, buffer: &sourceview::Buffer) {
@@ -1825,9 +1889,22 @@ fn undo_or_redo(project_ui: &ProjectUi, redo: bool) {
 
 fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer: bool) {
     if update_buffer {
+        let previous = project_ui.source_buffer.text(
+            &project_ui.source_buffer.start_iter(),
+            &project_ui.source_buffer.end_iter(),
+            true,
+        );
+        let latest_edit = latest_edit_character_offset(
+            previous.as_str(),
+            &state.text,
+            project_ui.source_buffer.cursor_position(),
+        );
         project_ui.syncing_buffer.set(true);
         project_ui.source_buffer.set_text(&state.text);
+        let cursor = project_ui.source_buffer.iter_at_offset(latest_edit);
+        project_ui.source_buffer.place_cursor(&cursor);
         project_ui.syncing_buffer.set(false);
+        follow_latest_edit(project_ui);
     }
     if let Err(error) = project_ui.coordinator.borrow_mut().set_source_revision(state.revision) {
         project_ui.status.set_text(&format!("Error: {error}"));
@@ -2206,6 +2283,32 @@ fn clear_diagnostic_markers(project_ui: &ProjectUi) {
     project_ui.source_buffer.remove_tag(&project_ui.diagnostic_warning_tag, &start, &end);
     project_ui.diagnostic_markers.borrow_mut().clear();
     project_ui.source_view.set_tooltip_text(Some("Typst source editor"));
+    set_main_error_count(project_ui, 0);
+}
+
+fn set_main_error_count(project_ui: &ProjectUi, count: usize) {
+    let has_errors = count > 0;
+    project_ui.diagnostic_summary_icon.set_text(if has_errors { "×" } else { "✓" });
+    project_ui.diagnostic_summary_icon.remove_css_class(if has_errors {
+        "success"
+    } else {
+        "error"
+    });
+    project_ui.diagnostic_summary_icon.add_css_class(if has_errors { "error" } else { "success" });
+    project_ui.diagnostic_summary_text.set_text(&diagnostic_summary_text(count));
+    project_ui.diagnostic_summary_text.set_tooltip_text(Some(if has_errors {
+        "Current Tinymist errors"
+    } else {
+        "Tinymist reports no errors"
+    }));
+}
+
+fn diagnostic_summary_text(count: usize) -> String {
+    match count {
+        0 => "No errors".to_owned(),
+        1 => "1 error".to_owned(),
+        count => format!("{count} errors"),
+    }
 }
 
 fn apply_main_diagnostics(
@@ -2213,6 +2316,10 @@ fn apply_main_diagnostics(
     diagnostics: Vec<captee_platform::TinymistDiagnostic>,
 ) {
     clear_diagnostic_markers(project_ui);
+    let error_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == TinymistDiagnosticSeverity::Error)
+        .count();
     let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) else {
         return;
     };
@@ -2237,6 +2344,7 @@ fn apply_main_diagnostics(
         });
     }
     *project_ui.diagnostic_markers.borrow_mut() = markers;
+    set_main_error_count(project_ui, error_count);
 }
 
 fn connect_diagnostic_hover(project_ui: &ProjectUi) {
@@ -5621,11 +5729,12 @@ mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
         capture_placeholder_top, completion_anchor_x, completion_index, completion_popup_action,
-        insertion_end_offset, is_active_tree_file, preview_edit_scroll_value, preview_scroll_end,
-        preview_width, project_parent_folder, recovery_draft, source_edit_fraction,
-        tree_entry_visible, validate_project_name, CompletionPopupAction, ExitChoice, ExitDecision,
-        ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY,
-        EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        diagnostic_summary_text, insertion_end_offset, is_active_tree_file,
+        latest_edit_character_offset, preview_edit_scroll_value, preview_scroll_end, preview_width,
+        project_parent_folder, recovery_draft, source_edit_fraction, tree_entry_visible,
+        validate_project_name, CompletionPopupAction, ExitChoice, ExitDecision, ExitState,
+        PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
+        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5749,6 +5858,21 @@ mod tests {
         assert!((middle - (400.0 - 200.0 / 3.0)).abs() < f64::EPSILON);
         let end = preview_edit_scroll_value(0.0, 1_000.0, 200.0, 800.0, 2.0);
         assert!((end - (800.0 - 200.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn latest_edit_offset_tracks_insertions_replacements_and_unicode() {
+        assert_eq!(latest_edit_character_offset("one end", "one two end", 0), 8);
+        assert_eq!(latest_edit_character_offset("one two end", "one end", 0), 4);
+        assert_eq!(latest_edit_character_offset("aéz", "aêz", 0), 2);
+        assert_eq!(latest_edit_character_offset("same", "same", 2), 2);
+    }
+
+    #[test]
+    fn diagnostic_summary_uses_compact_error_wording() {
+        assert_eq!(diagnostic_summary_text(0), "No errors");
+        assert_eq!(diagnostic_summary_text(1), "1 error");
+        assert_eq!(diagnostic_summary_text(3), "3 errors");
     }
 
     #[test]
