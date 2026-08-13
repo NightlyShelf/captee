@@ -64,6 +64,9 @@ pub fn tinymist_completion_edit(
     cursor: usize,
     item: &TinymistCompletion,
 ) -> Option<CompletionEdit> {
+    if let Some(edit) = quoted_value_completion_edit(source, cursor, item) {
+        return Some(edit);
+    }
     let mut range = item
         .range
         .and_then(|range| lsp_range_to_bytes(source, range))
@@ -82,6 +85,37 @@ pub fn tinymist_completion_edit(
         (item.insert_text.clone(), item.insert_text.len(), None)
     };
     Some(CompletionEdit { range, replacement, cursor, selection })
+}
+
+fn quoted_value_completion_edit(
+    source: &str,
+    cursor: usize,
+    item: &TinymistCompletion,
+) -> Option<CompletionEdit> {
+    if cursor > source.len()
+        || !source.is_char_boundary(cursor)
+        || !item.label.starts_with('"')
+        || !item.label.ends_with('"')
+    {
+        return None;
+    }
+    let previous_quote = source[..cursor].rfind('"')?;
+    let (open, end) = if previous_quote + 1 == cursor {
+        (source[..previous_quote].rfind('"')?, cursor)
+    } else {
+        let close = source[cursor..].find('"').map_or(cursor, |offset| cursor + offset + 1);
+        (previous_quote, close)
+    };
+    let argument_start = source[..open].rfind([',', '(']).map_or(0, |offset| offset + 1);
+    if !source[argument_start..open].contains(':') {
+        return None;
+    }
+    Some(CompletionEdit {
+        range: open..end,
+        replacement: item.label.clone(),
+        cursor: item.label.len(),
+        selection: None,
+    })
 }
 
 fn plain_text_snippet(snippet: &str) -> (String, usize, Option<Range<usize>>) {
@@ -419,6 +453,31 @@ mod tests {
         assert_eq!(edit.replacement, "alt: \"\"");
         assert_eq!(edit.cursor, 6);
         assert_eq!(edit.selection, None);
+    }
+
+    #[test]
+    fn quoted_value_completion_replaces_existing_stub_value() {
+        let item = TinymistCompletion {
+            label: "\"png\"".into(),
+            insert_text: "\"png".into(),
+            range: Some(LspRange {
+                start: LspPosition { line: 0, character: 23 },
+                end: LspPosition { line: 0, character: 23 },
+            }),
+            is_snippet: true,
+            description: None,
+            detail: None,
+        };
+        let source = "#image(\"x\", format: \"p\")";
+        let cursor = source.rfind('"').expect("closing quote");
+        let edit = tinymist_completion_edit(source, cursor, &item).expect("edit");
+        assert_eq!(&source[edit.range.clone()], "\"p\"");
+        assert_eq!(edit.replacement, "\"png\"");
+
+        let cursor = source.rfind('"').expect("closing quote") + 1;
+        let edit = tinymist_completion_edit(source, cursor, &item).expect("edit after quote");
+        assert_eq!(&source[edit.range], "\"p\"");
+        assert_eq!(edit.replacement, "\"png\"");
     }
 
     #[test]

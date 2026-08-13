@@ -2098,7 +2098,17 @@ fn position_completion_popover(
         popover.popdown();
         return;
     }
+    let (_, popup_width, _, _) = popover.measure(Orientation::Horizontal, -1);
+    let x = completion_anchor_x(view.width(), popup_width, x);
     popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x, y, 1, location.height().max(1))));
+}
+
+fn completion_anchor_x(view_width: i32, popup_width: i32, caret_x: i32) -> i32 {
+    let half_width = popup_width.max(COMPLETION_POPUP_WIDTH) / 2;
+    let offset = COMPLETION_POPUP_WIDTH / 2;
+    let minimum = (half_width - offset).max(0);
+    let maximum = (view_width - half_width - offset).max(minimum);
+    caret_x.clamp(minimum, maximum)
 }
 
 fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
@@ -2153,7 +2163,6 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
         }
         project_ui.syncing_buffer.set(false);
         apply_editor_state(project_ui, &state, false);
-        request_tinymist_completion(project_ui, &state);
         if let Some((adjustment, value)) = scroll {
             adjustment.set_value(value);
             glib::idle_add_local_once(move || adjustment.set_value(value));
@@ -5540,11 +5549,12 @@ fn close_project(project_ui: &ProjectUi) {
 mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
-        capture_placeholder_top, completion_index, completion_popup_action, insertion_end_offset,
-        is_active_tree_file, preview_scroll_end, preview_width, project_parent_folder,
-        recovery_draft, tree_entry_visible, validate_project_name, CompletionPopupAction,
-        ExitChoice, ExitDecision, ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
-        ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        capture_placeholder_top, completion_anchor_x, completion_index, completion_popup_action,
+        insertion_end_offset, is_active_tree_file, preview_scroll_end, preview_width,
+        project_parent_folder, recovery_draft, tree_entry_visible, validate_project_name,
+        CompletionPopupAction, ExitChoice, ExitDecision, ExitState, PreviewScale,
+        ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
+        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5648,6 +5658,13 @@ mod tests {
         assert_eq!(completion_popup_action(gtk4::gdk::Key::a), CompletionPopupAction::Ignore);
         assert_eq!(completion_index(3), 3);
         assert_eq!(completion_index(-1), 0);
+    }
+
+    #[test]
+    fn completion_popup_anchor_stays_inside_editor_viewport() {
+        assert_eq!(completion_anchor_x(960, 300, 1100), 715);
+        assert_eq!(completion_anchor_x(960, 300, 400), 400);
+        assert_eq!(completion_anchor_x(960, 300, -20), 55);
     }
 
     #[test]

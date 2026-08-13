@@ -18,6 +18,8 @@
 - [x] 2.8 Keep the popup close to and synchronized with the scrolled caret, show Tinymist completion descriptions, and request argument-name/value options after function-call triggers and while refining the visible list.
 - [x] 2.9 Merge Tinymist's plain and `.paren` variants for every function so acceptance inserts parentheses and signature-derived placeholder text for all required positional arguments, selects the first placeholder for replacement, and leaves optional arguments to follow-up completion.
 - [x] 2.10 After a top-level comma, show only unused optional parameters for the active function; insert type-derived editable value stubs for selected parameters and type-shaped placeholders such as `"image-path"` for required arguments.
+- [x] 2.11 Normalize quoted Tinymist value edits against existing stub quotes so accepting an enum replaces the whole value without duplicated text or quotes, and keep completion closed until the next edit.
+- [x] 2.12 Clamp the completion popup to the visible editor viewport on long lines so it never overlaps the preview pane.
 
 ## 3. Diagnostic markers
 
