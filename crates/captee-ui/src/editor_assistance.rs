@@ -6,6 +6,7 @@ pub struct CompletionEdit {
     pub range: Range<usize>,
     pub replacement: String,
     pub cursor: usize,
+    pub selection: Option<Range<usize>>,
 }
 
 /// Return byte range of the command prefix immediately before cursor.
@@ -72,18 +73,19 @@ pub fn tinymist_completion_edit(
     if range.end > source.len() {
         return None;
     }
-    let (replacement, cursor) = if item.is_snippet {
+    let (replacement, cursor, selection) = if item.is_snippet {
         plain_text_snippet(&item.insert_text)
     } else {
-        (item.insert_text.clone(), item.insert_text.len())
+        (item.insert_text.clone(), item.insert_text.len(), None)
     };
-    Some(CompletionEdit { range, replacement, cursor })
+    Some(CompletionEdit { range, replacement, cursor, selection })
 }
 
-fn plain_text_snippet(snippet: &str) -> (String, usize) {
+fn plain_text_snippet(snippet: &str) -> (String, usize, Option<Range<usize>>) {
     let bytes = snippet.as_bytes();
     let mut output = String::with_capacity(snippet.len());
     let mut first_tab_stop = None;
+    let mut first_selection = None;
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'\\' && index + 1 < bytes.len() {
@@ -124,7 +126,11 @@ fn plain_text_snippet(snippet: &str) -> (String, usize) {
                 while index < bytes.len() && bytes[index] != b'}' {
                     index += 1;
                 }
+                let selection_start = output.len();
                 output.push_str(&snippet[default_start..index]);
+                if first_selection.is_none() && output.len() > selection_start {
+                    first_selection = Some(selection_start..output.len());
+                }
             } else {
                 while index < bytes.len() && bytes[index] != b'}' {
                     index += 1;
@@ -138,7 +144,7 @@ fn plain_text_snippet(snippet: &str) -> (String, usize) {
         output.push('$');
     }
     let cursor = first_tab_stop.unwrap_or(output.len());
-    (output, cursor)
+    (output, cursor, first_selection)
 }
 
 pub fn has_typst_command_prefix(source: &str, cursor: usize) -> bool {
@@ -269,6 +275,22 @@ mod tests {
         let edit = tinymist_completion_edit("#ali", 4, &item).expect("edit");
         assert_eq!(edit.replacement, "align()");
         assert_eq!(edit.cursor, 6);
+        assert_eq!(edit.selection, None);
+    }
+
+    #[test]
+    fn snippet_placeholder_text_is_selected_for_replacement() {
+        let item = TinymistCompletion {
+            label: "align".into(),
+            insert_text: "align(${1:alignment}, ${2:body})".into(),
+            range: None,
+            is_snippet: true,
+            description: None,
+            detail: None,
+        };
+        let edit = tinymist_completion_edit("#ali", 4, &item).expect("edit");
+        assert_eq!(edit.replacement, "align(alignment, body)");
+        assert_eq!(edit.selection, Some(6..15));
     }
 
     #[test]

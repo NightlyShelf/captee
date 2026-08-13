@@ -490,7 +490,68 @@ fn merge_call_snippets(items: Vec<TinymistCompletion>) -> Vec<TinymistCompletion
         }
         merged.push(item);
     }
+    for item in &mut merged {
+        let signature = item.description.as_deref().or(item.detail.as_deref());
+        item.insert_text = scaffold_required_arguments(&item.insert_text, signature);
+    }
     merged
+}
+
+fn scaffold_required_arguments(snippet: &str, signature: Option<&str>) -> String {
+    if !snippet.contains("(${1:})") {
+        return snippet.to_owned();
+    }
+    let Some(placeholders) = signature.and_then(required_argument_placeholders) else {
+        return snippet.to_owned();
+    };
+    if placeholders.is_empty() {
+        return snippet.to_owned();
+    }
+    let arguments = placeholders
+        .iter()
+        .enumerate()
+        .map(|(index, placeholder)| format!("${{{}:{placeholder}}}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    snippet.replacen("${1:}", &arguments, 1)
+}
+
+fn required_argument_placeholders(signature: &str) -> Option<Vec<String>> {
+    let signature = signature.trim();
+    let arguments = signature.strip_prefix('(')?.split_once(") =>")?.0;
+    let mut placeholders = Vec::new();
+    let mut start = 0;
+    let mut depth = 0;
+    let mut quoted = false;
+    for (offset, character) in arguments.char_indices().chain([(arguments.len(), ',')]) {
+        match character {
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                let argument = arguments[start..offset].trim();
+                if argument.contains(':') || argument.contains('=') {
+                    break;
+                }
+                if let Some(placeholder) = argument_placeholder(argument) {
+                    placeholders.push(placeholder);
+                }
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    Some(placeholders)
+}
+
+fn argument_placeholder(argument: &str) -> Option<String> {
+    let argument = argument.trim().trim_start_matches('[').trim_end_matches(']').trim();
+    if argument.is_empty() {
+        return None;
+    }
+    let placeholder = argument.split('|').next()?.trim();
+    let placeholder = if placeholder.starts_with('"') { "value" } else { placeholder };
+    Some(placeholder.chars().take(24).collect())
 }
 
 fn parse_diagnostic(value: &Value) -> Option<TinymistDiagnostic> {
@@ -567,7 +628,7 @@ mod tests {
         let result = json!({"items":[
             {
                 "label":"image",
-                "labelDetails":{"description":"function"},
+                "labelDetails":{"description":"([image], alt: none | str) => image"},
                 "detail":"Loads an image from a file.",
                 "insertTextFormat":2,
                 "textEdit":{
@@ -593,11 +654,26 @@ mod tests {
         let items = parse_completion_items(&result);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "image");
-        assert_eq!(items[0].insert_text, "image(${1:})");
+        assert_eq!(items[0].insert_text, "image(${1:image})");
         assert!(items[0].is_snippet);
-        assert_eq!(items[0].description.as_deref(), Some("function"));
+        assert_eq!(items[0].description.as_deref(), Some("([image], alt: none | str) => image"));
         assert_eq!(items[0].detail.as_deref(), Some("Loads an image from a file."));
         assert_eq!(items[0].range.expect("range").start, LspPosition { line: 2, character: 1 });
+    }
+
+    #[test]
+    fn scaffolds_every_required_positional_argument() {
+        assert_eq!(
+            scaffold_required_arguments(
+                "align(${1:})",
+                Some("(alignment, [body], scope: str) => content")
+            ),
+            "align(${1:alignment}, ${2:body})"
+        );
+        assert_eq!(
+            scaffold_required_arguments("line(${1:})", Some("(start: array, end: array) => line")),
+            "line(${1:})"
+        );
     }
 
     #[test]

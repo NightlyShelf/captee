@@ -1894,6 +1894,10 @@ fn request_tinymist_completion(project_ui: &ProjectUi, state: &EditorState) {
         project_ui.completion_popover.popdown();
         return;
     }
+    if project_ui.source_buffer.has_selection() {
+        project_ui.completion_popover.popdown();
+        return;
+    }
     let cursor_chars = project_ui.source_buffer.cursor_position().max(0) as usize;
     let cursor = byte_offset_for_character(&state.text, cursor_chars);
     if !should_request_tinymist_completion(&state.text, cursor) {
@@ -2098,6 +2102,12 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
     let start_chars = current.text[..edit.range.start].chars().count() as i32;
     let end_chars = current.text[..edit.range.end].chars().count() as i32;
     let replacement_cursor_chars = edit.replacement[..edit.cursor].chars().count() as i32;
+    let replacement_selection_chars = edit.selection.as_ref().map(|selection| {
+        (
+            edit.replacement[..selection.start].chars().count() as i32,
+            edit.replacement[..selection.end].chars().count() as i32,
+        )
+    });
     let replacement = edit.replacement;
     let state = project_ui
         .editor
@@ -2117,9 +2127,15 @@ fn accept_main_completion(project_ui: &ProjectUi, index: usize) {
         project_ui.source_buffer.delete(&mut start, &mut end);
         let mut insert = project_ui.source_buffer.iter_at_offset(start_chars);
         project_ui.source_buffer.insert(&mut insert, &replacement);
-        let replacement_cursor =
-            project_ui.source_buffer.iter_at_offset(start_chars + replacement_cursor_chars);
-        project_ui.source_buffer.place_cursor(&replacement_cursor);
+        if let Some((selection_start, selection_end)) = replacement_selection_chars {
+            let insert = project_ui.source_buffer.iter_at_offset(start_chars + selection_start);
+            let bound = project_ui.source_buffer.iter_at_offset(start_chars + selection_end);
+            project_ui.source_buffer.select_range(&insert, &bound);
+        } else {
+            let replacement_cursor =
+                project_ui.source_buffer.iter_at_offset(start_chars + replacement_cursor_chars);
+            project_ui.source_buffer.place_cursor(&replacement_cursor);
+        }
         project_ui.syncing_buffer.set(false);
         apply_editor_state(project_ui, &state, false);
         request_tinymist_completion(project_ui, &state);
@@ -2351,6 +2367,10 @@ fn request_capture_completion(project_ui: &ProjectUi) {
         assistance.popover.popdown();
         return;
     }
+    if assistance.buffer.has_selection() {
+        assistance.popover.popdown();
+        return;
+    }
     let cursor_chars = assistance.buffer.cursor_position().max(0) as usize;
     let cursor = byte_offset_for_character(&assistance.text, cursor_chars);
     if !should_request_tinymist_completion(&assistance.text, cursor) {
@@ -2413,6 +2433,12 @@ fn accept_capture_completion(project_ui: &ProjectUi, index: usize) {
         let start_chars = assistance.text[..edit.range.start].chars().count() as i32;
         let end_chars = assistance.text[..edit.range.end].chars().count() as i32;
         let replacement_cursor_chars = edit.replacement[..edit.cursor].chars().count() as i32;
+        let replacement_selection_chars = edit.selection.as_ref().map(|selection| {
+            (
+                edit.replacement[..selection.start].chars().count() as i32,
+                edit.replacement[..selection.end].chars().count() as i32,
+            )
+        });
         assistance.suppress_completion = true;
         assistance.popover.popdown();
         (
@@ -2420,17 +2446,31 @@ fn accept_capture_completion(project_ui: &ProjectUi, index: usize) {
             start_chars,
             end_chars,
             replacement_cursor_chars,
+            replacement_selection_chars,
             edit.replacement,
         )
     };
-    let (buffer, start_chars, end_chars, replacement_cursor_chars, replacement) = edit;
+    let (
+        buffer,
+        start_chars,
+        end_chars,
+        replacement_cursor_chars,
+        replacement_selection_chars,
+        replacement,
+    ) = edit;
     let mut start = buffer.iter_at_offset(start_chars);
     let mut end = buffer.iter_at_offset(end_chars);
     buffer.delete(&mut start, &mut end);
     let mut insert = buffer.iter_at_offset(start_chars);
     buffer.insert(&mut insert, &replacement);
-    let replacement_cursor = buffer.iter_at_offset(start_chars + replacement_cursor_chars);
-    buffer.place_cursor(&replacement_cursor);
+    if let Some((selection_start, selection_end)) = replacement_selection_chars {
+        let insert = buffer.iter_at_offset(start_chars + selection_start);
+        let bound = buffer.iter_at_offset(start_chars + selection_end);
+        buffer.select_range(&insert, &bound);
+    } else {
+        let replacement_cursor = buffer.iter_at_offset(start_chars + replacement_cursor_chars);
+        buffer.place_cursor(&replacement_cursor);
+    }
 }
 
 fn apply_capture_diagnostics(
