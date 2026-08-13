@@ -1,10 +1,67 @@
 use crate::{atomic_write, AtomicWriteError, AutosaveStore, PathError, ProjectPaths};
-use captee_core::{DocumentPersistence, RecentProjects};
+use captee_core::{DocumentPersistence, KeybindingSettings, RecentProjects};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const AUTOSAVE_FILE: &str = ".captee-autosave";
+
+#[derive(Debug, Clone)]
+pub struct GlobalKeybindingStore {
+    path: PathBuf,
+}
+
+impl GlobalKeybindingStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
+    pub fn load(&self) -> Result<KeybindingSettings, GlobalKeybindingError> {
+        if !self.exists() {
+            return Ok(KeybindingSettings::default());
+        }
+        let bytes = fs::read(&self.path).map_err(GlobalKeybindingError::Io)?;
+        serde_json::from_slice(&bytes).map_err(GlobalKeybindingError::Serialization)
+    }
+
+    pub fn save(&self, keybindings: &KeybindingSettings) -> Result<(), GlobalKeybindingError> {
+        let parent = self.path.parent().ok_or_else(|| {
+            GlobalKeybindingError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "global keybinding path has no parent",
+            ))
+        })?;
+        fs::create_dir_all(parent).map_err(GlobalKeybindingError::Io)?;
+        let payload =
+            serde_json::to_vec_pretty(keybindings).map_err(GlobalKeybindingError::Serialization)?;
+        atomic_write(&self.path, &payload).map_err(GlobalKeybindingError::Atomic)
+    }
+}
+
+#[derive(Debug)]
+pub enum GlobalKeybindingError {
+    Io(std::io::Error),
+    Serialization(serde_json::Error),
+    Atomic(AtomicWriteError),
+}
+
+impl fmt::Display for GlobalKeybindingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "global keybinding I/O failed: {error}"),
+            Self::Serialization(error) => {
+                write!(formatter, "global keybindings are invalid: {error}")
+            }
+            Self::Atomic(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for GlobalKeybindingError {}
 
 #[derive(Debug, Clone)]
 pub struct ProjectDocumentPersistence {
@@ -207,6 +264,23 @@ mod tests {
 
         store.remove("/work/notes").expect("remove");
         assert!(store.load().expect("load removal").entries.is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn global_keybindings_are_persisted_outside_projects() {
+        let root = test_root("global-keybindings");
+        let store = GlobalKeybindingStore::new(root.join("settings/keybindings.json"));
+        assert_eq!(store.load().expect("defaults"), KeybindingSettings::default());
+
+        let keybindings = KeybindingSettings {
+            capture: "<Primary>asciitilde".to_owned(),
+            ..KeybindingSettings::default()
+        };
+        store.save(&keybindings).expect("save");
+
+        assert!(store.exists());
+        assert_eq!(store.load().expect("load"), keybindings);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

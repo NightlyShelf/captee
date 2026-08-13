@@ -21,7 +21,8 @@ use captee_platform::{
     current_desktop_prefers_fallback_capture, export_pdf, list_project_tree, move_project_item,
     open_project, register_capture_shortcut, rename_project_item, save_project_settings,
     AssetStore, AsyncPreviewCompiler, AutosaveSnapshot, AutosaveStore, CaptureSelector,
-    FormattedSource, GlobalShortcutEvent, GrimSlurpCapture, PngAnnotationBackend, PreviewOutcome,
+    FormattedSource, GlobalKeybindingStore, GlobalShortcutEvent, GlobalShortcutRegistration,
+    GrimSlurpCapture, PngAnnotationBackend, PreviewContentEnd, PreviewOutcome,
     ProjectDocumentPersistence, ProjectTreeEntry, RecentProjectStore, SavedAsset, TrashBackend,
     TrashError, TypstCompletionProvider, TypstFormatter, TypstPreviewCompiler, TypstRunner,
     XdgPortalCapture, AUTOSAVE_FILE,
@@ -60,7 +61,7 @@ enum WorkspaceOperationResult {
     Exported(PathBuf),
     Captured(CapturedImage),
     CaptureStored { asset: SavedAsset, annotation: String, before_image: bool },
-    SettingsSaved(ProjectSettings),
+    SettingsSaved { settings: Box<ProjectSettings>, keybindings: KeybindingSettings },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,12 @@ enum PreviewScale {
     FitPage,
     FitPageWidth,
     Percent(u16),
+}
+
+#[derive(Clone, Copy)]
+struct PreviewScrollAnchor {
+    page: usize,
+    y_ratio: f64,
 }
 
 const STATUS_BAR_VISIBLE_BY_DEFAULT: bool = false;
@@ -98,7 +105,10 @@ fn build_ui(application: &Application) {
     let pending_annotation = Rc::new(RefCell::new(None));
     let pending_review = Rc::new(RefCell::new(None));
     let scroll_preview_to_end = Rc::new(Cell::new(false));
-    let global_capture_receiver = register_capture_shortcut("CTRL+SHIFT+C");
+    let preview_scroll_generation = Rc::new(Cell::new(0));
+    let global_keybindings = Rc::new(RefCell::new(
+        global_keybinding_store().load().unwrap_or_else(|_| KeybindingSettings::default()),
+    ));
     let project_tree = ListBox::new();
     project_tree.set_selection_mode(gtk::SelectionMode::None);
     project_tree.set_hexpand(true);
@@ -160,6 +170,7 @@ fn build_ui(application: &Application) {
     source_view.set_monospace(true);
     source_view.set_hexpand(true);
     source_view.set_vexpand(true);
+    source_view.set_bottom_margin(1);
     source_view.add_css_class("typst-editor");
     source_view.set_tooltip_text(Some("Typst source editor"));
 
@@ -208,6 +219,11 @@ fn build_ui(application: &Application) {
         .vexpand(true)
         .min_content_height(240)
         .build();
+    let go_to_content_end = Button::with_label("Go to bottom");
+    go_to_content_end.set_tooltip_text(Some("Scroll to the end of preview content"));
+    let auto_scroll_to_content_end = CheckButton::new();
+    auto_scroll_to_content_end
+        .set_tooltip_text(Some("Automatically scroll to preview content end"));
 
     let home_new_button = Button::with_label("New Project");
     home_new_button.add_css_class("suggested-action");
@@ -222,7 +238,12 @@ fn build_ui(application: &Application) {
     stack.add_named(
         &build_workspace(
             &source_view,
-            PreviewWidgets { scroller: &preview_scroller, scale: &preview_scale },
+            PreviewWidgets {
+                scroller: &preview_scroller,
+                scale: &preview_scale,
+                go_to_content_end: &go_to_content_end,
+                auto_scroll_to_content_end: &auto_scroll_to_content_end,
+            },
             &project_tree,
             &project_name_label,
             &project_panel_title,
@@ -253,6 +274,9 @@ fn build_ui(application: &Application) {
         preview_scroller,
         preview_scale,
         preview_scale_mode: Rc::new(Cell::new(PreviewScale::FitPage)),
+        preview_content_end: Rc::new(Cell::new(None)),
+        go_to_content_end,
+        auto_scroll_to_content_end,
         progress_spinner,
         cancel_button: cancel_button.clone(),
         editor,
@@ -265,7 +289,9 @@ fn build_ui(application: &Application) {
         pending_annotation,
         pending_review,
         scroll_preview_to_end,
-        global_capture_receiver: Rc::new(RefCell::new(global_capture_receiver)),
+        preview_scroll_generation,
+        global_keybindings,
+        global_capture_shortcut: Rc::new(RefCell::new(None)),
         background_sender,
         background_receiver: Rc::new(RefCell::new(background_receiver)),
     };
@@ -285,12 +311,15 @@ fn build_ui(application: &Application) {
     root.append(&status_row);
     project_ui.workspace_overlay.set_child(Some(&root));
     window.set_child(Some(&project_ui.workspace_overlay));
+    apply_global_accelerators(application, &project_ui.global_keybindings.borrow());
 
     connect_ui_actions(&project_ui, application);
     connect_project_button(&home_new_button, true, &project_ui);
     connect_project_button(&home_open_button, false, &project_ui);
     connect_editor_buffer(&project_ui);
+    connect_editor_autoscroll(&source_view, &source_buffer);
     connect_preview_scale(&project_ui);
+    connect_preview_content_navigation(&project_ui);
     connect_project_tree(&project_ui);
     connect_runtime_results(&project_ui);
     connect_global_capture_shortcut(&project_ui);
@@ -341,6 +370,8 @@ struct WorkspaceMenus {
 struct PreviewWidgets<'a> {
     scroller: &'a ScrolledWindow,
     scale: &'a gtk::DropDown,
+    go_to_content_end: &'a Button,
+    auto_scroll_to_content_end: &'a CheckButton,
 }
 
 fn build_menu_header(
@@ -398,7 +429,12 @@ fn build_workspace(
     project_name_label: &Label,
     project_panel_title: &Label,
 ) -> GtkBox {
-    let PreviewWidgets { scroller: preview_scroller, scale: preview_scale } = preview_widgets;
+    let PreviewWidgets {
+        scroller: preview_scroller,
+        scale: preview_scale,
+        go_to_content_end,
+        auto_scroll_to_content_end,
+    } = preview_widgets;
     let navigation = GtkBox::new(Orientation::Vertical, 12);
     navigation.set_margin_top(4);
     navigation.set_margin_bottom(4);
@@ -447,6 +483,7 @@ fn build_workspace(
 
     let editor_scroll =
         ScrolledWindow::builder().child(source_view).hexpand(true).vexpand(true).build();
+    keep_last_editor_line_reachable(&editor_scroll, source_view);
 
     let preview = GtkBox::new(Orientation::Vertical, 12);
     preview.set_margin_top(16);
@@ -459,6 +496,11 @@ fn build_workspace(
     scale_label.set_xalign(0.0);
     scale_row.append(&scale_label);
     scale_row.append(preview_scale);
+    let scale_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    scale_spacer.set_hexpand(true);
+    scale_row.append(&scale_spacer);
+    scale_row.append(auto_scroll_to_content_end);
+    scale_row.append(go_to_content_end);
     preview.append(&scale_row);
     let editor_preview = Paned::new(Orientation::Horizontal);
     editor_preview.set_start_child(Some(&editor_scroll));
@@ -533,7 +575,7 @@ fn install_actions(application: &Application) -> WorkspaceMenus {
         ("completion", "<Primary>space"),
         ("undo", "<Primary>z"),
         ("redo", "<Primary><Shift>z"),
-        ("capture", "<Primary><Shift>c"),
+        ("capture", "<Primary>asciitilde"),
         ("preview", "<Primary>r"),
         ("export", "<Primary><Shift>e"),
         ("status-bar", ""),
@@ -669,6 +711,9 @@ struct ProjectUi {
     preview_scroller: ScrolledWindow,
     preview_scale: gtk::DropDown,
     preview_scale_mode: Rc<Cell<PreviewScale>>,
+    preview_content_end: Rc<Cell<Option<PreviewContentEnd>>>,
+    go_to_content_end: Button,
+    auto_scroll_to_content_end: CheckButton,
     progress_spinner: Spinner,
     cancel_button: Button,
     editor: Rc<RefCell<Option<EditorBridge>>>,
@@ -681,7 +726,9 @@ struct ProjectUi {
     pending_annotation: Rc<RefCell<Option<AnnotatedImage>>>,
     pending_review: Rc<RefCell<Option<CaptureReview>>>,
     scroll_preview_to_end: Rc<Cell<bool>>,
-    global_capture_receiver: Rc<RefCell<Receiver<GlobalShortcutEvent>>>,
+    preview_scroll_generation: Rc<Cell<u64>>,
+    global_keybindings: Rc<RefCell<KeybindingSettings>>,
+    global_capture_shortcut: Rc<RefCell<Option<GlobalShortcutRegistration>>>,
     background_sender: Sender<BackgroundResult>,
     background_receiver: Rc<RefCell<Receiver<BackgroundResult>>>,
 }
@@ -712,20 +759,81 @@ fn connect_global_capture_shortcut(project_ui: &ProjectUi) {
     let project_ui = project_ui.clone();
     glib::timeout_add_local(Duration::from_millis(100), move || {
         loop {
-            let event = project_ui.global_capture_receiver.borrow_mut().try_recv();
+            let event = project_ui
+                .global_capture_shortcut
+                .borrow()
+                .as_ref()
+                .map(GlobalShortcutRegistration::try_recv);
             match event {
-                Ok(GlobalShortcutEvent::Activated) => start_capture(&project_ui),
-                Ok(GlobalShortcutEvent::Failed(error)) => {
+                Some(Ok(GlobalShortcutEvent::Activated)) => start_capture(&project_ui),
+                Some(Ok(GlobalShortcutEvent::Failed(error))) => {
                     project_ui
                         .status
                         .set_text(&format!("Global capture shortcut unavailable: {error}"));
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+                Some(Err(TryRecvError::Empty)) | None => break,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    *project_ui.global_capture_shortcut.borrow_mut() = None;
+                    break;
+                }
             }
         }
         glib::ControlFlow::Continue
     });
+}
+
+fn global_capture_trigger(accelerator: &str) -> Option<String> {
+    let (key, modifiers) = gtk::accelerator_parse(accelerator)?;
+    let key = match key.name()?.as_str() {
+        "asciitilde" => "GRAVE".to_owned(),
+        name => name.to_ascii_uppercase(),
+    };
+    let mut parts = Vec::new();
+    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+        parts.push("CTRL");
+    }
+    if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+        parts.push("SHIFT");
+    }
+    if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) {
+        parts.push("ALT");
+    }
+    if modifiers.contains(gtk::gdk::ModifierType::SUPER_MASK) {
+        parts.push("SUPER");
+    }
+    parts.push(&key);
+    Some(parts.join("+"))
+}
+
+fn start_global_capture_shortcut(project_ui: &ProjectUi) {
+    let keybindings = project_ui.global_keybindings.borrow();
+    let Some(trigger) = global_capture_trigger(&keybindings.capture) else {
+        project_ui.status.set_text("Global capture shortcut has an unsupported accelerator.");
+        return;
+    };
+    drop(keybindings);
+    if let Some(shortcut) = project_ui.global_capture_shortcut.borrow_mut().take() {
+        shortcut.stop();
+    }
+    *project_ui.global_capture_shortcut.borrow_mut() = Some(register_capture_shortcut(trigger));
+}
+
+fn stop_global_capture_shortcut(project_ui: &ProjectUi) {
+    if let Some(shortcut) = project_ui.global_capture_shortcut.borrow_mut().take() {
+        shortcut.stop();
+    }
+}
+
+fn rebind_global_capture_shortcut(project_ui: &ProjectUi) -> Result<(), String> {
+    let keybindings = project_ui.global_keybindings.borrow();
+    let trigger = global_capture_trigger(&keybindings.capture)
+        .ok_or_else(|| "Global capture shortcut has an unsupported accelerator.".to_owned())?;
+    drop(keybindings);
+    let shortcut = project_ui.global_capture_shortcut.borrow();
+    let Some(shortcut) = shortcut.as_ref() else {
+        return Ok(());
+    };
+    shortcut.rebind(trigger)
 }
 
 fn sync_operation_feedback(project_ui: &ProjectUi) {
@@ -1308,6 +1416,41 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
             }
             Some(Ok(None)) | None => {}
         }
+    });
+}
+
+fn connect_editor_autoscroll(view: &sourceview::View, buffer: &sourceview::Buffer) {
+    let key = gtk::EventControllerKey::new();
+    let view_for_key = view.clone();
+    let buffer_for_key = buffer.clone();
+    key.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Return {
+            preserve_cursor_vertical_position(&view_for_key, &buffer_for_key);
+        }
+        glib::Propagation::Proceed
+    });
+    view.add_controller(key);
+}
+
+fn preserve_cursor_vertical_position(view: &sourceview::View, buffer: &sourceview::Buffer) {
+    let before = buffer.iter_at_mark(&buffer.get_insert());
+    let previous_y = view.iter_location(&before).y();
+    let previous_scroll = view.vadjustment().map(|adjustment| adjustment.value());
+    let view = view.clone();
+    let buffer = buffer.clone();
+    glib::idle_add_local_once(move || {
+        let mut cursor = buffer.iter_at_mark(&buffer.get_insert());
+        let Some(adjustment) = view.vadjustment() else {
+            view.scroll_to_iter(&mut cursor, 0.2, false, 0.0, 0.0);
+            return;
+        };
+        let current_y = view.iter_location(&cursor).y();
+        let scroll = previous_scroll.unwrap_or_else(|| adjustment.value())
+            + f64::from(current_y - previous_y);
+        adjustment.set_value(scroll.clamp(
+            adjustment.lower(),
+            preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
+        ));
     });
 }
 
@@ -1948,6 +2091,9 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     if !source_context.is_empty() && !source_context.ends_with('\n') {
         source_context.push('\n');
     }
+    if !source_context.is_empty() {
+        source_context.push('\n');
+    }
     let annotation_offset = source_context.chars().count() as i32;
     source_context.push_str(review.borrow().annotation());
     code_buffer.set_text(&source_context);
@@ -1967,6 +2113,7 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     code_view.set_monospace(true);
     code_view.set_hexpand(true);
     code_view.set_vexpand(true);
+    code_view.set_bottom_margin(1);
     code_view.add_css_class("typst-editor");
     code_view.set_tooltip_text(Some("Typst annotation at the insertion point"));
 
@@ -1976,6 +2123,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         .vexpand(true)
         .min_content_height(220)
         .build();
+    code_scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+    keep_last_editor_line_reachable(&code_scroller, &code_view);
     let code_editor = gtk::Overlay::new();
     code_editor.set_child(Some(&code_scroller));
     let code_placeholder = Label::new(Some("Type Typst annotation here…"));
@@ -2087,6 +2236,8 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     let editor_key = gtk::EventControllerKey::new();
     let confirm_for_editor = confirm.clone();
     let cancel_for_editor = cancel.clone();
+    let code_view_for_editor = code_view.clone();
+    let code_buffer_for_editor = code_buffer.clone();
     editor_key.connect_key_pressed(move |_, key, _, state| {
         if key == gtk::gdk::Key::Escape {
             cancel_for_editor.emit_clicked();
@@ -2095,6 +2246,9 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
         if annotation_confirms_on_enter(key, state) {
             confirm_for_editor.emit_clicked();
             return glib::Propagation::Stop;
+        }
+        if key == gtk::gdk::Key::Return {
+            preserve_cursor_vertical_position(&code_view_for_editor, &code_buffer_for_editor);
         }
         glib::Propagation::Proceed
     });
@@ -2116,7 +2270,13 @@ fn show_capture_review_dialog(project_ui: &ProjectUi, review: CaptureReview) -> 
     panel.add_controller(key_controller);
     let annotation_start = code_buffer.iter_at_offset(annotation_offset);
     code_buffer.place_cursor(&annotation_start);
-    code_view.grab_focus();
+    let code_buffer_for_scroll = code_buffer.clone();
+    let code_view_for_scroll = code_view.clone();
+    glib::idle_add_local_once(move || {
+        let mut annotation_start = code_buffer_for_scroll.iter_at_offset(annotation_offset);
+        code_view_for_scroll.scroll_to_iter(&mut annotation_start, 0.2, true, 0.0, 0.75);
+        code_view_for_scroll.grab_focus();
+    });
 
     let modify_ui = project_ui.clone();
     let modify_window = review_window.clone();
@@ -2288,12 +2448,12 @@ fn capture_insertion_expression(
     before_image: bool,
 ) -> String {
     if annotation.trim().is_empty() {
-        return format!("{image_expression}\n");
+        return format!("\n\n{image_expression}\n\n");
     }
     if before_image {
-        format!("{}\n{}\n", annotation.trim(), image_expression)
+        format!("\n\n{}\n{}\n\n", annotation.trim(), image_expression)
     } else {
-        format!("{}\n{}\n", image_expression, annotation.trim())
+        format!("\n\n{}\n{}\n\n", image_expression, annotation.trim())
     }
 }
 
@@ -2311,6 +2471,7 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         return;
     };
     let settings = snapshot.app.settings;
+    let global_keybindings = project_ui.global_keybindings.borrow().clone();
     let dialog = Dialog::builder()
         .title("Project settings")
         .transient_for(&window)
@@ -2376,21 +2537,21 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
     keybindings_title.add_css_class("heading");
     keybindings_title.set_xalign(0.0);
     content.append(&keybindings_title);
-    let keybindings = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
+    let keybinding_grid = gtk::Grid::builder().column_spacing(8).row_spacing(8).build();
     let save_key = Entry::new();
-    save_key.set_text(&settings.keybindings.save);
+    save_key.set_text(&global_keybindings.save);
     let format_key = Entry::new();
-    format_key.set_text(&settings.keybindings.format);
+    format_key.set_text(&global_keybindings.format);
     let find_key = Entry::new();
-    find_key.set_text(&settings.keybindings.find_replace);
+    find_key.set_text(&global_keybindings.find_replace);
     let completion_key = Entry::new();
-    completion_key.set_text(&settings.keybindings.completion);
+    completion_key.set_text(&global_keybindings.completion);
     let capture_key = Entry::new();
-    capture_key.set_text(&settings.keybindings.capture);
+    capture_key.set_text(&global_keybindings.capture);
     let preview_key = Entry::new();
-    preview_key.set_text(&settings.keybindings.preview);
+    preview_key.set_text(&global_keybindings.preview);
     let export_key = Entry::new();
-    export_key.set_text(&settings.keybindings.export);
+    export_key.set_text(&global_keybindings.export);
     for (row, (label, entry)) in [
         ("Save", &save_key),
         ("Format", &format_key),
@@ -2407,10 +2568,10 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         label.set_xalign(0.0);
         entry.set_hexpand(true);
         entry.set_tooltip_text(Some("GTK accelerator, for example <Primary><Shift>c"));
-        keybindings.attach(&label, 0, row as i32, 1, 1);
-        keybindings.attach(entry, 1, row as i32, 1, 1);
+        keybinding_grid.attach(&label, 0, row as i32, 1, 1);
+        keybinding_grid.attach(entry, 1, row as i32, 1, 1);
     }
-    content.append(&keybindings);
+    content.append(&keybinding_grid);
     let error_label = Label::new(None);
     error_label.add_css_class("error");
     error_label.set_xalign(0.0);
@@ -2438,7 +2599,7 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
         updated.capture.fallback_enabled = fallback_enabled.is_active();
         updated.preview.auto_render = auto_render.is_active();
         updated.preview.zoom_percent = zoom.value_as_int() as u16;
-        updated.keybindings = KeybindingSettings {
+        let keybindings = KeybindingSettings {
             save: save_key.text().to_string(),
             format: format_key.text().to_string(),
             find_replace: find_key.text().to_string(),
@@ -2451,8 +2612,11 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
             error_label.set_text(&error.to_string());
             return;
         }
-        if let Some((action, binding)) = updated
-            .keybindings
+        if let Err(error) = crate::validate_keybindings(&keybindings) {
+            error_label.set_text(&error.to_string());
+            return;
+        }
+        if let Some((action, binding)) = keybindings
             .named_bindings()
             .into_iter()
             .find(|(_, binding)| gtk::accelerator_parse(*binding).is_none())
@@ -2461,12 +2625,16 @@ fn show_settings_dialog(project_ui: &ProjectUi) {
             return;
         }
         dialog.close();
-        start_settings_save(&project_ui, updated);
+        start_settings_save(&project_ui, updated, keybindings);
     });
     dialog.present();
 }
 
-fn start_settings_save(project_ui: &ProjectUi, settings: ProjectSettings) {
+fn start_settings_save(
+    project_ui: &ProjectUi,
+    settings: ProjectSettings,
+    keybindings: KeybindingSettings,
+) {
     let snapshot = project_ui.shell.borrow().snapshot();
     let Some(project) = snapshot.app.project else {
         project_ui.status.set_text("The project closed before settings could be saved.");
@@ -2491,16 +2659,20 @@ fn start_settings_save(project_ui: &ProjectUi, settings: ProjectSettings) {
     let root = PathBuf::from(project.root);
     let _ = thread::Builder::new().name("captee-settings".to_owned()).spawn(move || {
         let outcome = match save_project_settings(root, settings) {
-            Ok(config) => OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved(
-                config.settings,
-            )),
+            Ok(config) => match global_keybinding_store().save(&keybindings) {
+                Ok(()) => OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
+                    settings: Box::new(config.settings),
+                    keybindings,
+                }),
+                Err(error) => OperationOutcome::Failed(error.to_string()),
+            },
             Err(error) => OperationOutcome::Failed(error.to_string()),
         };
         let _ = task.finish(outcome);
     });
 }
 
-fn apply_project_accelerators(application: &Application, keybindings: &KeybindingSettings) {
+fn apply_global_accelerators(application: &Application, keybindings: &KeybindingSettings) {
     for (action, binding) in [
         ("save", keybindings.save.as_str()),
         ("format", keybindings.format.as_str()),
@@ -2514,7 +2686,11 @@ fn apply_project_accelerators(application: &Application, keybindings: &Keybindin
     }
 }
 
-fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<(), String> {
+fn display_preview_pages(
+    project_ui: &ProjectUi,
+    pages: Vec<Vec<u8>>,
+    content_end: Option<PreviewContentEnd>,
+) -> Result<(), String> {
     let mut pictures = Vec::with_capacity(pages.len());
     for png in pages {
         let bytes = glib::Bytes::from_owned(png);
@@ -2533,8 +2709,11 @@ fn display_preview_pages(project_ui: &ProjectUi, pages: Vec<Vec<u8>>) -> Result<
         project_ui.preview_pages.append(&picture);
     }
     apply_preview_zoom(project_ui);
-    if project_ui.scroll_preview_to_end.replace(false) {
-        scroll_preview_to_end(&project_ui.preview_scroller);
+    project_ui.preview_content_end.set(content_end);
+    if project_ui.auto_scroll_to_content_end.is_active()
+        || project_ui.scroll_preview_to_end.replace(false)
+    {
+        scroll_preview_to_content_end(project_ui);
     }
     Ok(())
 }
@@ -2548,6 +2727,60 @@ fn scroll_preview_to_end(scroller: &ScrolledWindow) {
             adjustment.page_size(),
         ));
     });
+}
+
+fn scroll_preview_to_content_end(project_ui: &ProjectUi) {
+    let generation = project_ui.preview_scroll_generation.get().wrapping_add(1);
+    project_ui.preview_scroll_generation.set(generation);
+    if project_ui.preview_content_end.get().is_none() {
+        scroll_preview_to_end(&project_ui.preview_scroller);
+        return;
+    }
+    let project_ui = project_ui.clone();
+    let scroll_generation = Rc::clone(&project_ui.preview_scroll_generation);
+    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+        if scroll_generation.get() != generation {
+            return;
+        }
+        set_preview_to_content_end(&project_ui);
+    });
+}
+
+fn set_preview_to_content_end(project_ui: &ProjectUi) -> bool {
+    let Some(content_end) = project_ui.preview_content_end.get() else {
+        return false;
+    };
+    let Some(page) = preview_page(&project_ui.preview_pages, content_end.page) else {
+        return false;
+    };
+    let Some(bounds) = page.compute_bounds(&project_ui.preview_pages) else {
+        return false;
+    };
+    let adjustment = project_ui.preview_scroller.vadjustment();
+    let content_y = f64::from(bounds.y())
+        + f64::from(bounds.height()) * content_end.y_pt / content_end.page_height_pt;
+    adjustment.set_value((content_y - adjustment.page_size() / 3.0).clamp(
+        adjustment.lower(),
+        preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
+    ));
+    true
+}
+
+fn preview_page(pages: &GtkBox, page_number: usize) -> Option<gtk::Widget> {
+    let mut page = pages.first_child();
+    for _ in 1..page_number {
+        page = page?.next_sibling();
+    }
+    page
+}
+
+fn keep_last_editor_line_reachable(scroller: &ScrolledWindow, editor: &sourceview::View) {
+    let adjustment = scroller.vadjustment();
+    let editor_for_viewport = editor.clone();
+    adjustment.connect_notify_local(Some("page-size"), move |adjustment, _| {
+        editor_for_viewport.set_bottom_margin(adjustment.page_size().ceil().max(1.0) as i32);
+    });
+    editor.set_bottom_margin(adjustment.page_size().ceil().max(1.0) as i32);
 }
 
 fn preview_scroll_end(lower: f64, upper: f64, page_size: f64) -> f64 {
@@ -2580,27 +2813,156 @@ fn connect_preview_scale(project_ui: &ProjectUi) {
             7 => PreviewScale::Percent(200),
             _ => PreviewScale::Percent(300),
         };
+        let anchor = preview_scroll_anchor(&scale_ui.preview_pages, &scale_ui.preview_scroller);
         scale_ui.preview_scale_mode.set(mode);
         apply_preview_zoom(&scale_ui);
-    });
-
-    let resize_ui = project_ui.clone();
-    project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
-        if matches!(
-            resize_ui.preview_scale_mode.get(),
-            PreviewScale::FitPage | PreviewScale::FitPageWidth
-        ) {
-            apply_preview_zoom(&resize_ui);
+        if let Some(anchor) = anchor {
+            restore_preview_scroll_anchor(
+                &scale_ui.preview_pages,
+                &scale_ui.preview_scroller,
+                anchor,
+                scale_ui.auto_scroll_to_content_end.is_active().then(|| scale_ui.clone()),
+            );
+        } else if scale_ui.auto_scroll_to_content_end.is_active() {
+            scroll_preview_to_content_end(&scale_ui);
         }
     });
 
+    let resize_pending = Rc::new(Cell::new(false));
+    let resize_sequence = Rc::new(Cell::new(0));
+    let last_preview_size = Rc::new(Cell::new(None));
+    let pending_anchor = Rc::new(Cell::new(None));
     let resize_ui = project_ui.clone();
+    let resize_pending_for_width = Rc::clone(&resize_pending);
+    let resize_sequence_for_width = Rc::clone(&resize_sequence);
+    let last_preview_size_for_width = Rc::clone(&last_preview_size);
+    let pending_anchor_for_width = Rc::clone(&pending_anchor);
+    project_ui.preview_scroller.connect_notify_local(Some("width"), move |_, _| {
+        queue_preview_resize(
+            &resize_ui,
+            &resize_pending_for_width,
+            &resize_sequence_for_width,
+            &last_preview_size_for_width,
+            &pending_anchor_for_width,
+        );
+    });
+
+    let resize_ui = project_ui.clone();
+    let resize_pending_for_height = Rc::clone(&resize_pending);
+    let resize_sequence_for_height = Rc::clone(&resize_sequence);
+    let last_preview_size_for_height = Rc::clone(&last_preview_size);
+    let pending_anchor_for_height = Rc::clone(&pending_anchor);
     project_ui.preview_scroller.connect_notify_local(Some("height"), move |_, _| {
+        queue_preview_resize(
+            &resize_ui,
+            &resize_pending_for_height,
+            &resize_sequence_for_height,
+            &last_preview_size_for_height,
+            &pending_anchor_for_height,
+        );
+    });
+
+    if let Some(paned) =
+        project_ui.preview_scroller.ancestor(gtk::Paned::static_type()).and_downcast::<Paned>()
+    {
+        let resize_ui = project_ui.clone();
+        let resize_pending = Rc::clone(&resize_pending);
+        let resize_sequence = Rc::clone(&resize_sequence);
+        let last_preview_size = Rc::clone(&last_preview_size);
+        let pending_anchor = Rc::clone(&pending_anchor);
+        paned.connect_position_notify(move |_| {
+            queue_preview_resize(
+                &resize_ui,
+                &resize_pending,
+                &resize_sequence,
+                &last_preview_size,
+                &pending_anchor,
+            );
+        });
+    }
+
+    if let Some(window) = project_ui.window() {
+        let resize_ui = project_ui.clone();
+        let resize_pending = Rc::clone(&resize_pending);
+        let resize_sequence = Rc::clone(&resize_sequence);
+        let last_preview_size = Rc::clone(&last_preview_size);
+        let pending_anchor = Rc::clone(&pending_anchor);
+        window.connect_realize(move |window| {
+            if let Some(surface) = window.surface() {
+                let resize_ui = resize_ui.clone();
+                let resize_pending = Rc::clone(&resize_pending);
+                let resize_sequence = Rc::clone(&resize_sequence);
+                let last_preview_size = Rc::clone(&last_preview_size);
+                let pending_anchor = Rc::clone(&pending_anchor);
+                surface.connect_layout(move |_, _, _| {
+                    queue_preview_resize(
+                        &resize_ui,
+                        &resize_pending,
+                        &resize_sequence,
+                        &last_preview_size,
+                        &pending_anchor,
+                    );
+                });
+            }
+        });
+    }
+}
+
+fn queue_preview_resize(
+    project_ui: &ProjectUi,
+    pending: &Rc<Cell<bool>>,
+    sequence: &Rc<Cell<u64>>,
+    last_preview_size: &Rc<Cell<Option<(i32, i32)>>>,
+    pending_anchor: &Rc<Cell<Option<PreviewScrollAnchor>>>,
+) {
+    let current_sequence = sequence.get().wrapping_add(1);
+    sequence.set(current_sequence);
+    if !pending.replace(true) {
+        pending_anchor
+            .set(preview_scroll_anchor(&project_ui.preview_pages, &project_ui.preview_scroller));
+    }
+    let project_ui = project_ui.clone();
+    let pending = Rc::clone(pending);
+    let sequence = Rc::clone(sequence);
+    let last_preview_size = Rc::clone(last_preview_size);
+    let pending_anchor = Rc::clone(pending_anchor);
+    glib::timeout_add_local_once(Duration::from_millis(200), move || {
+        if sequence.get() != current_sequence {
+            return;
+        }
+        pending.set(false);
+        let size = (project_ui.preview_scroller.width(), project_ui.preview_scroller.height());
+        if last_preview_size.replace(Some(size)) == Some(size) {
+            return;
+        }
         if matches!(
-            resize_ui.preview_scale_mode.get(),
+            project_ui.preview_scale_mode.get(),
             PreviewScale::FitPage | PreviewScale::FitPageWidth
         ) {
-            apply_preview_zoom(&resize_ui);
+            let anchor = pending_anchor.take();
+            apply_preview_zoom(&project_ui);
+            if let Some(anchor) = anchor {
+                restore_preview_scroll_anchor(
+                    &project_ui.preview_pages,
+                    &project_ui.preview_scroller,
+                    anchor,
+                    project_ui.auto_scroll_to_content_end.is_active().then(|| project_ui.clone()),
+                );
+            }
+        }
+    });
+}
+
+fn connect_preview_content_navigation(project_ui: &ProjectUi) {
+    let project_ui_for_button = project_ui.clone();
+    project_ui.go_to_content_end.connect_clicked(move |_| {
+        scroll_preview_to_content_end(&project_ui_for_button);
+    });
+
+    let project_ui_for_toggle = project_ui.clone();
+    project_ui.auto_scroll_to_content_end.connect_toggled(move |toggle| {
+        if toggle.is_active() {
+            scroll_preview_to_content_end(&project_ui_for_toggle);
         }
     });
 }
@@ -2625,6 +2987,95 @@ fn apply_preview_zoom(project_ui: &ProjectUi) {
         }
         child = widget.next_sibling();
     }
+}
+
+fn preview_scroll_anchor(pages: &GtkBox, scroller: &ScrolledWindow) -> Option<PreviewScrollAnchor> {
+    let scroll_y = scroller.vadjustment().value();
+    let mut page = pages.first_child();
+    let mut page_number = 1;
+    while let Some(widget) = page {
+        let bounds = widget.compute_bounds(pages)?;
+        let top = f64::from(bounds.y());
+        let height = f64::from(bounds.height());
+        if height > 0.0 && scroll_y <= top + height {
+            return Some(PreviewScrollAnchor {
+                page: page_number,
+                y_ratio: ((scroll_y - top) / height).clamp(0.0, 1.0),
+            });
+        }
+        page = widget.next_sibling();
+        page_number += 1;
+    }
+    None
+}
+
+fn restore_preview_scroll_anchor(
+    pages: &GtkBox,
+    scroller: &ScrolledWindow,
+    anchor: PreviewScrollAnchor,
+    content_end_ui: Option<ProjectUi>,
+) {
+    let pages = pages.clone();
+    let adjustment = scroller.vadjustment();
+    let handler = Rc::new(RefCell::new(None));
+    let layout_sequence = Rc::new(Cell::new(0_u64));
+    let handler_for_signal = Rc::clone(&handler);
+    let layout_sequence_for_signal = Rc::clone(&layout_sequence);
+    let pages_for_signal = pages.clone();
+    let content_end_ui_for_signal = content_end_ui.clone();
+    let handler_id = adjustment.connect_changed(move |adjustment| {
+        let sequence = layout_sequence_for_signal.get().wrapping_add(1);
+        layout_sequence_for_signal.set(sequence);
+        let adjustment = adjustment.clone();
+        let handler = Rc::clone(&handler_for_signal);
+        let layout_sequence = Rc::clone(&layout_sequence_for_signal);
+        let pages = pages_for_signal.clone();
+        let content_end_ui = content_end_ui_for_signal.clone();
+        glib::timeout_add_local_once(Duration::from_millis(24), move || {
+            if layout_sequence.get() != sequence {
+                return;
+            }
+            let Some(handler_id) = handler.borrow_mut().take() else {
+                return;
+            };
+            adjustment.disconnect(handler_id);
+            apply_preview_resize_scroll(&pages, &adjustment, anchor, content_end_ui.as_ref());
+        });
+    });
+    *handler.borrow_mut() = Some(handler_id);
+
+    glib::timeout_add_local_once(Duration::from_millis(250), move || {
+        let Some(handler_id) = handler.borrow_mut().take() else {
+            return;
+        };
+        adjustment.disconnect(handler_id);
+        apply_preview_resize_scroll(&pages, &adjustment, anchor, content_end_ui.as_ref());
+    });
+}
+
+fn apply_preview_resize_scroll(
+    pages: &GtkBox,
+    adjustment: &gtk::Adjustment,
+    anchor: PreviewScrollAnchor,
+    content_end_ui: Option<&ProjectUi>,
+) -> bool {
+    let Some(page) = preview_page(pages, anchor.page) else {
+        return false;
+    };
+    let Some(bounds) = page.compute_bounds(pages) else {
+        return false;
+    };
+    if let Some(project_ui) = content_end_ui {
+        if project_ui.auto_scroll_to_content_end.is_active() {
+            return set_preview_to_content_end(project_ui);
+        }
+    }
+    let target = f64::from(bounds.y()) + f64::from(bounds.height()) * anchor.y_ratio;
+    adjustment.set_value(target.clamp(
+        adjustment.lower(),
+        preview_scroll_end(adjustment.lower(), adjustment.upper(), adjustment.page_size()),
+    ));
+    true
 }
 
 fn preview_width(
@@ -2917,8 +3368,8 @@ fn apply_operation_result(
                             .borrow_mut()
                             .dispatch(UiCommand::Warn { message: message.to_owned() });
                         project_ui.status.set_text(message);
-                    } else if let Some(pages) = pages {
-                        match display_preview_pages(project_ui, pages) {
+                    } else if let Some((pages, content_end)) = pages {
+                        match display_preview_pages(project_ui, pages, content_end) {
                             Ok(()) => {
                                 let _ =
                                     project_ui.shell.borrow_mut().dispatch(UiCommand::Complete {
@@ -3011,21 +3462,23 @@ fn apply_operation_result(
                                 apply_editor_state(project_ui, &state, true);
                                 let end = insertion_end_offset(cursor, &expression);
                                 if let Some(prefix) = state.text.get(..end) {
-                                    let mut insertion = project_ui
-                                        .source_buffer
-                                        .iter_at_offset(prefix.chars().count() as i32);
-                                    project_ui.source_buffer.place_cursor(&insertion);
-                                    project_ui.source_view.scroll_to_iter(
-                                        &mut insertion,
-                                        0.2,
-                                        false,
-                                        0.0,
-                                        0.0,
-                                    );
-                                    project_ui.source_view.grab_focus();
+                                    let offset = prefix.chars().count() as i32;
+                                    let source_buffer = project_ui.source_buffer.clone();
+                                    let source_view = project_ui.source_view.clone();
+                                    glib::idle_add_local_once(move || {
+                                        let mut insertion = source_buffer.iter_at_offset(offset);
+                                        source_buffer.place_cursor(&insertion);
+                                        source_view.scroll_to_iter(
+                                            &mut insertion,
+                                            0.2,
+                                            false,
+                                            0.0,
+                                            0.0,
+                                        );
+                                        source_view.grab_focus();
+                                    });
                                 }
                                 project_ui.scroll_preview_to_end.set(true);
-                                scroll_preview_to_end(&project_ui.preview_scroller);
                             }
                             let message = format!(
                                 "Capture saved and inserted from {}.",
@@ -3067,7 +3520,10 @@ fn apply_operation_result(
                         }
                     }
                 }
-                OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved(settings)) => {
+                OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
+                    settings,
+                    keybindings,
+                }) => {
                     let _ = project_ui
                         .shell
                         .borrow_mut()
@@ -3075,11 +3531,21 @@ fn apply_operation_result(
                     let applied = project_ui
                         .shell
                         .borrow_mut()
-                        .dispatch(UiCommand::ApplySettings(settings.clone()));
+                        .dispatch(UiCommand::ApplySettings((*settings).clone()));
                     match applied {
                         Ok(()) => {
+                            *project_ui.global_keybindings.borrow_mut() = keybindings;
                             if let Some(application) = project_ui.application() {
-                                apply_project_accelerators(&application, &settings.keybindings);
+                                apply_global_accelerators(
+                                    &application,
+                                    &project_ui.global_keybindings.borrow(),
+                                );
+                            }
+                            if let Err(error) = rebind_global_capture_shortcut(project_ui) {
+                                project_ui.status.set_text(&format!(
+                                    "Settings saved, but global capture shortcut could not update: {error}"
+                                ));
+                                return;
                             }
                             apply_preview_zoom(project_ui);
                             if settings.preview.auto_render {
@@ -3413,6 +3879,10 @@ fn recent_project_store() -> RecentProjectStore {
     RecentProjectStore::new(glib::user_data_dir().join("captee/recent-projects.json"))
 }
 
+fn global_keybinding_store() -> GlobalKeybindingStore {
+    GlobalKeybindingStore::new(glib::user_data_dir().join("captee/keybindings.json"))
+}
+
 fn refresh_recent_projects(project_ui: &ProjectUi) {
     while let Some(child) = project_ui.recent_projects.first_child() {
         project_ui.recent_projects.remove(&child);
@@ -3713,6 +4183,16 @@ fn open_loaded_project(
             return false;
         }
     };
+    if !global_keybinding_store().exists() {
+        if let Some(keybindings) = project.settings.legacy_keybindings() {
+            match global_keybinding_store().save(keybindings) {
+                Ok(()) => *project_ui.global_keybindings.borrow_mut() = keybindings.clone(),
+                Err(error) => project_ui.status.set_text(&format!(
+                    "Could not migrate project keybindings to user settings: {error}"
+                )),
+            }
+        }
+    }
     let result = project_ui.shell.borrow_mut().dispatch(UiCommand::OpenProject {
         session: project.session.clone(),
         settings: project.settings.clone(),
@@ -3738,8 +4218,9 @@ fn open_loaded_project(
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
             if let Some(application) = project_ui.application() {
-                apply_project_accelerators(&application, &project.settings.keybindings);
+                apply_global_accelerators(&application, &project_ui.global_keybindings.borrow());
             }
+            start_global_capture_shortcut(project_ui);
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);
             project_ui.stack.set_visible_child_name("workspace");
@@ -3877,12 +4358,13 @@ fn close_project(project_ui: &ProjectUi) {
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
             *project_ui.pending_review.borrow_mut() = None;
+            stop_global_capture_shortcut(project_ui);
             reset_preview_scale(project_ui);
             project_ui.expanded_tree.borrow_mut().clear();
             project_ui.tree_initialized.set(false);
             clear_preview_pages(project_ui);
             if let Some(application) = project_ui.application() {
-                apply_project_accelerators(&application, &KeybindingSettings::default());
+                apply_global_accelerators(&application, &project_ui.global_keybindings.borrow());
             }
             refresh_project_label(project_ui);
             refresh_project_tree(project_ui);
@@ -3958,7 +4440,7 @@ mod tests {
     fn capture_annotation_can_be_inserted_before_or_after_image() {
         assert_eq!(
             capture_insertion_expression("#image(\"img/capture.png\")", "#line(length: 1em)", true),
-            "#line(length: 1em)\n#image(\"img/capture.png\")\n"
+            "\n\n#line(length: 1em)\n#image(\"img/capture.png\")\n\n"
         );
         assert_eq!(
             capture_insertion_expression(
@@ -3966,13 +4448,13 @@ mod tests {
                 "#line(length: 1em)",
                 false
             ),
-            "#image(\"img/capture.png\")\n#line(length: 1em)\n"
+            "\n\n#image(\"img/capture.png\")\n#line(length: 1em)\n\n"
         );
     }
 
     #[test]
     fn capture_insertion_cursor_ends_after_expression() {
-        assert_eq!(insertion_end_offset(3, "#image(\"img/capture.png\")\n"), 29);
+        assert_eq!(insertion_end_offset(3, "\n\n#image(\"img/capture.png\")\n\n"), 32);
     }
 
     #[test]

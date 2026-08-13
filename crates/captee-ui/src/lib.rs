@@ -55,7 +55,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { accelerator: "<Primary><Shift>f", action: ShortcutAction::Format },
     Shortcut { accelerator: "<Primary>f", action: ShortcutAction::FindReplace },
     Shortcut { accelerator: "<Primary>space", action: ShortcutAction::Completion },
-    Shortcut { accelerator: "<Primary><Shift>c", action: ShortcutAction::Capture },
+    Shortcut { accelerator: "<Primary>asciitilde", action: ShortcutAction::Capture },
     Shortcut { accelerator: "<Primary>r", action: ShortcutAction::Preview },
     Shortcut { accelerator: "<Primary><Shift>e", action: ShortcutAction::Export },
 ];
@@ -342,8 +342,14 @@ fn validate_settings(settings: &ProjectSettings) -> Result<(), SettingsValidatio
     if !settings.capture.portal_enabled && !settings.capture.fallback_enabled {
         return Err(SettingsValidationError::NoCaptureBackend);
     }
+    Ok(())
+}
+
+pub fn validate_keybindings(
+    keybindings: &captee_core::KeybindingSettings,
+) -> Result<(), SettingsValidationError> {
     let mut bindings = std::collections::BTreeSet::new();
-    for (action, binding) in settings.keybindings.named_bindings() {
+    for (action, binding) in keybindings.named_bindings() {
         let binding = binding.trim();
         if binding.is_empty() {
             return Err(SettingsValidationError::EmptyKeybinding(action));
@@ -385,7 +391,7 @@ fn pane_for_focus(focus: FocusTarget) -> Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use captee_core::{CaptureSettings, FormattingSettings, PreviewSettings};
+    use captee_core::FormattingSettings;
 
     fn session() -> ProjectSession {
         ProjectSession::new("/tmp/notes", "Notes", "main.typ")
@@ -440,12 +446,8 @@ mod tests {
                 settings: ProjectSettings::default(),
             })
             .expect("project opens");
-        let mut invalid = ProjectSettings {
-            formatting: FormattingSettings { line_width: 0, format_on_save: true },
-            capture: CaptureSettings::default(),
-            preview: PreviewSettings::default(),
-            keybindings: captee_core::KeybindingSettings::default(),
-        };
+        let mut invalid = ProjectSettings::default();
+        invalid.formatting = FormattingSettings { line_width: 0, format_on_save: true };
         assert!(matches!(
             shell.dispatch(UiCommand::ApplySettings(invalid.clone())),
             Err(UiError::InvalidSettings(SettingsValidationError::InvalidLineWidth(0)))
@@ -466,11 +468,11 @@ mod tests {
                 settings: ProjectSettings::default(),
             })
             .expect("project opens");
-        let mut invalid = ProjectSettings::default();
-        invalid.keybindings.capture = invalid.keybindings.save.clone();
+        let mut invalid = captee_core::KeybindingSettings::default();
+        invalid.capture = invalid.save.clone();
         assert!(matches!(
-            shell.dispatch(UiCommand::ApplySettings(invalid)),
-            Err(UiError::InvalidSettings(SettingsValidationError::DuplicateKeybinding(_)))
+            validate_keybindings(&invalid),
+            Err(SettingsValidationError::DuplicateKeybinding(_))
         ));
         let mut invalid = ProjectSettings::default();
         invalid.capture.portal_enabled = false;

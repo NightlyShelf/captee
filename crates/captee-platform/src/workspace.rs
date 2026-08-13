@@ -363,7 +363,6 @@ mod tests {
         let mut settings = ProjectSettings::default();
         settings.capture.fallback_enabled = false;
         settings.preview.zoom_percent = 150;
-        settings.keybindings.capture = "<Primary><Alt>c".to_owned();
 
         let saved = save_project_settings(&root, settings.clone()).expect("save settings");
         assert_eq!(saved.name, "Notes");
