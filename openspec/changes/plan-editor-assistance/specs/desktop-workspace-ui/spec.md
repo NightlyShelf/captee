@@ -35,8 +35,8 @@ The application SHALL use the bundled Tinymist language server to provide contex
 #### Scenario: Summarize current errors
 
 - **WHEN** current Tinymist diagnostics are displayed in the main editor
-- **THEN** a tiny transparent indicator at the editor's bottom-right shows a white cross on red with the error count
-- **AND** when there are no current errors it shows a white tick on green with “No errors”
+- **THEN** a tiny transparent indicator at the editor's bottom-right shows a centered white cross on red with the error count
+- **AND** when there are no current errors it shows a centered white tick on green with “No errors”
 
 #### Scenario: Follow the latest edit
 

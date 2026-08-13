@@ -287,7 +287,6 @@ fn build_ui(application: &Application) {
          .editor-diagnostics { background: transparent; }\
          .editor-diagnostics-icon {\
            min-width: 13px; min-height: 13px; border-radius: 999px; color: #ffffff;\
-           font-size: 9px; font-weight: bold;\
          }\
          .editor-diagnostics-icon.success { background-color: #2e9b47; }\
          .editor-diagnostics-icon.error { background-color: #d93025; }\
@@ -354,8 +353,11 @@ fn build_ui(application: &Application) {
     diagnostic_summary.set_margin_bottom(5);
     diagnostic_summary.set_can_target(false);
     diagnostic_summary.add_css_class("editor-diagnostics");
-    let diagnostic_summary_icon = Label::new(Some("✓"));
+    let diagnostic_summary_icon = gtk::Image::from_icon_name("object-select-symbolic");
     diagnostic_summary_icon.set_size_request(13, 13);
+    diagnostic_summary_icon.set_pixel_size(9);
+    diagnostic_summary_icon.set_halign(Align::Center);
+    diagnostic_summary_icon.set_valign(Align::Center);
     diagnostic_summary_icon.add_css_class("editor-diagnostics-icon");
     diagnostic_summary_icon.add_css_class("success");
     let diagnostic_summary_text = Label::new(Some("No errors"));
@@ -954,7 +956,7 @@ struct ProjectUi {
     diagnostic_error_tag: gtk::TextTag,
     diagnostic_warning_tag: gtk::TextTag,
     diagnostic_markers: Rc<RefCell<Vec<DiagnosticMarker>>>,
-    diagnostic_summary_icon: Label,
+    diagnostic_summary_icon: gtk::Image,
     diagnostic_summary_text: Label,
     project_label: Label,
     recent_projects: GtkBox,
@@ -2288,7 +2290,11 @@ fn clear_diagnostic_markers(project_ui: &ProjectUi) {
 
 fn set_main_error_count(project_ui: &ProjectUi, count: usize) {
     let has_errors = count > 0;
-    project_ui.diagnostic_summary_icon.set_text(if has_errors { "×" } else { "✓" });
+    project_ui.diagnostic_summary_icon.set_icon_name(Some(if has_errors {
+        "window-close-symbolic"
+    } else {
+        "object-select-symbolic"
+    }));
     project_ui.diagnostic_summary_icon.remove_css_class(if has_errors {
         "success"
     } else {

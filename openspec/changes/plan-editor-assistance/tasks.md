@@ -27,7 +27,7 @@
 - [x] 3.2 Show the diagnostic message when the user hovers its underline, clear markers immediately after source changes, and apply only diagnostics for the current document version.
 - [x] 3.3 Keep the last successful preview visible when current Tinymist diagnostics contain errors.
 - [x] 3.4 Render zero-width Tinymist diagnostics on the adjacent source character so incomplete input such as a lone `#` remains visible.
-- [x] 3.5 Show a tiny transparent editor-bottom indicator with a white cross on red and the error count, or a white tick on green and “No errors”.
+- [x] 3.5 Show a tiny transparent editor-bottom indicator with a geometrically centered white cross on red and the error count, or a centered white tick on green and “No errors”.
 
 ## 4. Project navigation and exit safety
 
