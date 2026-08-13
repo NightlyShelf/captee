@@ -7,6 +7,7 @@ if [[ "$build_root" != /* ]]; then
     build_root="$project_root/$build_root"
 fi
 appdir="$build_root/AppDir"
+target_dir="${CARGO_TARGET_DIR:-$project_root/target}"
 linuxdeploy_bin="${LINUXDEPLOY_BIN:-$(command -v linuxdeploy || true)}"
 gtk_plugin="${LINUXDEPLOY_GTK_PLUGIN:-$(command -v linuxdeploy-plugin-gtk || true)}"
 appimagetool_bin="${APPIMAGETOOL_BIN:-$(command -v appimagetool || true)}"
@@ -33,7 +34,7 @@ fi
 
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications"
 cargo build --release --manifest-path "$project_root/Cargo.toml" -p captee-ui
-cp "$project_root/target/release/captee-ui" "$appdir/usr/bin/captee-ui"
+cp "$target_dir/release/captee-ui" "$appdir/usr/bin/captee-ui"
 cp "$desktop_file" "$appdir/usr/share/applications/com.nightlyshelf.captee.desktop"
 "$project_root/tools/fetch-typst.sh" "$appdir/usr/share/captee/typst"
 "$project_root/tools/fetch-tinymist.sh" "$appdir/usr/share/captee/tinymist"

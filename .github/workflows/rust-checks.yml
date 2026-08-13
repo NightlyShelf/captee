@@ -26,12 +26,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Prepare test environment
         run: ci/images/prepare-environment.sh test
-      - name: Run rustfmt
-        run: ci/images/run-in-environment.sh cargo fmt --all -- --check
-      - name: Run clippy
-        run: ci/images/run-in-environment.sh cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Run workspace tests
-        run: ci/images/run-in-environment.sh cargo test --workspace
+      - name: Run Rust checks
+        run: ci/images/run-in-environment.sh ci/images/run-rust-checks.sh
 
   dependencies:
     name: dependency policy

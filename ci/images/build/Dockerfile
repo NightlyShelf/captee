@@ -1,9 +1,11 @@
 FROM ubuntu:22.04@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e
 
-ARG IMAGE_VERSION=2026.08.04.1
+ARG IMAGE_VERSION=2026.08.14.1
 ARG IMAGE_SOURCE=https://github.com/NightlyShelf/captee
 
 ENV CARGO_HOME=/usr/local/cargo \
+    CARGO_INCREMENTAL=0 \
+    CARGO_TARGET_DIR=/opt/captee-target \
     RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:/opt/captee-packaging:$PATH \
     DEBIAN_FRONTEND=noninteractive \
@@ -58,9 +60,10 @@ COPY crates/captee-platform/Cargo.toml crates/captee-platform/Cargo.toml
 COPY crates/captee-ui/Cargo.toml crates/captee-ui/Cargo.toml
 
 RUN mkdir -p crates/captee-core/src crates/captee-platform/src crates/captee-ui/src \
-    && touch crates/captee-core/src/lib.rs crates/captee-platform/src/lib.rs crates/captee-ui/src/lib.rs
+    && touch crates/captee-core/src/lib.rs crates/captee-platform/src/lib.rs \
+        crates/captee-ui/src/lib.rs crates/captee-ui/src/main.rs
 
-RUN cargo fetch --locked
+RUN cargo build --locked --release --package captee-ui
 
 RUN set -eux; \
     source /tmp/captee-image-version.env; \

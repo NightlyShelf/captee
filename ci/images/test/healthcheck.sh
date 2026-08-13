@@ -11,6 +11,7 @@ rustup toolchain list | grep -F "${expected_rust}" >/dev/null
 rustup component list --toolchain "${expected_rust}" --installed | grep -E '^rustfmt|^clippy' >/dev/null
 rustfmt --version >/dev/null
 cargo clippy --version >/dev/null
+test -d "${CARGO_TARGET_DIR:?}/debug/deps"
 command -v gcc >/dev/null
 command -v pkg-config >/dev/null
 pkg-config --exists gtk4 gtksourceview-5
