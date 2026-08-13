@@ -2042,6 +2042,7 @@ fn completion_summary(item: &TinymistCompletion) -> Option<String> {
         (!summary.trim().is_empty()).then(|| summary.trim().to_owned())
     });
     match (item.description.as_deref(), detail) {
+        (Some(description), Some(detail)) if description == detail => Some(detail),
         (Some(description), Some(detail)) => Some(format!("{description} — {detail}")),
         (Some(description), None) => Some(description.to_owned()),
         (None, detail) => detail,

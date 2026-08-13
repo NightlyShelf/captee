@@ -426,7 +426,7 @@ fn parse_event(
 
 fn parse_completion_items(result: &Value) -> Vec<TinymistCompletion> {
     let items = result.as_array().or_else(|| result.get("items").and_then(Value::as_array));
-    items
+    let items = items
         .into_iter()
         .flatten()
         .filter_map(|item| {
@@ -460,7 +460,37 @@ fn parse_completion_items(result: &Value) -> Vec<TinymistCompletion> {
                 .map(str::to_owned);
             Some(TinymistCompletion { label, insert_text, range, is_snippet, description, detail })
         })
-        .collect()
+        .collect();
+    merge_call_snippets(items)
+}
+
+fn merge_call_snippets(items: Vec<TinymistCompletion>) -> Vec<TinymistCompletion> {
+    let mut merged: Vec<TinymistCompletion> = Vec::with_capacity(items.len());
+    for mut item in items {
+        let is_call_snippet = item.label.ends_with(".paren");
+        if is_call_snippet {
+            item.label.truncate(item.label.len() - ".paren".len());
+        }
+        if let Some(existing) = merged
+            .iter_mut()
+            .rev()
+            .find(|candidate| candidate.label == item.label && candidate.range == item.range)
+        {
+            if is_call_snippet {
+                existing.insert_text = item.insert_text;
+                existing.is_snippet = item.is_snippet;
+            }
+            if existing.description.is_none() {
+                existing.description = item.description;
+            }
+            if existing.detail.is_none() {
+                existing.detail = item.detail;
+            }
+            continue;
+        }
+        merged.push(item);
+    }
+    merged
 }
 
 fn parse_diagnostic(value: &Value) -> Option<TinymistDiagnostic> {
@@ -534,22 +564,36 @@ mod tests {
 
     #[test]
     fn parses_completion_list_and_text_edit() {
-        let result = json!({"items":[{
-            "label":"image",
-            "labelDetails":{"description":"function"},
-            "detail":"Loads an image from a file.",
-            "insertTextFormat":2,
-            "textEdit":{
-                "newText":"image(\"\")",
-                "range":{
-                    "start":{"line":2,"character":1},
-                    "end":{"line":2,"character":3}
+        let result = json!({"items":[
+            {
+                "label":"image",
+                "labelDetails":{"description":"function"},
+                "detail":"Loads an image from a file.",
+                "insertTextFormat":2,
+                "textEdit":{
+                    "newText":"image",
+                    "range":{
+                        "start":{"line":2,"character":1},
+                        "end":{"line":2,"character":3}
+                    }
+                }
+            },
+            {
+                "label":"image.paren",
+                "insertTextFormat":2,
+                "textEdit":{
+                    "newText":"image(${1:})",
+                    "range":{
+                        "start":{"line":2,"character":1},
+                        "end":{"line":2,"character":3}
+                    }
                 }
             }
-        }]});
+        ]});
         let items = parse_completion_items(&result);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert_text, "image(\"\")");
+        assert_eq!(items[0].label, "image");
+        assert_eq!(items[0].insert_text, "image(${1:})");
         assert!(items[0].is_snippet);
         assert_eq!(items[0].description.as_deref(), Some("function"));
         assert_eq!(items[0].detail.as_deref(), Some("Loads an image from a file."));
