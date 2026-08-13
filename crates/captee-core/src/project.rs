@@ -62,24 +62,13 @@ fn is_safe_relative_typst_path(path: &str) -> bool {
         && path.components().all(|component| !matches!(component, std::path::Component::ParentDir))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub formatting: FormattingSettings,
     pub capture: CaptureSettings,
     pub preview: PreviewSettings,
     #[serde(default, rename = "keybindings", skip_serializing)]
     legacy_keybindings: Option<KeybindingSettings>,
-}
-
-impl Default for ProjectSettings {
-    fn default() -> Self {
-        Self {
-            formatting: FormattingSettings::default(),
-            capture: CaptureSettings::default(),
-            preview: PreviewSettings::default(),
-            legacy_keybindings: None,
-        }
-    }
 }
 
 impl ProjectSettings {

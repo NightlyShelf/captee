@@ -61,7 +61,7 @@ enum WorkspaceOperationResult {
     Exported(PathBuf),
     Captured(CapturedImage),
     CaptureStored { asset: SavedAsset, annotation: String, before_image: bool },
-    SettingsSaved { settings: ProjectSettings, keybindings: KeybindingSettings },
+    SettingsSaved { settings: Box<ProjectSettings>, keybindings: KeybindingSettings },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2661,7 +2661,7 @@ fn start_settings_save(
         let outcome = match save_project_settings(root, settings) {
             Ok(config) => match global_keybinding_store().save(&keybindings) {
                 Ok(()) => OperationOutcome::Completed(WorkspaceOperationResult::SettingsSaved {
-                    settings: config.settings,
+                    settings: Box::new(config.settings),
                     keybindings,
                 }),
                 Err(error) => OperationOutcome::Failed(error.to_string()),
@@ -2710,9 +2710,9 @@ fn display_preview_pages(
     }
     apply_preview_zoom(project_ui);
     project_ui.preview_content_end.set(content_end);
-    if project_ui.auto_scroll_to_content_end.is_active() {
-        scroll_preview_to_content_end(project_ui);
-    } else if project_ui.scroll_preview_to_end.replace(false) {
+    if project_ui.auto_scroll_to_content_end.is_active()
+        || project_ui.scroll_preview_to_end.replace(false)
+    {
         scroll_preview_to_content_end(project_ui);
     }
     Ok(())
@@ -3531,7 +3531,7 @@ fn apply_operation_result(
                     let applied = project_ui
                         .shell
                         .borrow_mut()
-                        .dispatch(UiCommand::ApplySettings(settings.clone()));
+                        .dispatch(UiCommand::ApplySettings((*settings).clone()));
                     match applied {
                         Ok(()) => {
                             *project_ui.global_keybindings.borrow_mut() = keybindings;

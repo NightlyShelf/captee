@@ -111,6 +111,9 @@ pub struct PreviewContentEnd {
     pub page_height_pt: f64,
 }
 
+/// Rendered page buffers and their final content position.
+pub type PreviewPageData = (Vec<Vec<u8>>, Option<PreviewContentEnd>);
+
 /// A compiler failure that can be displayed without exposing process details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewError {
@@ -321,10 +324,7 @@ impl PreviewOutcome {
     /// Applies this result and transfers page images only when it is current.
     /// Keeping the page buffers in the outcome avoids cloning every page while
     /// the core render state records only the PDF and diagnostics.
-    pub fn apply_to_with_pages(
-        self,
-        state: &mut RenderState,
-    ) -> (bool, Option<(Vec<Vec<u8>>, Option<PreviewContentEnd>)>) {
+    pub fn apply_to_with_pages(self, state: &mut RenderState) -> (bool, Option<PreviewPageData>) {
         match self.result {
             Ok(artifact) => {
                 let page_pngs = artifact.page_pngs;
