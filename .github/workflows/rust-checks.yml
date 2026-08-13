@@ -19,8 +19,8 @@ env:
   GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  fmt:
-    name: rustfmt
+  rust:
+    name: rustfmt, clippy, and tests
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -28,33 +28,15 @@ jobs:
         run: ci/images/prepare-environment.sh test
       - name: Run rustfmt
         run: ci/images/run-in-environment.sh cargo fmt --all -- --check
-
-  clippy:
-    name: clippy
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Prepare test environment
-        run: ci/images/prepare-environment.sh test
       - name: Run clippy
         run: ci/images/run-in-environment.sh cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  workspace-tests:
-    name: headless workspace tests
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Prepare test environment
-        run: ci/images/prepare-environment.sh test
       - name: Run workspace tests
         run: ci/images/run-in-environment.sh cargo test --workspace
 
-  ui-state:
-    name: headless UI state tests
+  dependencies:
+    name: dependency policy
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare test environment
-        run: ci/images/prepare-environment.sh test
-      - name: Run UI state tests
-        run: ci/images/run-in-environment.sh cargo test -p captee-ui
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
