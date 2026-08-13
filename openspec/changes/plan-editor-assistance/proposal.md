@@ -1,3 +1,7 @@
 ## Why
 
-Typst authoring needs IDE-style assistance without interrupting typing. The source editor should automatically offer context-aware completion in a popup after the user types `#`, and make current compiler errors visible with underlines at their source locations. Hovering an underline should reveal diagnostic details. This change plans the behavior, UI states, diagnostics lifecycle, and validation needed before implementation.
+Typst authoring needs accurate IDE-style assistance without duplicating language intelligence already provided by Tinymist. Project navigation and command menus also become awkward as projects grow, while exiting with unsaved work leaves an autosave that triggers an avoidable recovery prompt on the next run.
+
+## What Changes
+
+Bundle pinned Tinymist 0.14.6 and use its LSP for completion and diagnostics in both Typst editors while retaining the existing Typst 0.14.2 compiler for formatting, preview, and export. Improve workspace navigation with a vertically scrollable, initially collapsed project tree; place Capture and Settings under Edit, Export PDF under File, and expose About as its own menu button. Prompt to Save, Discard, or Cancel before dirty exit, clear recovery data only after Save or Discard succeeds, align Captee metadata with GPL-3.0-or-later, and retain bundled Typst and Tinymist Apache-2.0 licenses and notices.
