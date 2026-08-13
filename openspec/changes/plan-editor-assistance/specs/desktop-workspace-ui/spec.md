@@ -41,8 +41,8 @@ The application SHALL use the bundled Tinymist language server to provide contex
 #### Scenario: Follow the latest edit
 
 - **WHEN** source changes through typing or a programmatic edit
-- **THEN** the caret moves to the latest edit and remains visible in the editor viewport
-- **AND** the preview scrolls to the corresponding source progress after the edit and after the next render
+- **THEN** the exact latest-edit offset is retained for the active session and the caret moves there and remains visible in the editor viewport
+- **AND** the preview scrolls to the corresponding source progress after the edit and once the next rendered page layout is ready
 
 #### Scenario: Tinymist unavailable
 

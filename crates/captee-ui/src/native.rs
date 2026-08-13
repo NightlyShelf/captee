@@ -243,6 +243,7 @@ fn build_ui(application: &Application) {
     let editor = Rc::new(RefCell::new(None));
     let coordinator = Rc::new(RefCell::new(OperationCoordinator::new()));
     let syncing_buffer = Rc::new(Cell::new(false));
+    let latest_edit_offset = Rc::new(Cell::new(0));
     let autosave_sequence = Arc::new(AtomicU64::new(0));
     let autosave_io = Arc::new(Mutex::new(()));
     let preview_sequence = Rc::new(Cell::new(0));
@@ -510,6 +511,7 @@ fn build_ui(application: &Application) {
         editor,
         coordinator,
         syncing_buffer,
+        latest_edit_offset,
         autosave_sequence,
         autosave_io,
         preview_sequence,
@@ -980,6 +982,7 @@ struct ProjectUi {
     editor: Rc<RefCell<Option<EditorBridge>>>,
     coordinator: Rc<RefCell<OperationCoordinator<WorkspaceOperationResult>>>,
     syncing_buffer: Rc<Cell<bool>>,
+    latest_edit_offset: Rc<Cell<i32>>,
     autosave_sequence: Arc<AtomicU64>,
     autosave_io: Arc<Mutex<()>>,
     preview_sequence: Rc<Cell<u64>>,
@@ -1471,6 +1474,8 @@ fn open_project_tree_file(project_ui: &ProjectUi, relative: &Path) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&source);
             project_ui.syncing_buffer.set(false);
+            project_ui.latest_edit_offset.set(0);
+            project_ui.preview_edit_fraction.set(0.0);
             refresh_project_tree(project_ui);
             project_ui.status.set_text(&format!("Opened {}.", relative.display()));
             if let Some(state) = project_ui.editor.borrow().as_ref().map(EditorBridge::state) {
@@ -1761,6 +1766,20 @@ fn show_delete_project_item_dialog(project_ui: &ProjectUi, path: &Path) {
 }
 
 fn connect_editor_buffer(project_ui: &ProjectUi) {
+    let insert_ui = project_ui.clone();
+    project_ui.source_buffer.connect_insert_text(move |_, location, text| {
+        if !insert_ui.syncing_buffer.get() {
+            insert_ui
+                .latest_edit_offset
+                .set(inserted_edit_character_offset(location.offset(), text));
+        }
+    });
+    let delete_ui = project_ui.clone();
+    project_ui.source_buffer.connect_delete_range(move |_, start, _| {
+        if !delete_ui.syncing_buffer.get() {
+            delete_ui.latest_edit_offset.set(start.offset());
+        }
+    });
     let project_ui = project_ui.clone();
     let buffer = project_ui.source_buffer.clone();
     buffer.connect_changed(move |buffer| {
@@ -1784,6 +1803,11 @@ fn connect_editor_buffer(project_ui: &ProjectUi) {
     });
 }
 
+fn inserted_edit_character_offset(location: i32, text: &str) -> i32 {
+    let inserted = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    location.saturating_add(inserted)
+}
+
 fn follow_latest_edit(project_ui: &ProjectUi) {
     let project_ui = project_ui.clone();
     glib::idle_add_local_once(move || {
@@ -1792,12 +1816,19 @@ fn follow_latest_edit(project_ui: &ProjectUi) {
             &project_ui.source_buffer.end_iter(),
             true,
         );
-        let cursor = byte_offset_for_character(
-            text.as_str(),
-            project_ui.source_buffer.cursor_position().max(0) as usize,
-        );
+        let offset =
+            project_ui.latest_edit_offset.get().clamp(0, project_ui.source_buffer.char_count());
+        let cursor_iter = project_ui.source_buffer.iter_at_offset(offset);
+        project_ui.source_buffer.place_cursor(&cursor_iter);
+        let cursor = byte_offset_for_character(text.as_str(), offset as usize);
         project_ui.preview_edit_fraction.set(source_edit_fraction(text.as_str(), cursor));
-        project_ui.source_view.scroll_mark_onscreen(&project_ui.source_buffer.get_insert());
+        project_ui.source_view.scroll_to_mark(
+            &project_ui.source_buffer.get_insert(),
+            0.2,
+            false,
+            0.0,
+            0.0,
+        );
         if !project_ui.auto_scroll_to_content_end.is_active() {
             scroll_preview_to_latest_edit(&project_ui);
         }
@@ -1905,6 +1936,7 @@ fn apply_editor_state(project_ui: &ProjectUi, state: &EditorState, update_buffer
         project_ui.source_buffer.set_text(&state.text);
         let cursor = project_ui.source_buffer.iter_at_offset(latest_edit);
         project_ui.source_buffer.place_cursor(&cursor);
+        project_ui.latest_edit_offset.set(latest_edit);
         project_ui.syncing_buffer.set(false);
         follow_latest_edit(project_ui);
     }
@@ -3941,7 +3973,7 @@ fn display_preview_pages(
     {
         scroll_preview_to_content_end(project_ui);
     } else {
-        scroll_preview_to_latest_edit(project_ui);
+        scroll_preview_to_latest_edit_after_layout(project_ui);
     }
     Ok(())
 }
@@ -3987,21 +4019,39 @@ fn set_preview_to_content_end(project_ui: &ProjectUi) -> bool {
 }
 
 fn scroll_preview_to_latest_edit(project_ui: &ProjectUi) {
+    schedule_preview_to_latest_edit(project_ui, 1);
+}
+
+fn scroll_preview_to_latest_edit_after_layout(project_ui: &ProjectUi) {
+    schedule_preview_to_latest_edit(project_ui, 10);
+}
+
+fn schedule_preview_to_latest_edit(project_ui: &ProjectUi, attempts: u8) {
     let generation = project_ui.preview_scroll_generation.get().wrapping_add(1);
     project_ui.preview_scroll_generation.set(generation);
     let project_ui = project_ui.clone();
     let scroll_generation = Rc::clone(&project_ui.preview_scroll_generation);
-    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+    let mut remaining_attempts = attempts.max(1);
+    glib::timeout_add_local(Duration::from_millis(16), move || {
         if scroll_generation.get() != generation {
-            return;
+            return glib::ControlFlow::Break;
         }
         set_preview_to_latest_edit(&project_ui);
+        remaining_attempts -= 1;
+        if remaining_attempts == 0 {
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
     });
 }
 
-fn set_preview_to_latest_edit(project_ui: &ProjectUi) {
+fn set_preview_to_latest_edit(project_ui: &ProjectUi) -> bool {
     let adjustment = project_ui.preview_scroller.vadjustment();
-    let content_y = preview_content_y(project_ui).unwrap_or_else(|| adjustment.upper());
+    let content_y = preview_content_y(project_ui)
+        .or_else(|| (adjustment.upper() > adjustment.lower()).then(|| adjustment.upper()));
+    let Some(content_y) = content_y else {
+        return false;
+    };
     adjustment.set_value(preview_edit_scroll_value(
         adjustment.lower(),
         adjustment.upper(),
@@ -4009,12 +4059,16 @@ fn set_preview_to_latest_edit(project_ui: &ProjectUi) {
         content_y,
         project_ui.preview_edit_fraction.get(),
     ));
+    true
 }
 
 fn preview_content_y(project_ui: &ProjectUi) -> Option<f64> {
     let content_end = project_ui.preview_content_end.get()?;
     let page = preview_page(&project_ui.preview_pages, content_end.page)?;
     let bounds = page.compute_bounds(&project_ui.preview_pages)?;
+    if bounds.height() <= 0.0 || content_end.page_height_pt <= 0.0 {
+        return None;
+    }
     Some(
         f64::from(bounds.y())
             + f64::from(bounds.height()) * content_end.y_pt / content_end.page_height_pt,
@@ -5552,6 +5606,8 @@ fn open_loaded_project(
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text(&project.source);
             project_ui.syncing_buffer.set(false);
+            project_ui.latest_edit_offset.set(0);
+            project_ui.preview_edit_fraction.set(0.0);
             *project_ui.render_state.borrow_mut() = RenderState::new(1);
             let _ = project_ui.coordinator.borrow_mut().set_source_revision(1);
             *project_ui.pending_capture.borrow_mut() = None;
@@ -5710,6 +5766,8 @@ fn close_project(project_ui: &ProjectUi) {
             project_ui.syncing_buffer.set(true);
             project_ui.source_buffer.set_text("");
             project_ui.syncing_buffer.set(false);
+            project_ui.latest_edit_offset.set(0);
+            project_ui.preview_edit_fraction.set(0.0);
             *project_ui.render_state.borrow_mut() = RenderState::new(0);
             *project_ui.pending_capture.borrow_mut() = None;
             *project_ui.pending_annotation.borrow_mut() = None;
@@ -5735,12 +5793,12 @@ mod tests {
     use super::{
         annotation_confirms_on_enter, byte_offset_for_character, capture_insertion_expression,
         capture_placeholder_top, completion_anchor_x, completion_index, completion_popup_action,
-        diagnostic_summary_text, insertion_end_offset, is_active_tree_file,
-        latest_edit_character_offset, preview_edit_scroll_value, preview_scroll_end, preview_width,
-        project_parent_folder, recovery_draft, source_edit_fraction, tree_entry_visible,
-        validate_project_name, CompletionPopupAction, ExitChoice, ExitDecision, ExitState,
-        PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE, ABOUT_REPOSITORY, EDIT_MENU_ACTIONS,
-        FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
+        diagnostic_summary_text, inserted_edit_character_offset, insertion_end_offset,
+        is_active_tree_file, latest_edit_character_offset, preview_edit_scroll_value,
+        preview_scroll_end, preview_width, project_parent_folder, recovery_draft,
+        source_edit_fraction, tree_entry_visible, validate_project_name, CompletionPopupAction,
+        ExitChoice, ExitDecision, ExitState, PreviewScale, ABOUT_ACKNOWLEDGEMENTS, ABOUT_LICENSE,
+        ABOUT_REPOSITORY, EDIT_MENU_ACTIONS, FILE_MENU_ACTIONS, VIEW_MENU_ACTIONS,
     };
     use crate::editor_bridge::EditorBridge;
     use captee_platform::AutosaveSnapshot;
@@ -5868,6 +5926,8 @@ mod tests {
 
     #[test]
     fn latest_edit_offset_tracks_insertions_replacements_and_unicode() {
+        assert_eq!(inserted_edit_character_offset(4, "two "), 8);
+        assert_eq!(inserted_edit_character_offset(1, "é"), 2);
         assert_eq!(latest_edit_character_offset("one end", "one two end", 0), 8);
         assert_eq!(latest_edit_character_offset("one two end", "one end", 0), 4);
         assert_eq!(latest_edit_character_offset("aéz", "aêz", 0), 2);
