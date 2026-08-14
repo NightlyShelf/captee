@@ -64,7 +64,8 @@ RUN mkdir -p crates/captee-core/src crates/captee-platform/src crates/captee-ui/
         crates/captee-ui/src/lib.rs \
     && printf 'fn main() {}\n' > crates/captee-ui/src/main.rs
 
-RUN cargo build --locked --release --package captee-ui
+RUN cargo build --locked --release --package captee-ui \
+    && cargo clean --release -p captee-core -p captee-platform -p captee-ui
 
 RUN set -eux; \
     source /tmp/captee-image-version.env; \

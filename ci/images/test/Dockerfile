@@ -56,7 +56,8 @@ RUN mkdir -p crates/captee-core/src crates/captee-platform/src crates/captee-ui/
     && printf 'fn main() {}\n' > crates/captee-ui/src/main.rs
 
 RUN cargo clippy --locked --workspace --all-targets --all-features \
-    && cargo test --locked --workspace --no-run
+    && cargo test --locked --workspace --no-run \
+    && cargo clean -p captee-core -p captee-platform -p captee-ui
 
 COPY ci/images/test/healthcheck.sh /usr/local/bin/captee-test-healthcheck
 RUN chmod 0755 /usr/local/bin/captee-test-healthcheck
